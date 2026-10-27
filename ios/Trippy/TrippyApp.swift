@@ -178,7 +178,7 @@ private enum TripStorage {
 
 private struct TripFlowView: View {
     @AppStorage("trippy.native.darkMode") private var darkMode = false
-    @AppStorage("trippy.bridgeHost") private var bridgeHost = "192.168.1.109"
+    @AppStorage("trippy.bridgeHost") private var bridgeHost = "https://trippy-research-89fm.onrender.com/"
     @State private var trips = TripStorage.load()
     @State private var brief = TripBrief()
     @State private var activeTripID: UUID?
@@ -228,7 +228,14 @@ private struct TripFlowView: View {
         )
     }
     private var activeTrip: Trip? { trips.first(where: { $0.id == activeTripID }) }
-    private var bridgeBaseURL: String { "http://\(bridgeHost.trimmingCharacters(in: .whitespacesAndNewlines)):8080" }
+    private var bridgeBaseURL: String {
+        let endpoint = bridgeHost.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if endpoint.lowercased().hasPrefix("https://") || endpoint.lowercased().hasPrefix("http://") {
+            return endpoint
+        }
+        return "http://\(endpoint):8080"
+    }
 
     var body: some View {
         ZStack {
@@ -759,7 +766,7 @@ private struct TripFlowView: View {
                                 Text("Σύνδεση AI bridge")
                                     .font(.custom("PlusJakartaSans-SemiBold", size: 12))
                                     .foregroundStyle(AppPalette.ink)
-                                TextField("IP του Mac στο ίδιο Wi‑Fi", text: $bridgeHost)
+                                TextField("https://your-service.onrender.com", text: $bridgeHost)
                                     .textInputAutocapitalization(.never)
                                     .keyboardType(.URL)
                                     .autocorrectionDisabled()
@@ -767,7 +774,7 @@ private struct TripFlowView: View {
                                     .padding(.horizontal, 12)
                                     .frame(height: 44)
                                     .background(AppPalette.canvas, in: RoundedRectangle(cornerRadius: 12))
-                                Text("Στο Mac: ipconfig getifaddr en0. Το iPhone και το Mac πρέπει να είναι στο ίδιο Wi‑Fi.")
+                                Text("Βάλε το πλήρες HTTPS URL του Render, χωρίς /api/status. Για τοπική σύνδεση, βάλε την IP του Mac στο ίδιο Wi‑Fi.")
                                     .font(.custom("PlusJakartaSans-Regular", size: 10))
                                     .foregroundStyle(AppPalette.secondaryInk)
                             }
@@ -2509,6 +2516,11 @@ private struct TripFlowView: View {
                             liveResearchStatusText = "Υπάρχει ήδη έρευνα σε εξέλιξη. Παρακαλώ περιμένετε."
                             isResearching = false
                         }
+                    } else {
+                        await MainActor.run {
+                            liveResearchError = "Η υπηρεσία έρευνας επέστρεψε HTTP \(http.statusCode). Έλεγξε το URL και τα logs στο Render."
+                            isResearching = false
+                        }
                     }
                     return
                 }
@@ -2535,8 +2547,14 @@ private struct TripFlowView: View {
                                let resultData = try? JSONSerialization.data(withJSONObject: result),
                                let resultString = String(data: resultData, encoding: .utf8) {
                                 importText = resultString
+                                importError = nil
                                 importResearch()
-                                showLiveResearchSheet = false
+                                if let error = importError {
+                                    liveResearchError = error
+                                    importError = nil
+                                } else {
+                                    showLiveResearchSheet = false
+                                }
                                 isResearching = false
                             }
                         } else if step == "error" {
@@ -2550,7 +2568,7 @@ private struct TripFlowView: View {
                 }
             } catch {
                 await MainActor.run {
-                    liveResearchError = "Δεν υπάρχει σύνδεση με το bridge στο \(bridgeBaseURL). Έλεγξε ότι τρέχει στο Mac, ότι το iPhone είναι στο ίδιο Wi‑Fi και ότι έδωσες τη σωστή IP."
+                    liveResearchError = "Η σύνδεση με το bridge στο \(bridgeBaseURL) απέτυχε. Έλεγξε το URL και ότι η υπηρεσία είναι διαθέσιμη. Αν χρησιμοποιείς IP του Mac, οι συσκευές πρέπει να είναι στο ίδιο Wi‑Fi."
                     isResearching = false
                 }
             }
