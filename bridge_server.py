@@ -31,6 +31,7 @@ class ResearchState:
         self.total_steps = 3
         self.latest_result = None
         self.error_message = None
+        self.brief_context = None
 
 state = ResearchState()
 
@@ -39,6 +40,7 @@ def run_pipeline(brief_data):
     state.started_at = time.time()
     state.latest_result = None
     state.error_message = None
+    state.brief_context = brief_data
 
     try:
         api_key = os.environ.get("AZURE_OPENAI_API_KEY")
@@ -155,11 +157,16 @@ class RequestHandler(BaseHTTPRequestHandler):
         if self.path == "/api/status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self._send_cors()
             self.end_headers()
 
             with state.lock:
                 data = {
+                    "api_version": 2,
+                    "result_schema": "trippy-research-v1",
+                    "build_commit": os.environ.get("RENDER_GIT_COMMIT", "local"),
+                    "request_context": state.brief_context,
                     "is_running": state.is_running,
                     "step": state.current_step,
                     "step_index": state.step_index,

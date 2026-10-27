@@ -126,6 +126,86 @@ private struct DestinationHoliday: Identifiable {
     }
 }
 
+private struct PillFlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    private struct Item {
+        let index: Int
+        let origin: CGPoint
+        let size: CGSize
+    }
+
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> (items: [Item], height: CGFloat) {
+        var items: [Item] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for (index, subview) in subviews.enumerated() {
+            let ideal = subview.sizeThatFits(.unspecified)
+            let itemWidth = min(ideal.width, width)
+            let size = subview.sizeThatFits(ProposedViewSize(width: itemWidth, height: nil))
+            if x > 0 && x + itemWidth > width {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            items.append(Item(index: index, origin: CGPoint(x: x, y: y), size: CGSize(width: itemWidth, height: size.height)))
+            x += itemWidth + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return (items, items.isEmpty ? 0 : y + rowHeight)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let idealWidth = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        let width = max(0, proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? idealWidth)
+        return CGSize(width: width, height: arrange(subviews, width: width).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for item in arrange(subviews, width: bounds.width).items {
+            subviews[item.index].place(at: CGPoint(x: bounds.minX + item.origin.x, y: bounds.minY + item.origin.y),
+                                      anchor: .topLeading, proposal: ProposedViewSize(item.size))
+        }
+    }
+}
+
+private struct HolidayLocation {
+    let query: String
+    let countryCode: String
+    let regionCode: String?
+    let displayName: String
+}
+
+private struct PublicHolidayResponse: Decodable {
+    let date: String
+    let localName: String
+    let name: String
+    let global: Bool
+    let counties: [String]?
+    let types: [String]
+}
+
+private struct ResearchOperation: Identifiable {
+    let step: Int
+    var detail: String
+    var id: Int { step }
+    var title: String {
+        switch step {
+        case 1: "Αναζήτηση πηγών"
+        case 2: "Σύνθεση προγράμματος"
+        default: "Αποθήκευση ταξιδιού"
+        }
+    }
+    var symbol: String {
+        switch step {
+        case 1: "globe.europe.africa"
+        case 2: "sparkles"
+        default: "checkmark"
+        }
+    }
+}
+
 private struct Trip: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var brief: TripBrief
@@ -186,6 +266,11 @@ private struct TripFlowView: View {
     @State private var selectedScrollID: Int? = 0
     @State private var stage: TripStage = .library
     @State private var briefProgress: CGFloat = 0
+    @State private var cardDrag: CGFloat = 0
+    @State private var briefReveal: CGFloat = 0
+    @State private var isRevealingBrief = false
+    @State private var gestureTripID: UUID?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var importText = ""
     @State private var importError: String?
     @State private var toast: String?
@@ -208,7 +293,6 @@ private struct TripFlowView: View {
     @State private var isResearching = false
     @State private var showLiveResearchSheet = false
     @State private var liveResearchStep = 1
-    @State private var liveResearchStatusText = "Αναζήτηση επίσημων πηγών, ωραρίων και αργιών..."
     @State private var liveResearchError: String? = nil
     @State private var liveResearchTask: Task<Void, Never>? = nil
     @State private var calendarDisplayedMonth = Date()
@@ -217,6 +301,14 @@ private struct TripFlowView: View {
     @State private var showCalendarPicker = false
     @State private var calendarHolidays: [DestinationHoliday] = []
     @State private var isLoadingHolidays = false
+    @State private var holidayStatus = "Επίλεξε προορισμό για να φορτωθούν οι αργίες."
+    @State private var resolvedDestination = ""
+    @State private var holidayCache: [String: [DestinationHoliday]] = [:]
+    @State private var resolvedHolidayLocation: HolidayLocation?
+    @State private var holidayTask: Task<Void, Never>?
+    @State private var researchOperations: [ResearchOperation] = []
+    @State private var recoverableResearch: [String: Any]?
+    @State private var recoveryContext: [String: Any] = [:]
 
     private var prompt: String {
         pendingPrompt ?? ResearchPrompt.make(
@@ -242,8 +334,20 @@ private struct TripFlowView: View {
             AppPalette.canvas.ignoresSafeArea()
             switch stage {
             case .library:
-                library
-                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
+                GeometryReader { geometry in
+                    ZStack {
+                        if briefReveal > 0 {
+                            briefScreen
+                                .offset(y: geometry.size.height * (1 - briefReveal))
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                        library
+                            .offset(y: -geometry.size.height * briefReveal)
+                    }
+                    .clipped()
+                }
+                .transition(.opacity)
             case .brief:
                 briefScreen
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -261,6 +365,20 @@ private struct TripFlowView: View {
                     .padding(.bottom, 24)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+        .onChange(of: brief.destination) { _, destination in
+            resolvedHolidayLocation = nil
+            resolvedDestination = ""
+            calendarHolidays = []
+            loadHolidays(for: destination, debounce: true)
+        }
+        .onChange(of: calendarDisplayedMonth) { old, new in
+            if Calendar.current.component(.year, from: old) != Calendar.current.component(.year, from: new) {
+                loadHolidays(for: brief.destination)
+            }
+        }
+        .onChange(of: stage) { _, new in
+            if new == .brief { loadHolidays(for: brief.destination) }
         }
         .preferredColorScheme(darkMode ? .dark : .light)
         .animation(.spring(response: 0.68, dampingFraction: 0.88), value: stage)
@@ -317,7 +435,7 @@ private struct TripFlowView: View {
                     HStack(spacing: 7) {
                         Image(systemName: "arrow.up")
                             .font(.system(size: 11, weight: .semibold))
-                        Text("Σύρε προς τα πάνω για το brief")
+                        Text(cardDrag > 30 ? "Πάτησε τον κάδο για διαγραφή" : "↑ Brief · ↓ Διαγραφή")
                             .font(.custom("PlusJakartaSans-SemiBold", size: 11))
                     }
                     .foregroundStyle(AppPalette.secondaryInk)
@@ -382,12 +500,39 @@ private struct TripFlowView: View {
     private func carousel(size: CGSize) -> some View {
         let cardWidth = min(size.width * 0.76, 330)
         let cardHeight = min(size.height * 0.72, cardWidth * 1.34)
-        let swipeUpToBrief = DragGesture(minimumDistance: 36)
-            .onEnded { value in
+        let cardGesture = DragGesture(minimumDistance: 14)
+            .onChanged { value in
+                guard !isRevealingBrief,
+                      abs(value.translation.height) > abs(value.translation.width) * 1.25,
+                      !trips.isEmpty else { return }
+                if gestureTripID == nil, trips.indices.contains(selectedCard) {
+                    let trip = trips[selectedCard]
+                    gestureTripID = trip.id
+                    activeTripID = trip.id
+                    brief = trip.brief
+                }
                 let vertical = value.translation.height
-                let horizontal = value.translation.width
-                guard vertical < -72, abs(vertical) > abs(horizontal) * 1.3 else { return }
-                openSelectedTrip()
+                if vertical < 0 {
+                    cardDrag = 0
+                    briefReveal = min(0.94, -vertical / max(size.height, 1))
+                } else {
+                    briefReveal = 0
+                    cardDrag = min(160, vertical * 0.8)
+                }
+            }
+            .onEnded { value in
+                guard !isRevealingBrief, gestureTripID != nil else { return }
+                let upward = -value.translation.height
+                let predicted = -value.predictedEndTranslation.height
+                if upward > size.height * 0.22 || (upward > 65 && predicted > size.height * 0.45) {
+                    finishBriefReveal()
+                } else {
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
+                        briefReveal = 0
+                        cardDrag = value.translation.height > 65 ? 100 : 0
+                    }
+                    gestureTripID = nil
+                }
             }
 
         return Group {
@@ -417,7 +562,24 @@ private struct TripFlowView: View {
                 ScrollView(.horizontal) {
                     LazyHStack(spacing: 16) {
                         ForEach(Array(trips.enumerated()), id: \.element.id) { index, trip in
-                            tripCard(trip, width: cardWidth, height: cardHeight, isActive: index == selectedCard)
+                            ZStack(alignment: .top) {
+                                if index == selectedCard && cardDrag > 0 {
+                                    Button(role: .destructive) { deleteTrip(trip.id) } label: {
+                                        Label("Διαγραφή ταξιδιού", systemImage: "trash.fill")
+                                            .font(.custom("PlusJakartaSans-SemiBold", size: 13))
+                                            .foregroundStyle(Color.white)
+                                            .padding(.horizontal, 20)
+                                            .frame(height: 52)
+                                            .background(Color(hex: "C94B43"), in: Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .opacity(min(1, cardDrag / 70))
+                                    .offset(y: -12)
+                                    .accessibilityLabel("Διαγραφή του ταξιδιού \(trip.brief.title)")
+                                }
+                                tripCard(trip, width: cardWidth, height: cardHeight, isActive: index == selectedCard)
+                                    .offset(y: index == selectedCard ? cardDrag : 0)
+                            }
                                 .frame(width: cardWidth, height: cardHeight)
                                 .id(index)
                                 .scrollTransition(.interactive, axis: .horizontal) { content, phase in
@@ -434,7 +596,11 @@ private struct TripFlowView: View {
                 .scrollTargetBehavior(.viewAligned)
                 .scrollPosition(id: $selectedScrollID, anchor: .center)
                 .onChange(of: selectedScrollID) { _, value in
-                    if let value { selectedCard = value }
+                    if let value {
+                        selectedCard = value
+                        cardDrag = 0
+                        gestureTripID = nil
+                    }
                 }
                 .safeAreaPadding(.horizontal, max(0, (size.width - cardWidth) / 2))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -442,22 +608,12 @@ private struct TripFlowView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .simultaneousGesture(swipeUpToBrief)
+        .simultaneousGesture(cardGesture)
     }
 
     @ViewBuilder
     private func tripCard(_ trip: Trip, width: CGFloat, height: CGFloat, isActive: Bool) -> some View {
-            Button {
-                if trips.contains(where: { $0.id == trip.id }) {
-                    activeTripID = trip.id
-                    brief = trip.brief
-                    if trip.research != nil { withAnimation { stage = .workspace }; return }
-                } else {
-                    createTrip(from: trip.brief)
-                }
-                openBrief()
-            } label: {
-                VStack(spacing: 0) {
+        VStack(spacing: 0) {
                     ZStack(alignment: .bottomLeading) {
                         TripCover(vibe: trip.brief.vibes.first ?? "Πόλη", destination: trip.brief.destination)
                             .frame(height: height * 0.73)
@@ -480,9 +636,7 @@ private struct TripFlowView: View {
                                 .foregroundStyle(AppPalette.ink)
                                 .lineLimit(1)
                             Spacer()
-                            Image(systemName: "ellipsis")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(AppPalette.secondaryInk)
+
                         }
                         Text(trip.brief.dateIsUnknown ? "\(trip.brief.duration) ημέρες · Ευέλικτες" : trip.brief.dateSummary)
                             .font(.custom("PlusJakartaSans-Regular", size: 11))
@@ -516,10 +670,37 @@ private struct TripFlowView: View {
                     .background(AppPalette.surface)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 25, style: .continuous))
+                .overlay(alignment: .topTrailing) {
+                    Menu {
+                        Button { editTrip(trip) } label: { Label("Επεξεργασία brief", systemImage: "pencil") }
+                        Button(role: .destructive) { deleteTrip(trip.id) } label: { Label("Διαγραφή ταξιδιού", systemImage: "trash") }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(Color.white)
+                            .frame(width: 44, height: 44)
+                            .background(.black.opacity(0.35), in: Circle())
+                            .contentShape(Circle())
+                    }
+                    .accessibilityLabel("Επιλογές για \(trip.brief.title)")
+                    .padding(12)
+                }
                 .shadow(color: AppPalette.ink.opacity(isActive ? 0.15 : 0.09), radius: isActive ? 22 : 14, y: 10)
+            .contentShape(RoundedRectangle(cornerRadius: 25))
+            .onTapGesture {
+                guard cardDrag == 0, briefReveal == 0, !isRevealingBrief else { return }
+                activeTripID = trip.id
+                brief = trip.brief
+                withAnimation { stage = trip.research == nil ? .brief : .workspace }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(trip.brief.title), \(trip.brief.duration) ημέρες, \(trip.brief.travelers) άτομα")
+            .accessibilityElement(children: .contain)
+            .accessibilityAction(named: "Άνοιγμα ταξιδιού") {
+                activeTripID = trip.id
+                brief = trip.brief
+                stage = trip.research == nil ? .brief : .workspace
+            }
+            .accessibilityAction(named: "Επεξεργασία brief") { editTrip(trip) }
+            .accessibilityAction(named: "Διαγραφή ταξιδιού") { deleteTrip(trip.id) }
     }
 
     private var pageIndicator: some View {
@@ -566,6 +747,8 @@ private struct TripFlowView: View {
                             TextField("Πόλη ή χώρα", text: $brief.destination)
                                 .font(.custom("PlusJakartaSans-Medium", size: 15))
                                 .textInputAutocapitalization(.words)
+                                .submitLabel(.done)
+                                .onSubmit { loadHolidays(for: brief.destination) }
                             if !brief.destination.isEmpty {
                                 Button { brief.destination = "" } label: { Image(systemName: "xmark").font(.caption).foregroundStyle(AppPalette.secondaryInk) }
                             }
@@ -573,18 +756,30 @@ private struct TripFlowView: View {
                         .padding(.horizontal, 15).frame(height: 52)
                         .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color(hex: "EADFD5"), lineWidth: 0.8))
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 7) {
-                                ForEach(["Ευρώπη", "Ασία", "Αμερική", "Οπουδήποτε"], id: \.self) { region in
-                                    Button { selectedRegion = region } label: { choicePill(region, selected: selectedRegion == region) }
-                                }
+                        if !brief.destination.isEmpty {
+                            HStack(spacing: 8) {
+                                if isLoadingHolidays { ProgressView().controlSize(.small).tint(AppPalette.brand) }
+                                else { Image(systemName: resolvedDestination.isEmpty ? "globe" : "checkmark.circle.fill").foregroundStyle(AppPalette.brand) }
+                                Text(resolvedDestination.isEmpty ? holidayStatus : resolvedDestination)
+                                    .font(.custom("PlusJakartaSans-Regular", size: 11))
+                                    .foregroundStyle(AppPalette.secondaryInk)
+                                Spacer()
+                                Button("Επιβεβαίωση") { loadHolidays(for: brief.destination) }
+                                    .font(.custom("PlusJakartaSans-SemiBold", size: 11))
+                                    .foregroundStyle(AppPalette.brand)
+                                    .frame(minHeight: 44)
+                            }
+                        }
+                        PillFlowLayout {
+                            ForEach(["Ευρώπη", "Ασία", "Αμερική", "Οπουδήποτε"], id: \.self) { region in
+                                Button { selectedRegion = region } label: { choicePill(region, selected: selectedRegion == region) }
                             }
                         }
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
                         sectionTitle("Πότε;")
-                        HStack(spacing: 8) {
+                        PillFlowLayout {
                             Button { brief.dateIsUnknown = false } label: { choicePill("Συγκεκριμένες", selected: !brief.dateIsUnknown) }
                             Button { brief.dateIsUnknown = true } label: { choicePill("Ευέλικτες", selected: brief.dateIsUnknown) }
                             Button { brief.dateIsUnknown = true; brief.startDate = ""; brief.endDate = ""; calendarRangeStart = nil; calendarRangeEnd = nil } label: { choicePill("Δεν ξέρω", selected: brief.dateIsUnknown && brief.startDate.isEmpty) }
@@ -724,11 +919,9 @@ private struct TripFlowView: View {
                         VStack(alignment: .leading, spacing: 16) {
                             VStack(alignment: .leading, spacing: 10) {
                                 sectionTitle("Ποιοι ταξιδεύουν;")
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 7) {
-                                        ForEach(["Μόνος/η", "Ζευγάρι", "Φίλοι", "Οικογένεια", "Δουλειά"], id: \.self) { group in
-                                            Button { brief.group = group } label: { choicePill(group, selected: brief.group == group) }
-                                        }
+                                PillFlowLayout {
+                                    ForEach(["Μόνος/η", "Ζευγάρι", "Φίλοι", "Οικογένεια", "Δουλειά"], id: \.self) { group in
+                                        Button { brief.group = group } label: { choicePill(group, selected: brief.group == group) }
                                     }
                                 }
                                 HStack {
@@ -752,11 +945,9 @@ private struct TripFlowView: View {
                             }
                             VStack(alignment: .leading, spacing: 10) {
                                 sectionTitle("Στυλ διαμονής")
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 7) {
-                                        ForEach(["Boutique / Hotel", "Apartment / Airbnb", "Hostal", "Value for Money"], id: \.self) { style in
-                                            Button { brief.stayStyle = style } label: { choicePill(style, selected: brief.stayStyle == style) }
-                                        }
+                                PillFlowLayout {
+                                    ForEach(["Boutique / Hotel", "Apartment / Airbnb", "Hostal", "Value for Money"], id: \.self) { style in
+                                        Button { brief.stayStyle = style } label: { choicePill(style, selected: brief.stayStyle == style) }
                                     }
                                 }
                             }
@@ -988,11 +1179,13 @@ private struct TripFlowView: View {
 
     private func choicePill(_ title: String, selected: Bool) -> some View {
         Text(title)
-            .font(.custom("PlusJakartaSans-SemiBold", size: 10))
+            .font(.custom("PlusJakartaSans-SemiBold", size: 12))
+            .fixedSize(horizontal: false, vertical: true)
+            .multilineTextAlignment(.center)
             .foregroundStyle(selected ? AppPalette.ink : AppPalette.secondaryInk)
-            .padding(.horizontal, 12).padding(.vertical, 9)
+            .padding(.horizontal, 14).padding(.vertical, 11)
             .background(selected ? Color(hex: "FFE0D2") : AppPalette.surface, in: Capsule())
-            .overlay(Capsule().stroke(selected ? AppPalette.accent : Color.clear, lineWidth: 1))
+            .overlay(Capsule().strokeBorder(selected ? AppPalette.accent : Color(hex: "EADFD5"), lineWidth: 1))
     }
 
     private func counter(value: Binding<Int>, range: ClosedRange<Int>, suffix: String) -> some View {
@@ -2292,7 +2485,7 @@ private struct TripFlowView: View {
     }
 
     private func chipGrid(options: [String], selection: Binding<Set<String>>) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], alignment: .leading, spacing: 8) {
+        PillFlowLayout {
             ForEach(options, id: \.self) { option in
                 let selected = selection.wrappedValue.contains(option)
                 Button {
@@ -2300,13 +2493,18 @@ private struct TripFlowView: View {
                     else { selection.wrappedValue.insert(option) }
                 } label: {
                     HStack(spacing: 6) {
-                        if selected { Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)) }
-                        Text(option).font(.caption.weight(.semibold)).lineLimit(1)
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .opacity(selected ? 1 : 0)
+                        Text(option)
+                            .font(.custom("PlusJakartaSans-SemiBold", size: 12))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.center)
                     }
                     .foregroundStyle(selected ? AppPalette.ink : AppPalette.secondaryInk)
                     .padding(.horizontal, 12).padding(.vertical, 10)
                     .background(selected ? Color(hex: "FFE0D2") : AppPalette.surface, in: Capsule())
-                    .overlay(Capsule().stroke(selected ? AppPalette.accent : Color(hex: "EADFD5"), lineWidth: selected ? 1 : 0.7))
+                    .overlay(Capsule().strokeBorder(selected ? AppPalette.accent : Color(hex: "EADFD5"), lineWidth: selected ? 1 : 0.7))
                 }
                 .buttonStyle(.plain)
             }
@@ -2352,17 +2550,44 @@ private struct TripFlowView: View {
         TripStorage.save(trips)
     }
 
-    private func openSelectedTrip() {
-        guard trips.indices.contains(selectedCard) else {
-            createTrip()
-            stage = .brief
-            return
+    private func editTrip(_ trip: Trip) {
+        activeTripID = trip.id
+        brief = trip.brief
+        cardDrag = 0
+        openBrief()
+    }
+
+    private func deleteTrip(_ id: UUID) {
+        guard trips.contains(where: { $0.id == id }) else { return }
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+            trips.removeAll { $0.id == id }
+            cardDrag = 0
+            briefReveal = 0
+            gestureTripID = nil
+            selectedCard = min(selectedCard, max(0, trips.count - 1))
+            selectedScrollID = trips.isEmpty ? nil : selectedCard
+            if activeTripID == id { activeTripID = nil; brief = TripBrief() }
         }
-        let selected = trips[selectedCard]
-        activeTripID = selected.id
-        brief = selected.brief
-        if selected.research != nil { stage = .workspace; return }
-        stage = .brief
+        TripStorage.save(trips)
+    }
+
+    private func finishBriefReveal() {
+        isRevealingBrief = true
+        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.5, dampingFraction: 0.9)) {
+            briefReveal = 1
+            cardDrag = 0
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(reduceMotion ? 150 : 500))
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                stage = .brief
+                briefReveal = 0
+                gestureTripID = nil
+                isRevealingBrief = false
+            }
+        }
     }
 
     private func openBrief() { withAnimation { stage = .brief } }
@@ -2479,8 +2704,9 @@ private struct TripFlowView: View {
         guard !isResearching else { return }
         isResearching = true
         liveResearchError = nil
+        recoverableResearch = nil
         liveResearchStep = 1
-        liveResearchStatusText = "Αναζήτηση επίσημων πηγών, ωραρίων και αργιών..."
+        researchOperations = [ResearchOperation(step: 1, detail: "Αναζήτηση επίσημων πηγών, ωραρίων και αργιών…")]
         showLiveResearchSheet = true
 
         let briefContext: [String: Any] = [
@@ -2503,7 +2729,32 @@ private struct TripFlowView: View {
 
         liveResearchTask = Task {
             do {
-                guard let url = URL(string: "\(bridgeBaseURL)/api/research") else { return }
+                // Check compatibility before starting either paid AI request.
+                guard let preflightURL = URL(string: "\(bridgeBaseURL)/api/status") else { throw URLError(.badURL) }
+                var preflight = URLRequest(url: preflightURL, cachePolicy: .reloadIgnoringLocalCacheData)
+                preflight.timeoutInterval = 60
+                let (statusData, preflightResponse) = try await URLSession.shared.data(for: preflight)
+                try Task.checkCancellation()
+                guard let http = preflightResponse as? HTTPURLResponse, http.statusCode == 200,
+                      let status = try JSONSerialization.jsonObject(with: statusData) as? [String: Any] else {
+                    throw URLError(.badServerResponse)
+                }
+                guard (status["api_version"] as? Int ?? 0) >= 2,
+                      status["result_schema"] as? String == "trippy-research-v1" else {
+                    await MainActor.run {
+                        if status["step"] as? String == "completed", let result = status["result"] as? [String: Any] {
+                            recoverableResearch = result
+                            recoveryContext = status["request_context"] as? [String: Any] ?? briefContext
+                            researchOperations = []
+                            liveResearchError = "Το Render τρέχει την παλιά έκδοση. Το τελευταίο αποτέλεσμα μπορεί να ανακτηθεί χωρίς νέα έρευνα. Χρειάζεται Deploy latest commit για νέες έρευνες."
+                        } else {
+                            liveResearchError = "Το Render τρέχει την παλιά έκδοση. Χρειάζεται Deploy latest commit πριν από νέα έρευνα. Δεν ξεκίνησε χρεώσιμη αναζήτηση."
+                        }
+                        isResearching = false
+                    }
+                    return
+                }
+                guard let url = URL(string: "\(bridgeBaseURL)/api/research") else { throw URLError(.badURL) }
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -2513,7 +2764,7 @@ private struct TripFlowView: View {
                 if let http = response as? HTTPURLResponse, http.statusCode != 202 && http.statusCode != 200 {
                     if http.statusCode == 409 {
                         await MainActor.run {
-                            liveResearchStatusText = "Υπάρχει ήδη έρευνα σε εξέλιξη. Παρακαλώ περιμένετε."
+                            liveResearchError = "Υπάρχει ήδη έρευνα σε εξέλιξη στην υπηρεσία. Περίμενε να ολοκληρωθεί και δοκίμασε ξανά."
                             isResearching = false
                         }
                     } else {
@@ -2527,9 +2778,13 @@ private struct TripFlowView: View {
 
                 while !Task.isCancelled {
                     try await Task.sleep(for: .seconds(1.5))
-                    guard let statusURL = URL(string: "\(bridgeBaseURL)/api/status") else { break }
-                    let (data, _) = try await URLSession.shared.data(from: statusURL)
-                    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                    guard let statusURL = URL(string: "\(bridgeBaseURL)/api/status") else { throw URLError(.badURL) }
+                    let (data, statusResponse) = try await URLSession.shared.data(from: statusURL)
+                    try Task.checkCancellation()
+                    guard let http = statusResponse as? HTTPURLResponse, http.statusCode == 200,
+                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        throw URLError(.badServerResponse)
+                    }
 
                     let isRunning = json["is_running"] as? Bool ?? false
                     let step = json["step"] as? String ?? ""
@@ -2538,23 +2793,14 @@ private struct TripFlowView: View {
                     let error = json["error"] as? String
 
                     await MainActor.run {
-                        liveResearchStatusText = msg
-                        if step == "searching_web" { liveResearchStep = 1 }
-                        else if step == "synthesizing_patch" { liveResearchStep = 2 }
+                        if step == "searching_web" { recordResearchOperation(1, detail: msg) }
+                        else if step == "synthesizing_patch" { recordResearchOperation(2, detail: msg) }
                         else if step == "completed" {
-                            liveResearchStep = 3
-                            if let result = result,
-                               let resultData = try? JSONSerialization.data(withJSONObject: result),
-                               let resultString = String(data: resultData, encoding: .utf8) {
-                                importText = resultString
-                                importError = nil
-                                importResearch()
-                                if let error = importError {
-                                    liveResearchError = error
-                                    importError = nil
-                                } else {
-                                    showLiveResearchSheet = false
-                                }
+                            recordResearchOperation(3, detail: msg)
+                            if let result {
+                                finishLiveResearch(result, context: briefContext)
+                            } else {
+                                liveResearchError = "Η υπηρεσία ολοκλήρωσε την έρευνα χωρίς έγκυρο αποτέλεσμα. Δοκίμασε ξανά."
                                 isResearching = false
                             }
                         } else if step == "error" {
@@ -2567,6 +2813,7 @@ private struct TripFlowView: View {
                     if step == "error" { break }
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     liveResearchError = "Η σύνδεση με το bridge στο \(bridgeBaseURL) απέτυχε. Έλεγξε το URL και ότι η υπηρεσία είναι διαθέσιμη. Αν χρησιμοποιείς IP του Mac, οι συσκευές πρέπει να είναι στο ίδιο Wi‑Fi."
                     isResearching = false
@@ -2582,108 +2829,198 @@ private struct TripFlowView: View {
         showLiveResearchSheet = false
     }
 
-    private var liveResearchSheet: some View {
-        NavigationStack {
-            VStack(spacing: 28) {
-                VStack(spacing: 12) {
-                    ZStack {
-                        Circle()
-                            .stroke(AppPalette.brand.opacity(0.15), lineWidth: 4)
-                            .frame(width: 80, height: 80)
-
-                        Circle()
-                            .trim(from: 0, to: CGFloat(liveResearchStep) / 3.0)
-                            .stroke(AppPalette.brand, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                            .frame(width: 80, height: 80)
-                            .rotationEffect(.degrees(-90))
-                            .animation(.spring(response: 0.6, dampingFraction: 0.8), value: liveResearchStep)
-
-                        Image(systemName: liveResearchStepIcon)
-                            .font(.system(size: 28, weight: .semibold))
-                            .foregroundStyle(AppPalette.brand)
-                    }
-                    .padding(.top, 20)
-
-                    Text(brief.destination.isEmpty ? "Έρευνα προορισμού" : "Έρευνα για \(brief.destination)")
-                        .font(.custom("PlusJakartaSans-ExtraBold", size: 21))
-                        .foregroundStyle(AppPalette.ink)
-
-                    Text(liveResearchStatusText)
-                        .font(.custom("PlusJakartaSans-Medium", size: 13))
-                        .foregroundStyle(AppPalette.secondaryInk)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                }
-
-                VStack(spacing: 16) {
-                    researchStepRow(
-                        stepIndex: 1,
-                        symbol: "globe.europe.africa",
-                        title: "Web Grounding & Αξιοθέατα",
-                        subtitle: "Ζωντανός έλεγχος επίσημων πηγών στο internet"
-                    )
-                    Divider().padding(.leading, 44)
-                    researchStepRow(
-                        stepIndex: 2,
-                        symbol: "calendar.badge.clock",
-                        title: "Ωράρια & Αργίες 2026",
-                        subtitle: "Επαλήθευση ημερομηνιών, κρατήσεων και εκδηλώσεων"
-                    )
-                    Divider().padding(.leading, 44)
-                    researchStepRow(
-                        stepIndex: 3,
-                        symbol: "slider.horizontal.3",
-                        title: "Σύνθεση Προγράμματος (Luna)",
-                        subtitle: "Δομημένο JSON patch v2 & υπολογισμός διαδρομών"
-                    )
-                }
-                .padding(20)
-                .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .padding(.horizontal, 20)
-
-                if let err = liveResearchError {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .foregroundStyle(.red)
-                        Text(err)
-                            .font(.custom("PlusJakartaSans-Medium", size: 12))
-                            .foregroundStyle(AppPalette.ink)
-                    }
-                    .padding(12)
-                    .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal, 20)
-                }
-
-                Spacer()
-
-                Button {
-                    cancelLiveResearch()
-                } label: {
-                    Text(liveResearchStep >= 3 ? "Ολοκλήρωση" : "Ακύρωση")
-                        .font(.custom("PlusJakartaSans-SemiBold", size: 14))
-                        .foregroundStyle(AppPalette.secondaryInk)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 48)
-                        .background(AppPalette.surface, in: Capsule())
-                }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 16)
+    // The old bridge returns a self-contained candidate pool in a patch envelope.
+    // Recover it only in the live pipeline; manual update patches still require a foundation.
+    private static func foundationFromLiveResult(_ result: [String: Any], context: [String: Any]) -> [String: Any] {
+        guard result["schema_version"] as? String == "trippy-research-patch-v2" else { return result }
+        var foundation: [String: Any] = [
+            "schema_version": "trippy-research-v1", "trip_context": context,
+            "overview": [:], "map_overview": [:], "calendar_checks": [], "date_checks": [],
+            "places": [], "events": [], "itinerary": ["days": []], "map_views": [],
+            "transport_options": [], "ticket_options": [], "costs": [:], "booking_tasks": [],
+            "sources": [], "warnings": [], "assumptions": []
+        ]
+        for section in ["set", "replace", "upsert"] {
+            for (key, value) in result[section] as? [String: Any] ?? [:] where key != "schema_version" {
+                foundation[key] = value
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(AppPalette.canvas.ignoresSafeArea())
-            .navigationBarTitleDisplayMode(.inline)
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        var tripContext = foundation["trip_context"] as? [String: Any] ?? context
+        if let destination = foundation["destination"] as? String { tripContext["destination"] = destination }
+        foundation["trip_context"] = tripContext
+        var warnings = result["warnings"] as? [[String: Any]] ?? []
+        warnings.append(["id": "legacy-bridge-recovery", "severity": "info", "message": "Ανακτήθηκε το υπάρχον αποτέλεσμα χωρίς νέα έρευνα. Περιλαμβάνει μόνο τα δεδομένα που επέστρεψε η υπηρεσία· δεν δημιουργήθηκε επιπλέον πρόγραμμα."])
+        foundation["warnings"] = warnings
+        return foundation
     }
 
-    private var liveResearchStepIcon: String {
-        switch liveResearchStep {
-        case 1: return "magnifyingglass"
-        case 2: return "calendar.badge.clock"
-        case 3: return "sparkles"
-        default: return "checkmark"
+    private func finishLiveResearch(_ result: [String: Any], context: [String: Any], recover: Bool = false) {
+        let document = recover ? Self.foundationFromLiveResult(result, context: context) : result
+        guard let data = try? JSONSerialization.data(withJSONObject: document),
+              let text = String(data: data, encoding: .utf8) else {
+            liveResearchError = "Το αποτέλεσμα δεν μπόρεσε να διαβαστεί."
+            isResearching = false
+            return
         }
+        if recover, let destination = (document["trip_context"] as? [String: Any])?["destination"] as? String {
+            brief.destination = destination
+        }
+        importText = text
+        importError = nil
+        importResearch()
+        isResearching = false
+        if let error = importError {
+            liveResearchError = error
+            importError = nil
+        } else {
+            recoverableResearch = nil
+            showLiveResearchSheet = false
+        }
+    }
+
+    private func recordResearchOperation(_ step: Int, detail: String) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.5, dampingFraction: 0.88)) {
+            liveResearchStep = step
+            if let index = researchOperations.firstIndex(where: { $0.step == step }) {
+                researchOperations[index].detail = detail
+            } else {
+                researchOperations.append(ResearchOperation(step: step, detail: detail))
+            }
+        }
+    }
+
+    private var liveResearchSheet: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 26) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Image(systemName: liveResearchError != nil ? "exclamationmark" : (researchOperations.last?.symbol ?? "globe.europe.africa"))
+                            .font(.system(size: 30, weight: .medium))
+                            .foregroundStyle(AppPalette.brand)
+                            .frame(width: 68, height: 68)
+                            .background(AppPalette.brand.opacity(0.1), in: RoundedRectangle(cornerRadius: 20))
+                            .contentTransition(.symbolEffect(.replace))
+                        Text(brief.destination.isEmpty ? "Έρευνα προορισμού" : "Έρευνα για \(brief.destination)")
+                            .font(.custom("PlusJakartaSans-ExtraBold", size: 25))
+                            .foregroundStyle(AppPalette.ink)
+                        Text(liveResearchError == nil ? "Το ταξίδι σου χτίζεται, βήμα βήμα." : "Η έρευνα χρειάζεται την προσοχή σου.")
+                            .font(.custom("PlusJakartaSans-Regular", size: 13))
+                            .foregroundStyle(AppPalette.secondaryInk)
+                    }
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(researchOperations) { operation in
+                            researchOperationRow(operation)
+                                .padding(.vertical, 16)
+                                .id(operation.id)
+                                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
+                            if operation.id != researchOperations.last?.id {
+                                Rectangle()
+                                    .fill(AppPalette.brand.opacity(0.15))
+                                    .frame(width: 2, height: 16)
+                                    .padding(.leading, 19)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                    .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 22))
+                    if let error = liveResearchError {
+                        Label(error, systemImage: "exclamationmark.circle.fill")
+                            .font(.custom("PlusJakartaSans-Medium", size: 12))
+                            .foregroundStyle(AppPalette.ink)
+                            .padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+                    }
+                    Color.clear.frame(height: 1).id("researchBottom")
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 32)
+                .padding(.bottom, 20)
+            }
+            .onChange(of: researchOperations.count) { _, _ in
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.4)) {
+                    proxy.scrollTo("researchBottom", anchor: .bottom)
+                }
+            }
+            .background(AppPalette.canvas.ignoresSafeArea())
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 12) {
+                    if let result = recoverableResearch {
+                        let destination = (result["set"] as? [String: Any])?["destination"] as? String ?? "τελευταίου ταξιδιού"
+                        Button { finishLiveResearch(result, context: recoveryContext, recover: true) } label: {
+                            Text("Ανάκτηση αποτελέσματος · \(destination)")
+                                .font(.custom("PlusJakartaSans-SemiBold", size: 14))
+                                .foregroundStyle(Color.white)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .background(AppPalette.brand, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 24)
+                    }
+                HStack(spacing: 12) {
+                    Button { cancelLiveResearch() } label: {
+                        Text(isResearching ? "Κλείσιμο" : "Έγινε")
+                            .font(.custom("PlusJakartaSans-SemiBold", size: 14))
+                            .foregroundStyle(AppPalette.ink)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .background(AppPalette.surface, in: Capsule())
+                    }
+                    if liveResearchError != nil && !isResearching {
+                        Button { startLiveResearch() } label: {
+                            Text("Δοκιμή ξανά")
+                                .font(.custom("PlusJakartaSans-SemiBold", size: 14))
+                                .foregroundStyle(Color.white)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 48)
+                                .background(AppPalette.brand, in: Capsule())
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 16)
+                .background(AppPalette.canvas)
+                }
+                .background(AppPalette.canvas)
+            }
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(isResearching)
+    }
+
+    private func researchOperationRow(_ operation: ResearchOperation) -> some View {
+        let current = operation.step == liveResearchStep
+        return HStack(alignment: .top, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(current ? AppPalette.brand : AppPalette.brand.opacity(0.1))
+                    .frame(width: 40, height: 40)
+                if current && isResearching {
+                    ProgressView().tint(Color.white)
+                } else {
+                    Image(systemName: current ? operation.symbol : "checkmark")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(current ? Color.white : AppPalette.brand)
+                }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(operation.title)
+                    .font(.custom("PlusJakartaSans-Bold", size: 15))
+                    .foregroundStyle(AppPalette.ink)
+                Text(operation.detail)
+                    .font(.custom("PlusJakartaSans-Regular", size: 12))
+                    .foregroundStyle(AppPalette.secondaryInk)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 3)
+            Spacer(minLength: 0)
+        }
+        .opacity(current ? 1 : 0.5)
+        .scaleEffect(current ? 1 : 0.97, anchor: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private var calendarNightCount: Int {
@@ -2702,111 +3039,198 @@ private struct TripFlowView: View {
     }
 
     private var calendarPickerSheet: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                HStack {
-                    Button {
-                        calendarDisplayedMonth = Calendar.current.date(byAdding: .month, value: -1, to: calendarDisplayedMonth) ?? calendarDisplayedMonth
-                    } label: {
-                        Image(systemName: "chevron.left").frame(width: 40, height: 40)
-                    }
-                    .buttonStyle(.plain)
-                    Spacer()
-                    Text(calendarDisplayedMonth, format: .dateTime.month(.wide).year())
-                        .font(.custom("PlusJakartaSans-Bold", size: 17))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Ημερομηνίες ταξιδιού")
+                        .font(.custom("PlusJakartaSans-ExtraBold", size: 25))
                         .foregroundStyle(AppPalette.ink)
-                    Spacer()
-                    Button {
-                        calendarDisplayedMonth = Calendar.current.date(byAdding: .month, value: 1, to: calendarDisplayedMonth) ?? calendarDisplayedMonth
-                    } label: {
-                        Image(systemName: "chevron.right").frame(width: 40, height: 40)
-                    }
-                    .buttonStyle(.plain)
+                    Text(resolvedDestination.isEmpty ? brief.title : resolvedDestination)
+                        .font(.custom("PlusJakartaSans-Regular", size: 12))
+                        .foregroundStyle(AppPalette.secondaryInk)
                 }
-
-                HStack(spacing: 0) {
-                    ForEach(Calendar.current.shortWeekdaySymbols, id: \.self) { weekday in
-                        Text(weekday.prefix(2))
-                            .font(.custom("PlusJakartaSans-SemiBold", size: 10))
-                            .foregroundStyle(AppPalette.secondaryInk)
-                            .frame(maxWidth: .infinity)
-                    }
+                HStack(spacing: 12) {
+                    calendarSelectionLabel("ΑΦΙΞΗ", components: calendarRangeStart, active: calendarRangeStart == nil)
+                    Image(systemName: "arrow.right").foregroundStyle(AppPalette.secondaryInk)
+                    calendarSelectionLabel("ΑΝΑΧΩΡΗΣΗ", components: calendarRangeEnd, active: calendarRangeStart != nil && calendarRangeEnd == nil)
                 }
+                .padding(15)
+                .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 18))
 
-                let days = daysForDisplayedMonth()
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 7), spacing: 7) {
-                    ForEach(days, id: \.self) { day in
-                        if let day {
-                            calendarDayButton(day)
-                        } else {
-                            Color.clear.frame(height: 44)
-                        }
+                VStack(spacing: 16) {
+                    HStack {
+                        calendarMonthArrow(-1)
+                        Spacer(minLength: 8)
+                        Text(calendarDisplayedMonth, format: .dateTime.month(.wide).year())
+                            .font(.custom("PlusJakartaSans-Bold", size: 18))
+                            .foregroundStyle(AppPalette.ink)
+                            .contentTransition(.numericText())
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                        Spacer(minLength: 8)
+                        calendarMonthArrow(1)
                     }
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(calendarRangeStart == nil ? "Διάλεξε ημερομηνία άφιξης" : (calendarRangeEnd == nil ? "Διάλεξε ημερομηνία αναχώρησης" : "Το range επιλέχθηκε"))
-                        .font(.custom("PlusJakartaSans-SemiBold", size: 12))
-                        .foregroundStyle(AppPalette.ink)
-                    ForEach(calendarHolidays.filter { holiday in
-                        guard let date = calendarDate(from: holiday.date) else { return false }
-                        return Calendar.current.isDate(date, equalTo: calendarDisplayedMonth, toGranularity: .month)
-                    }.prefix(4)) { holiday in
-                        HStack(spacing: 7) {
-                            Image(systemName: holiday.kind.symbol)
-                                .foregroundStyle(holiday.kind.color)
-                            Text("\(holiday.localName) · \(holiday.date.day ?? 0)/\(holiday.date.month ?? 0)")
-                                .font(.custom("PlusJakartaSans-Regular", size: 11))
+                    HStack(spacing: 0) {
+                        ForEach(Array(calendarWeekdayLabels.enumerated()), id: \.offset) { _, weekday in
+                            Text(weekday.prefix(2))
+                                .font(.custom("PlusJakartaSans-SemiBold", size: 11))
                                 .foregroundStyle(AppPalette.secondaryInk)
+                                .frame(maxWidth: .infinity)
                         }
                     }
-                    if calendarHolidays.isEmpty {
-                        Text("Δεν βρέθηκαν events για τον προορισμό. Οι ημέρες μπορούν να επιλεγούν κανονικά.")
-                            .font(.custom("PlusJakartaSans-Regular", size: 10))
-                            .foregroundStyle(AppPalette.secondaryInk)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 6) {
+                        ForEach(Array(daysForDisplayedMonth().enumerated()), id: \.offset) { _, day in
+                            if let day { calendarDayButton(day) }
+                            else { Color.clear.frame(height: 44) }
+                        }
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(13)
-                .background(Color(hex: "FFF8F4"), in: RoundedRectangle(cornerRadius: 14))
+                .padding(15)
+                .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 22))
 
-                Spacer()
-            }
-            .padding(20)
-            .background(AppPalette.canvas.ignoresSafeArea())
-            .navigationTitle("Ημερομηνίες")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Άκυρο") { showCalendarPicker = false }
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        if isLoadingHolidays { ProgressView().tint(AppPalette.brand).controlSize(.small) }
+                        else { Image(systemName: "calendar.badge.clock").foregroundStyle(AppPalette.brand) }
+                        Text(isLoadingHolidays ? "Φόρτωση αργιών…" : "Στο ημερολόγιο")
+                            .font(.custom("PlusJakartaSans-Bold", size: 13))
+                            .foregroundStyle(AppPalette.ink)
+                    }
+                    ForEach(holidaysForDisplayedMonth) { holiday in
+                        HStack(alignment: .top, spacing: 10) {
+                            Text("\(holiday.date.day ?? 0)")
+                                .font(.custom("PlusJakartaSans-Bold", size: 12))
+                                .foregroundStyle(holiday.kind.color)
+                                .frame(width: 30, height: 30)
+                                .background(holiday.kind.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(holiday.localName)
+                                    .font(.custom("PlusJakartaSans-SemiBold", size: 12))
+                                    .foregroundStyle(AppPalette.ink)
+                                Text(holiday.name)
+                                    .font(.custom("PlusJakartaSans-Regular", size: 10))
+                                    .foregroundStyle(AppPalette.secondaryInk)
+                            }
+                            Spacer()
+                            Image(systemName: holiday.kind.symbol).foregroundStyle(holiday.kind.color)
+                        }
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+                    if !isLoadingHolidays && holidaysForDisplayedMonth.isEmpty {
+                        Text(calendarHolidays.isEmpty ? holidayStatus : "Δεν καταγράφονται αργίες αυτόν τον μήνα.")
+                            .font(.custom("PlusJakartaSans-Regular", size: 12))
+                            .foregroundStyle(AppPalette.secondaryInk)
+                    }
+                    if !calendarHolidays.isEmpty {
+                        Link("Πηγή αργιών: Nager.Date", destination: URL(string: "https://date.nager.at")!)
+                            .font(.custom("PlusJakartaSans-SemiBold", size: 10))
+                            .foregroundStyle(AppPalette.brand)
+                    }
+                    Text("Οι αργίες δεν σημαίνουν αυτόματα κλείσιμο χώρων. Οι τοπικές εκδηλώσεις ελέγχονται στην έρευνα.")
+                        .font(.custom("PlusJakartaSans-Regular", size: 10))
+                        .foregroundStyle(AppPalette.secondaryInk)
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Εφαρμογή") {
-                        if let start = calendarDate(from: calendarRangeStart) {
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 18))
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 28)
+            .padding(.bottom, 20)
+        }
+        .background(AppPalette.canvas.ignoresSafeArea())
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 12) {
+                Text(calendarRangeStart == nil ? "Διάλεξε ημερομηνία άφιξης" : (calendarRangeEnd == nil ? "Τώρα διάλεξε αναχώρηση" : "\(calendarNightCount) διανυκτερεύσεις · \(calendarNightCount + 1) ημέρες"))
+                    .font(.custom("PlusJakartaSans-SemiBold", size: 12))
+                    .foregroundStyle(AppPalette.secondaryInk)
+                HStack(spacing: 12) {
+                    Button("Άκυρο") { showCalendarPicker = false }
+                        .font(.custom("PlusJakartaSans-SemiBold", size: 14))
+                        .foregroundStyle(AppPalette.ink)
+                        .frame(width: 90, height: 48)
+                        .background(AppPalette.surface, in: Capsule())
+                    Button {
+                        if let start = calendarDate(from: calendarRangeStart), let end = calendarDate(from: calendarRangeEnd) {
                             brief.startDate = isoDate(start)
-                            brief.endDate = isoDate(calendarDate(from: calendarRangeEnd) ?? start)
+                            brief.endDate = isoDate(end)
                             brief.dateIsUnknown = false
                             brief.duration = max(1, calendarNightCount + 1)
                         }
                         showCalendarPicker = false
+                    } label: {
+                        Text("Εφαρμογή ημερομηνιών")
+                            .font(.custom("PlusJakartaSans-SemiBold", size: 14))
+                            .foregroundStyle(Color.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .background(AppPalette.brand, in: Capsule())
                     }
-                    .disabled(calendarRangeStart == nil)
+                    .disabled(calendarRangeStart == nil || calendarRangeEnd == nil)
+                    .opacity(calendarRangeStart == nil || calendarRangeEnd == nil ? 0.45 : 1)
                 }
+                .buttonStyle(.plain)
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(AppPalette.canvas)
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .onAppear {
-            if calendarRangeStart == nil, let date = parseISODate(brief.startDate) {
-                calendarRangeStart = Calendar.current.dateComponents([.year, .month, .day], from: date)
-            }
-            if calendarRangeEnd == nil, let date = parseISODate(brief.endDate) {
-                calendarRangeEnd = Calendar.current.dateComponents([.year, .month, .day], from: date)
-            }
-            if !brief.destination.isEmpty && calendarHolidays.isEmpty {
-                loadHolidays(for: brief.destination)
+        .onAppear { loadHolidays(for: brief.destination) }
+    }
+
+    private func calendarSelectionLabel(_ title: String, components: DateComponents?, active: Bool) -> some View {
+        VStack(spacing: 8) {
+            Text(title)
+                .font(.custom("PlusJakartaSans-SemiBold", size: 9))
+                .tracking(1)
+                .foregroundStyle(active ? AppPalette.brand : AppPalette.secondaryInk)
+            if let date = calendarDate(from: components) {
+                Text(date, format: .dateTime.day().month(.abbreviated))
+                    .font(.custom("PlusJakartaSans-Bold", size: 16))
+                    .foregroundStyle(AppPalette.ink)
+            } else {
+                Text("Επίλεξε")
+                    .font(.custom("PlusJakartaSans-Bold", size: 16))
+                    .foregroundStyle(active ? AppPalette.brand : AppPalette.secondaryInk)
             }
         }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity, minHeight: 68)
+        .padding(.vertical, 10)
+        .background(active ? AppPalette.brand.opacity(0.06) : AppPalette.canvas, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(active ? AppPalette.brand.opacity(0.3) : AppPalette.secondaryInk.opacity(0.12), lineWidth: 1))
+    }
+
+    private func calendarMonthArrow(_ direction: Int) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                calendarDisplayedMonth = Calendar.current.date(byAdding: .month, value: direction, to: calendarDisplayedMonth) ?? calendarDisplayedMonth
+            }
+        } label: {
+            Image(systemName: direction < 0 ? "chevron.left" : "chevron.right")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(AppPalette.ink)
+                .frame(width: 44, height: 44)
+                .background(AppPalette.canvas, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(direction < 0 ? "Προηγούμενος μήνας" : "Επόμενος μήνας")
+    }
+
+    private var calendarWeekdayLabels: [String] {
+        let calendar = Calendar.current
+        let labels = calendar.shortWeekdaySymbols
+        let first = calendar.firstWeekday - 1
+        return Array(labels[first...] + labels[..<first])
+    }
+
+    private var holidaysForDisplayedMonth: [DestinationHoliday] {
+        calendarHolidays.filter { holiday in
+            guard let date = calendarDate(from: holiday.date) else { return false }
+            return Calendar.current.isDate(date, equalTo: calendarDisplayedMonth, toGranularity: .month)
+        }.sorted { ($0.date.day ?? 0) < ($1.date.day ?? 0) }
     }
 
     private func calendarDayButton(_ date: Date) -> some View {
@@ -2818,7 +3242,10 @@ private struct TripFlowView: View {
                   let end = calendarDate(from: calendarRangeEnd) else { return false }
             return date >= start && date <= end
         }()
-        let holiday = calendarHolidays.first { $0.date == components }
+        let holiday = calendarHolidays.first { holiday in
+            guard let holidayDate = calendarDate(from: holiday.date) else { return false }
+            return Calendar.current.isDate(date, inSameDayAs: holidayDate)
+        }
         return Button {
             if calendarRangeStart == nil || calendarRangeEnd != nil {
                 calendarRangeStart = components
@@ -2866,69 +3293,95 @@ private struct TripFlowView: View {
     }
 
     private func isoDate(_ date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withFullDate]
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
     }
 
     private func parseISODate(_ value: String) -> Date? {
-        guard !value.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withFullDate]
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
         return formatter.date(from: value)
     }
 
-    private func loadHolidays(for destination: String) {
-        isLoadingHolidays = true
-        let lowercased = destination.lowercased()
-        let year = Calendar.current.component(.year, from: calendarDisplayedMonth)
-        var holidays = [
-            DestinationHoliday(date: DateComponents(year: year, month: 1, day: 1), name: "New Year's Day", localName: "Πρωτοχρονιά", kind: .publicHoliday),
-            DestinationHoliday(date: DateComponents(year: year, month: 5, day: 1), name: "May Day", localName: "Πρωτομαγιά", kind: .publicHoliday),
-            DestinationHoliday(date: DateComponents(year: year, month: 12, day: 25), name: "Christmas Day", localName: "Χριστούγεννα", kind: .publicHoliday)
-        ]
-        if lowercased.contains("rome") || lowercased.contains("ρώμη") || lowercased.contains("ital") {
-            holidays.append(DestinationHoliday(date: DateComponents(year: year, month: 6, day: 29), name: "Feast of Saints Peter and Paul", localName: "Santi Pietro e Paolo", kind: .localCelebration))
-        } else if lowercased.contains("ath") || lowercased.contains("greece") || lowercased.contains("ελλά") {
-            holidays.append(DestinationHoliday(date: DateComponents(year: year, month: 3, day: 25), name: "Greek Independence Day", localName: "25η Μαρτίου", kind: .publicHoliday))
-        } else if lowercased.contains("tokyo") || lowercased.contains("japan") || lowercased.contains("ιαπων") {
-            holidays.append(DestinationHoliday(date: DateComponents(year: year, month: 5, day: 3), name: "Constitution Memorial Day", localName: "憲法記念日", kind: .publicHoliday))
+    private func loadHolidays(for destination: String, debounce: Bool = false) {
+        holidayTask?.cancel()
+        let query = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            calendarHolidays = []
+            isLoadingHolidays = false
+            holidayStatus = "Επίλεξε προορισμό για να φορτωθούν οι αργίες."
+            return
         }
-        calendarHolidays = holidays
-        isLoadingHolidays = false
-    }
-
-    private func researchStepRow(stepIndex: Int, symbol: String, title: String, subtitle: String) -> some View {
-        HStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(stepIndex < liveResearchStep ? AppPalette.brand.opacity(0.12) : (stepIndex == liveResearchStep ? AppPalette.brand : AppPalette.canvas))
-                    .frame(width: 32, height: 32)
-
-                if stepIndex < liveResearchStep {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(AppPalette.brand)
-                } else if stepIndex == liveResearchStep {
-                    ProgressView()
-                        .tint(.white)
-                        .scaleEffect(0.7)
+        let year = Calendar.current.component(.year, from: calendarDisplayedMonth)
+        isLoadingHolidays = true
+        holidayStatus = "Αναζήτηση προορισμού και αργιών…"
+        holidayTask = Task { @MainActor in
+            do {
+                if debounce { try await Task.sleep(for: .milliseconds(900)) }
+                try Task.checkCancellation()
+                let location: HolidayLocation
+                if let cachedLocation = resolvedHolidayLocation, cachedLocation.query == query {
+                    location = cachedLocation
                 } else {
-                    Image(systemName: symbol)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(AppPalette.secondaryInk.opacity(0.6))
+                    let placemarks = try await CLGeocoder().geocodeAddressString(query)
+                    try Task.checkCancellation()
+                    guard let placemark = placemarks.first, let country = placemark.isoCountryCode else {
+                        holidayStatus = "Δεν αναγνωρίστηκε ο προορισμός. Δοκίμασε πόλη και χώρα."
+                        isLoadingHolidays = false
+                        return
+                    }
+                    let region = placemark.administrativeArea?.uppercased()
+                    location = HolidayLocation(query: query, countryCode: country, regionCode: region.map { "\(country)-\($0)" },
+                                               displayName: [placemark.locality, placemark.country].compactMap { $0 }.joined(separator: ", "))
+                    resolvedHolidayLocation = location
                 }
+                resolvedDestination = location.displayName
+                let cacheKey = "\(location.countryCode)|\(location.regionCode ?? "")|\(year)"
+                if let cached = holidayCache[cacheKey] {
+                    calendarHolidays = cached
+                    holidayStatus = cached.isEmpty ? "Δεν βρέθηκαν αργίες για αυτόν τον προορισμό." : "Οι αργίες είναι έτοιμες."
+                    isLoadingHolidays = false
+                    return
+                }
+                guard let url = URL(string: "https://date.nager.at/api/v3/PublicHolidays/\(year)/\(location.countryCode)") else { return }
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 20
+                let (data, response) = try await URLSession.shared.data(for: request)
+                try Task.checkCancellation()
+                guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+                if http.statusCode == 204 || http.statusCode == 404 {
+                    holidayCache[cacheKey] = []
+                    calendarHolidays = []
+                    holidayStatus = "Δεν υπάρχουν δεδομένα αργιών για αυτή τη χώρα. Μπορείς να επιλέξεις ημερομηνίες κανονικά."
+                    isLoadingHolidays = false
+                    return
+                }
+                guard http.statusCode == 200 else { throw URLError(.badServerResponse) }
+                let entries = try JSONDecoder().decode([PublicHolidayResponse].self, from: data)
+                let holidays = entries.filter { entry in
+                    entry.types.contains("Public") && (entry.global || location.regionCode.map { entry.counties?.contains($0) == true } == true)
+                }.compactMap { entry -> DestinationHoliday? in
+                    guard let date = parseISODate(entry.date) else { return nil }
+                    return DestinationHoliday(date: Calendar.current.dateComponents([.year, .month, .day], from: date),
+                                              name: entry.name, localName: entry.localName,
+                                              kind: entry.global ? .publicHoliday : .localCelebration)
+                }
+                holidayCache[cacheKey] = holidays
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.4)) { calendarHolidays = holidays }
+                holidayStatus = holidays.isEmpty ? "Δεν βρέθηκαν αργίες για αυτόν τον προορισμό." : "Οι αργίες είναι έτοιμες."
+                isLoadingHolidays = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                calendarHolidays = []
+                isLoadingHolidays = false
+                holidayStatus = "Οι αργίες δεν είναι διαθέσιμες αυτή τη στιγμή. Μπορείς να επιλέξεις ημερομηνίες κανονικά."
             }
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.custom("PlusJakartaSans-Bold", size: 13))
-                    .foregroundStyle(stepIndex <= liveResearchStep ? AppPalette.ink : AppPalette.secondaryInk.opacity(0.6))
-                Text(subtitle)
-                    .font(.custom("PlusJakartaSans-Regular", size: 11))
-                    .foregroundStyle(AppPalette.secondaryInk)
-            }
-            Spacer()
         }
     }
 

@@ -19,3 +19,6 @@ DerivedData/
 # Local conversation and generated research artifacts
 chat.md
 latest_research_patch.json
+
+# Locally recovered research; never publish trip results
+/recovered-research/
