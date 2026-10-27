@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: trippy-research
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bridge_server.py
+    healthCheckPath: /api/status
+    envVars:
+      - key: AZURE_OPENAI_API_KEY
+        sync: false
+      - key: AZURE_AGENT_ENDPOINT
+        sync: false
+      - key: AZURE_AGENT_NAME
+        sync: false
+      - key: AZURE_OPENAI_ENDPOINT
+        sync: false
+      - key: AZURE_OPENAI_API_VERSION
+        sync: false
+      - key: AZURE_DEPLOYMENT_LUNA
+        sync: false
+      - key: AZURE_DEPLOYMENT_SOL
+        sync: false
+      - key: TRIPPY_BRIDGE_TOKEN
+        sync: false
