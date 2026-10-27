@@ -332,26 +332,28 @@ private struct TripFlowView: View {
     var body: some View {
         ZStack {
             AppPalette.canvas.ignoresSafeArea()
-            switch stage {
-            case .library:
-                GeometryReader { geometry in
-                    ZStack {
-                        if briefReveal > 0 {
-                            briefScreen
-                                .offset(y: geometry.size.height * (1 - briefReveal))
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
-                        }
-                        library
-                            .offset(y: -geometry.size.height * briefReveal)
-                    }
-                    .clipped()
+            GeometryReader { geometry in
+                let reveal = stage == .library ? briefReveal : 1
+                // Keep both screens mounted throughout the drag and its completion.
+                // Changing stage must not replace the brief with a second view instance.
+                ZStack {
+                    library
+                        .offset(y: -geometry.size.height * reveal)
+                        .allowsHitTesting(stage == .library && !isRevealingBrief)
+                        .accessibilityHidden(stage != .library)
+                    briefScreen
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .background(AppPalette.canvas)
+                        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 26 * (1 - reveal), topTrailingRadius: 26 * (1 - reveal)))
+                        .offset(y: geometry.size.height * (1 - reveal))
+                        .allowsHitTesting(stage == .brief)
+                        .accessibilityHidden(stage != .brief)
                 }
-                .transition(.opacity)
-            case .brief:
-                briefScreen
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            case .workspace:
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .clipped()
+                .opacity(stage == .workspace ? 0 : 1)
+            }
+            if stage == .workspace {
                 workspace
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -500,11 +502,11 @@ private struct TripFlowView: View {
     private func carousel(size: CGSize) -> some View {
         let cardWidth = min(size.width * 0.76, 330)
         let cardHeight = min(size.height * 0.72, cardWidth * 1.34)
-        let cardGesture = DragGesture(minimumDistance: 14)
+        // Global coordinates do not change when the carousel moves under the finger.
+        let cardGesture = DragGesture(minimumDistance: 14, coordinateSpace: .global)
             .onChanged { value in
-                guard !isRevealingBrief,
-                      abs(value.translation.height) > abs(value.translation.width) * 1.25,
-                      !trips.isEmpty else { return }
+                guard stage == .library, !isRevealingBrief, !trips.isEmpty,
+                      gestureTripID != nil || abs(value.translation.height) > abs(value.translation.width) * 1.25 else { return }
                 if gestureTripID == nil, trips.indices.contains(selectedCard) {
                     let trip = trips[selectedCard]
                     gestureTripID = trip.id
@@ -512,12 +514,16 @@ private struct TripFlowView: View {
                     brief = trip.brief
                 }
                 let vertical = value.translation.height
-                if vertical < 0 {
-                    cardDrag = 0
-                    briefReveal = min(0.94, -vertical / max(size.height, 1))
-                } else {
-                    briefReveal = 0
-                    cardDrag = min(160, vertical * 0.8)
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    if vertical < 0 {
+                        cardDrag = 0
+                        briefReveal = min(1, -vertical / max(size.height, 1))
+                    } else {
+                        briefReveal = 0
+                        cardDrag = min(160, vertical * 0.8)
+                    }
                 }
             }
             .onEnded { value in
@@ -527,7 +533,7 @@ private struct TripFlowView: View {
                 if upward > size.height * 0.22 || (upward > 65 && predicted > size.height * 0.45) {
                     finishBriefReveal()
                 } else {
-                    withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
+                    withAnimation(.smooth(duration: 0.38, extraBounce: 0)) {
                         briefReveal = 0
                         cardDrag = value.translation.height > 65 ? 100 : 0
                     }
@@ -2573,15 +2579,15 @@ private struct TripFlowView: View {
 
     private func finishBriefReveal() {
         isRevealingBrief = true
-        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.5, dampingFraction: 0.9)) {
+        let animation: Animation = reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.42, extraBounce: 0)
+        withAnimation(animation, completionCriteria: .removed) {
             briefReveal = 1
             cardDrag = 0
-        }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(reduceMotion ? 150 : 500))
-            var transaction = Transaction()
+        } completion: {
+            var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             withTransaction(transaction) {
+                // The same brief is already in its final position; only enable interaction.
                 stage = .brief
                 briefReveal = 0
                 gestureTripID = nil
