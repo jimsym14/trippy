@@ -1,9 +1,10 @@
+import argparse
 import os
 import sys
 import json
 import time
 from pathlib import Path
-from openai import OpenAI, AzureOpenAI
+from research_pipeline import build_scout_prompt, build_synthesis_prompt, prepare_result
 
 def load_env():
     env_file = Path(__file__).parent / ".env"
@@ -19,6 +20,7 @@ def load_env():
                 os.environ[k.strip()] = v.strip().strip("'\"")
 
 def get_clients():
+    from openai import OpenAI, AzureOpenAI
     load_env()
     api_key = os.environ.get("AZURE_OPENAI_API_KEY")
     agent_endpoint = os.environ.get("AZURE_AGENT_ENDPOINT")
@@ -63,26 +65,9 @@ def run_agent_research(agent_client, user_prompt):
     return response.output_text
 
 def run_model_synthesis(model_client, deployment_luna, research_data, brief_context):
-    print(f"\n🧠 [2/3] Σύνθεση JSON Patch μέσω μοντέλου Luna ({deployment_luna})...")
+    print(f"\n🧠 [2/3] Σύνθεση πλήρους research JSON μέσω μοντέλου Luna ({deployment_luna})...")
     
-    system_prompt = """
-    Είσαι το Data Synthesis Engine του Trippy.
-    Μετατρέπεις τα ερευνητικά δεδομένα σε αυστηρό JSON patch (schema_version: 'trippy-research-patch-v2').
-    Επέστρεψε ΑΠΟΚΛΕΙΣΤΙΚΑ έγκυρο JSON αντικείμενο με δομή:
-    {
-      "schema_version": "trippy-research-patch-v2",
-      "set": {},
-      "replace": {},
-      "upsert": {
-        "places": [],
-        "events": [],
-        "sources": [],
-        "booking_tasks": []
-      },
-      "warnings": []
-    }
-    Μην βάλεις markdown backticks (```json). Μόνο το καθαρό JSON string.
-    """
+    system_prompt = build_synthesis_prompt()
 
     user_content = f"""
     TRIP BRIEF CONTEXT:
@@ -101,51 +86,38 @@ def run_model_synthesis(model_client, deployment_luna, research_data, brief_cont
         response_format={"type": "json_object"}
     )
 
-    patch_json_str = response.choices[0].message.content
-    print("✅ Η σύνθεση του JSON Patch ολοκληρώθηκε επιτυχώς!")
-    return patch_json_str
+    result = prepare_result(json.loads(response.choices[0].message.content), brief_context)
+    print(f"✅ Σύνθεση πλήρους JSON. Κάλυψη: {result['quality_report']['status']}")
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 def main():
+    parser = argparse.ArgumentParser(description="Plan a complete Trippy research run; paid calls require --execute.")
+    parser.add_argument("--brief", required=True, type=Path, help="JSON trip brief")
+    parser.add_argument("--output-dir", type=Path, default=Path("/tmp/trippy-research-plan"))
+    parser.add_argument("--execute", action="store_true", help="Run the web agent and synthesis model (billable)")
+    args = parser.parse_args()
+    sample_brief = json.loads(args.brief.read_text())
+    research_prompt = build_scout_prompt(sample_brief)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    (args.output_dir / "scout-prompt.txt").write_text(research_prompt)
+    (args.output_dir / "synthesis-prompt.txt").write_text(build_synthesis_prompt())
+    if not args.execute:
+        print(f"Plan written to {args.output_dir}. No API calls. Add --execute to run paid research.")
+        return
     agent_client, model_client = get_clients()
     deployment_luna = os.environ.get("AZURE_DEPLOYMENT_LUNA", "gpt-6-luna")
-
-    print("==================================================================")
-    print("🚀 TRIPPY AI PIPELINE: 1 Agent (Web Search) + 1 Model (Luna Patch)")
-    print("==================================================================")
-
-    # Δοκιμαστικό Brief για ένα ταξίδι στη Ρώμη
-    sample_brief = {
-        "destination": "Ρώμη",
-        "date_range": {
-            "arrival": "2026-09-10",
-            "departure": "2026-09-14",
-            "duration_days": 4
-        },
-        "travelers": {"count": 2, "group": "couple"},
-        "vibes": ["culture", "food"],
-        "pace": "moderate"
-    }
-
-    research_prompt = f"""
-    Κάνε λεπτομερή έρευνα για ταξίδι στη {sample_brief['destination']} από {sample_brief['date_range']['arrival']} έως {sample_brief['date_range']['departure']}.
-    1. Βρες 4 κορυφαία αξιοθέατα με ακριβή ωράρια και τιμές εισιτηρίων για το 2026.
-    2. Έλεγξε αν υπάρχουν τοπικές αργίες ή ειδικά κλεισίματα σε αυτές τις ημερομηνίες.
-    3. Βρες 3 αυθεντικές τρατορίες/εστιατόρια για φαγητό.
-    4. Παράθεσε επίσημες πηγές και URLs για κάθε πληροφορία.
-    """
-
     # Βήμα 1: Web Research με τον Agent
     research_results = run_agent_research(agent_client, research_prompt)
 
-    # Βήμα 2: Σύνθεση σε strict JSON Patch με το Model Luna
+    # Βήμα 2: Σύνθεση σε πλήρες research JSON με το Model Luna
     patch_result = run_model_synthesis(model_client, deployment_luna, research_results, sample_brief)
 
     # Βήμα 3: Αποθήκευση
-    output_path = Path(__file__).parent / "latest_research_patch.json"
+    output_path = args.output_dir / "trippy-research.json"
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(patch_result)
 
-    print(f"\n🎉 [3/3] Επιτυχία! Το τελικό patch αποθηκεύτηκε στο: {output_path}")
+    print(f"\n🎉 [3/3] Επιτυχία! Το τελικό JSON αποθηκεύτηκε στο: {output_path}")
     print("Μπορείς τώρα να το εισαγάγεις απευθείας στο Trippy!")
 
 if __name__ == "__main__":

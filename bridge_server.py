@@ -6,6 +6,7 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from openai import OpenAI, AzureOpenAI
+from research_pipeline import build_scout_prompt, build_synthesis_prompt, prepare_result
 
 def load_env():
     env_file = Path(__file__).parent / ".env"
@@ -62,18 +63,7 @@ def run_pipeline(brief_data):
             default_query={"api-version": "v1"}
         )
 
-        destination = brief_data.get("destination", "Ρώμη")
-        dates = brief_data.get("date_range", {})
-        arrival = dates.get("arrival", "2026-09-10")
-        departure = dates.get("departure", "2026-09-14")
-
-        prompt = f"""
-        Κάνε λεπτομερή έρευνα για ταξίδι στη {destination} από {arrival} έως {departure}.
-        1. Βρες 4 κορυφαία αξιοθέατα με ακριβή ωράρια και τιμές εισιτηρίων για το 2026.
-        2. Έλεγξε αν υπάρχουν τοπικές αργίες ή ειδικά κλεισίματα σε αυτές τις ημερομηνίες.
-        3. Βρες 3 αυθεντικές επιλογές για φαγητό.
-        4. Παράθεσε επίσημες πηγές και URLs για κάθε πληροφορία.
-        """
+        prompt = build_scout_prompt(brief_data)
 
         conversation = agent_client.conversations.create()
         response = agent_client.responses.create(
@@ -94,19 +84,7 @@ def run_pipeline(brief_data):
             api_version=api_version,
         )
 
-        system_prompt = """
-        Είσαι το Data Synthesis Engine του Trippy.
-        Αυτή είναι πλήρης έρευνα ταξιδιού, όχι ενημέρωση υπάρχοντος foundation.
-        Μετατρέπεις τα ερευνητικά δεδομένα σε πλήρες trippy-research-v1 JSON.
-        Επέστρεψε ΑΠΟΚΛΕΙΣΤΙΚΑ έγκυρο JSON αντικείμενο με αυτή τη δομή:
-        {"schema_version":"trippy-research-v1","trip_context":{},"overview":{"summary":"","seasonal_notes":[],"recommended_highlights":[{"place_id":"","reason":"","source_ids":[]}]},"map_overview":{"title":"","subtitle":"","trip_sentence":""},"calendar_checks":[{"id":"","date":"YYYY-MM-DD","day":"","status":"","details":"","source_ids":[]}],"date_checks":[{"id":"place-id|YYYY-MM-DD","entity_id":"","entity_type":"place|event|transport","local_date":"YYYY-MM-DD","status":"confirmed|closed|candidate|not_found|not_checked","opening_status":null,"holiday_or_event":null,"ticket_status":null,"reservation_status":null,"details":"","source_ids":[],"checked_at":"YYYY-MM-DD"}],"places":[{"id":"","category":"","name":"","description":"","why_recommended":"","best_for":[],"cuisine":null,"dietary_options":[],"popularity":null,"average_visit_minutes":null,"best_time":null,"reservation_required":null,"address":null,"coordinates":{"latitude":null,"longitude":null,"status":""},"price":{"min":null,"max":null,"currency":null,"basis":""},"rating":{"value":null,"platform":null,"review_count":null},"tags":[],"image_url":null,"image_source_url":null,"image_attribution":null,"official_url":null,"source_ids":[],"checked_at":"YYYY-MM-DD","status_on_travel_dates":""}],"events":[{"id":"","name":"","category":"","date_start":null,"date_end":null,"venue":null,"description":"","price":{"min":null,"max":null,"currency":null},"official_url":null,"source_ids":[],"checked_at":"YYYY-MM-DD","confidence":""}],"itinerary":{"days":[{"date":"YYYY-MM-DD","day":1,"theme":"","map_view_id":null,"stops":[{"time":null,"place_id":null,"activity":"","travel_time_minutes":null,"estimated_cost_per_person_eur":null,"source_ids":[]}],"alternative":"","flex_time":"","estimated_day_cost_per_person_eur":{"min":null,"max":null}}]},"map_views":[{"id":"","title":"","date":null,"place_ids":[],"map_url":null,"note":""}],"transport_options":[{"id":"","name":"","best_for":"","price":{"min":null,"max":null,"currency":null,"basis":""},"group_cost_estimate_eur":{"min":null,"max":null},"limitations":[],"official_url":null,"source_ids":[],"checked_at":"YYYY-MM-DD"}],"ticket_options":[{"id":"","name":"","price_per_person_eur":null,"group_price_eur":null,"booking_url":null,"notes":"","source_ids":[]}],"costs":{"currency":"EUR","methodology":"","per_person_estimate":{"min":null,"max":null,"includes":[],"excludes":[]},"group_estimate":{"min":null,"max":null,"currency":"EUR","includes":[],"excludes":[]},"lodging_estimate":{"per_room_per_night_eur":null,"group_total_eur":null,"note":""},"transport_and_attractions_subtotal":{"per_person_eur":null,"group_eur":null,"basis":""},"food_estimate":{"per_person_per_day_eur":null,"group_total_eur":null,"basis":""}},"booking_tasks":[{"id":"","destination":"","local_date":null,"type":"booking|ticket|transport|document|check|reminder","urgency_score":1,"urgency_reason":"","urgency_basis":"official_deadline|verified_limited_availability|date_specific_requirement|planning_recommendation|optional","urgency_confidence":"high|medium|low","due_date":null,"task":"","place_id":null,"event_id":null,"url":null,"source_ids":[],"status":""}],"sources":[{"id":"S01","url":"","publisher":"","type":"","checked_at":"YYYY-MM-DD","supports":[]}],"warnings":[{"id":"W01","severity":"","message":""}],"assumptions":[]}
-        Χρησιμοποίησε το brief για το trip_context και όλους τους περιορισμούς/προτιμήσεις.
-        Συμπλήρωσε τις λίστες μόνο με στοιχεία που υποστηρίζονται από την έρευνα.
-        Άγνωστα πεδία: null. Λίστες χωρίς αποτελέσματα: []. Μην παραλείψεις top-level keys.
-        Κάθε place_id και source_ids να αναφέρεται σε υπάρχουσα εγγραφή με σταθερό id.
-        Μην επινοείς τιμές, ώρες, διαθεσιμότητα, συντεταγμένες ή πηγές.
-        Μην επιστρέψεις patch, set, replace ή upsert. Μην βάλεις markdown code blocks.
-        """
+        system_prompt = build_synthesis_prompt()
 
         user_content = f"TRIP BRIEF CONTEXT:\n{json.dumps(brief_data, ensure_ascii=False)}\n\nRAW RESEARCH DATA:\n{research_text}"
 
@@ -120,9 +98,8 @@ def run_pipeline(brief_data):
         )
 
         patch_json_str = chat_resp.choices[0].message.content
-        parsed = json.loads(patch_json_str)
-        if not isinstance(parsed, dict) or parsed.get("schema_version") != "trippy-research-v1":
-            raise ValueError("Expected a complete trippy-research-v1 research document, not a patch")
+        parsed = prepare_result(json.loads(patch_json_str), brief_data)
+        patch_json_str = json.dumps(parsed, ensure_ascii=False, indent=2)
 
         # Save copy locally
         with open(Path(__file__).parent / "latest_research_patch.json", "w", encoding="utf-8") as f:
@@ -131,7 +108,9 @@ def run_pipeline(brief_data):
         with state.lock:
             state.current_step = "completed"
             state.step_index = 3
-            state.step_message = "Η έρευνα ολοκληρώθηκε επιτυχώς"
+            state.step_message = ("Η έρευνα αποθηκεύτηκε με κενά που εμφανίζονται στο dashboard."
+                                  if parsed["quality_report"]["status"] == "partial"
+                                  else "Η έρευνα ολοκληρώθηκε και πέρασε τον έλεγχο κάλυψης.")
             state.latest_result = parsed
 
     except Exception as e:
@@ -165,6 +144,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 data = {
                     "api_version": 2,
                     "result_schema": "trippy-research-v1",
+                    "research_contract_version": 3,
                     "build_commit": os.environ.get("RENDER_GIT_COMMIT", "local"),
                     "request_context": state.brief_context,
                     "is_running": state.is_running,

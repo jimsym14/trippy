@@ -1023,7 +1023,7 @@ private struct TripFlowView: View {
                     .frame(height: 54)
                     .background(isResearching ? AppPalette.secondaryInk : AppPalette.brand, in: Capsule())
                 }
-                .disabled(isResearching)
+                .disabled(isResearching || brief.destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityLabel("Έναρξη ζωντανής έρευνας με τεχνητή νοημοσύνη")
 
                 Button {
@@ -1544,6 +1544,24 @@ private struct TripFlowView: View {
                 .padding(15)
             }
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+
+            if let quality = researchRoot["quality_report"] as? [String: Any],
+               quality["status"] as? String == "partial" {
+                DisclosureGroup {
+                    ForEach(Array((quality["gaps"] as? [String] ?? []).enumerated()), id: \.offset) { _, gap in
+                        Text(gap)
+                            .font(.custom("PlusJakartaSans-Regular", size: 11))
+                            .foregroundStyle(AppPalette.secondaryInk)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } label: {
+                    Label("Η έρευνα έχει ελλείψεις", systemImage: "exclamationmark.circle")
+                        .font(.custom("PlusJakartaSans-SemiBold", size: 13))
+                        .foregroundStyle(AppPalette.ink)
+                }
+                .padding(14)
+                .background(AppPalette.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+            }
 
             switch tab {
             case "Χάρτης":
@@ -2709,7 +2727,7 @@ private struct TripFlowView: View {
     }
 
     private func startLiveResearch() {
-        guard !isResearching else { return }
+        guard !isResearching, !brief.destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         researchDismissTask?.cancel()
         researchPanelDetent = .medium
         isResearching = true
@@ -2720,12 +2738,13 @@ private struct TripFlowView: View {
         showLiveResearchSheet = true
 
         let briefContext: [String: Any] = [
-            "destination": brief.destination.isEmpty ? "Ρώμη" : brief.destination,
+            "destination": brief.destination,
             "date_range": [
-                "arrival": brief.startDate.isEmpty ? "2026-09-10" : brief.startDate,
-                "departure": brief.endDate.isEmpty ? "2026-09-14" : brief.endDate,
+                "arrival": brief.startDate.isEmpty ? NSNull() : brief.startDate as Any,
+                "departure": brief.endDate.isEmpty ? NSNull() : brief.endDate as Any,
+                "dates_unknown": brief.dateIsUnknown,
                 "duration_days": brief.duration
-            ],
+            ] as [String: Any],
             "travelers": ["count": brief.travelers, "group": brief.group],
             "vibes": brief.vibes.sorted(),
             "interests": brief.interests.sorted(),

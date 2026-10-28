@@ -1,5 +1,7 @@
 # Trip planning app — product and development plan
 
+> Η ενεργή κατεύθυνση ενημερώθηκε στις 28/10/2026: [κοινή βάση προορισμών, private admin και έρευνα ανά ταξίδι](DESTINATION_DATABASE_REDESIGN.md). Οι περιορισμοί manual-only του παρόντος αρχικού πλάνου έχουν αντικατασταθεί από αυτή την κατεύθυνση.
+
 **Status:** first product specification / implementation baseline  
 **Working name:** trippy (temporary prototype wordmark; naming is an open product decision)  
 **Language:** Greek-first prototype, with localization designed in from the beginning.
