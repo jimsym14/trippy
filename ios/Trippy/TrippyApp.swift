@@ -200,8 +200,8 @@ private struct ResearchOperation: Identifiable {
     var symbol: String {
         switch step {
         case 1: "globe.europe.africa"
-        case 2: "sparkles"
-        default: "checkmark"
+        case 2: "list.bullet.rectangle"
+        default: "tray.and.arrow.down"
         }
     }
 }
@@ -292,6 +292,8 @@ private struct TripFlowView: View {
     @State private var selectedResearchLayer: ResearchLayer = .foundation
     @State private var isResearching = false
     @State private var showLiveResearchSheet = false
+    @State private var researchPanelDetent: PresentationDetent = .medium
+    @State private var researchDismissTask: Task<Void, Never>?
     @State private var liveResearchStep = 1
     @State private var liveResearchError: String? = nil
     @State private var liveResearchTask: Task<Void, Never>? = nil
@@ -2708,6 +2710,8 @@ private struct TripFlowView: View {
 
     private func startLiveResearch() {
         guard !isResearching else { return }
+        researchDismissTask?.cancel()
+        researchPanelDetent = .medium
         isResearching = true
         liveResearchError = nil
         recoverableResearch = nil
@@ -2829,6 +2833,7 @@ private struct TripFlowView: View {
     }
 
     private func cancelLiveResearch() {
+        researchDismissTask?.cancel()
         liveResearchTask?.cancel()
         liveResearchTask = nil
         isResearching = false
@@ -2880,12 +2885,19 @@ private struct TripFlowView: View {
             importError = nil
         } else {
             recoverableResearch = nil
-            showLiveResearchSheet = false
+            liveResearchError = nil
+            if recover { recordResearchOperation(3, detail: "Το αποτέλεσμα ανακτήθηκε και αποθηκεύτηκε.") }
+            researchDismissTask?.cancel()
+            researchDismissTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(850))
+                guard !Task.isCancelled else { return }
+                showLiveResearchSheet = false
+            }
         }
     }
 
     private func recordResearchOperation(_ step: Int, detail: String) {
-        withAnimation(reduceMotion ? nil : .spring(response: 0.5, dampingFraction: 0.88)) {
+        withAnimation(reduceMotion ? nil : .smooth(duration: 0.45, extraBounce: 0)) {
             liveResearchStep = step
             if let index = researchOperations.firstIndex(where: { $0.step == step }) {
                 researchOperations[index].detail = detail
@@ -2896,136 +2908,172 @@ private struct TripFlowView: View {
     }
 
     private var liveResearchSheet: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 26) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Image(systemName: liveResearchError != nil ? "exclamationmark" : (researchOperations.last?.symbol ?? "globe.europe.africa"))
-                            .font(.system(size: 30, weight: .medium))
-                            .foregroundStyle(AppPalette.brand)
-                            .frame(width: 68, height: 68)
-                            .background(AppPalette.brand.opacity(0.1), in: RoundedRectangle(cornerRadius: 20))
-                            .contentTransition(.symbolEffect(.replace))
-                        Text(brief.destination.isEmpty ? "Έρευνα προορισμού" : "Έρευνα για \(brief.destination)")
-                            .font(.custom("PlusJakartaSans-ExtraBold", size: 25))
-                            .foregroundStyle(AppPalette.ink)
-                        Text(liveResearchError == nil ? "Το ταξίδι σου χτίζεται, βήμα βήμα." : "Η έρευνα χρειάζεται την προσοχή σου.")
-                            .font(.custom("PlusJakartaSans-Regular", size: 13))
-                            .foregroundStyle(AppPalette.secondaryInk)
-                    }
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(researchOperations) { operation in
-                            researchOperationRow(operation)
-                                .padding(.vertical, 16)
-                                .id(operation.id)
-                                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
-                            if operation.id != researchOperations.last?.id {
-                                Rectangle()
-                                    .fill(AppPalette.brand.opacity(0.15))
-                                    .frame(width: 2, height: 16)
-                                    .padding(.leading, 19)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 18)
-                    .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 22))
-                    if let error = liveResearchError {
-                        Label(error, systemImage: "exclamationmark.circle.fill")
-                            .font(.custom("PlusJakartaSans-Medium", size: 12))
-                            .foregroundStyle(AppPalette.ink)
-                            .padding(16)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
-                    }
-                    Color.clear.frame(height: 1).id("researchBottom")
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 32)
-                .padding(.bottom, 20)
+        GeometryReader { geometry in
+            let timelineHeight = max(44, min(liveResearchError == nil ? 156 : 96,
+                                             geometry.size.height - (liveResearchError == nil ? 150 : 240)))
+            VStack(spacing: 12) {
+            researchProgressHeader
+                .padding(.top, 20)
+            if !researchOperations.isEmpty {
+                researchOperationTimeline(height: timelineHeight)
+                    .padding(.horizontal, 22)
             }
-            .onChange(of: researchOperations.count) { _, _ in
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.4)) {
-                    proxy.scrollTo("researchBottom", anchor: .bottom)
+            if let error = liveResearchError {
+                ScrollView {
+                    Label(error, systemImage: "exclamationmark.circle.fill")
+                        .font(.custom("PlusJakartaSans-Medium", size: 11))
+                        .foregroundStyle(AppPalette.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
                 }
+                .frame(maxHeight: max(24, min(82, geometry.size.height - 220)))
+                .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 22)
             }
-            .background(AppPalette.canvas.ignoresSafeArea())
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 12) {
-                    if let result = recoverableResearch {
-                        let destination = (result["set"] as? [String: Any])?["destination"] as? String ?? "τελευταίου ταξιδιού"
-                        Button { finishLiveResearch(result, context: recoveryContext, recover: true) } label: {
-                            Text("Ανάκτηση αποτελέσματος · \(destination)")
-                                .font(.custom("PlusJakartaSans-SemiBold", size: 14))
-                                .foregroundStyle(Color.white)
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: .infinity, minHeight: 48)
-                                .background(AppPalette.brand, in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 24)
-                    }
-                HStack(spacing: 12) {
-                    Button { cancelLiveResearch() } label: {
-                        Text(isResearching ? "Κλείσιμο" : "Έγινε")
-                            .font(.custom("PlusJakartaSans-SemiBold", size: 14))
-                            .foregroundStyle(AppPalette.ink)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 48)
-                            .background(AppPalette.surface, in: Capsule())
-                    }
-                    if liveResearchError != nil && !isResearching {
-                        Button { startLiveResearch() } label: {
-                            Text("Δοκιμή ξανά")
-                                .font(.custom("PlusJakartaSans-SemiBold", size: 14))
-                                .foregroundStyle(Color.white)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 48)
-                                .background(AppPalette.brand, in: Capsule())
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 16)
-                .background(AppPalette.canvas)
-                }
-                .background(AppPalette.canvas)
-            }
+            Spacer(minLength: 0)
         }
-        .presentationDetents([.large])
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .background(AppPalette.canvas.ignoresSafeArea())
+        .safeAreaInset(edge: .bottom, spacing: 0) { researchPanelActions }
+        .presentationDetents([.medium, .large], selection: $researchPanelDetent)
         .presentationDragIndicator(.visible)
         .interactiveDismissDisabled(isResearching)
     }
 
-    private func researchOperationRow(_ operation: ResearchOperation) -> some View {
-        let current = operation.step == liveResearchStep
-        return HStack(alignment: .top, spacing: 14) {
+    private var researchProgressHeader: some View {
+        let searching = isResearching && liveResearchError == nil
+        let progress = liveResearchError == nil ? liveResearchStep : max(0, liveResearchStep - 1)
+        return VStack(spacing: 9) {
             ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(current ? AppPalette.brand : AppPalette.brand.opacity(0.1))
-                    .frame(width: 40, height: 40)
-                if current && isResearching {
-                    ProgressView().tint(Color.white)
-                } else {
-                    Image(systemName: current ? operation.symbol : "checkmark")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(current ? Color.white : AppPalette.brand)
+                Circle()
+                    .stroke(AppPalette.brand.opacity(0.13), lineWidth: 3)
+                Circle()
+                    .trim(from: 0, to: CGFloat(progress) / 3)
+                    .stroke(AppPalette.brand, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.5), value: progress)
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 29, weight: .medium))
+                    .foregroundStyle(AppPalette.brand)
+                    .symbolEffect(.pulse, options: .repeating, isActive: searching && !reduceMotion)
+            }
+            .frame(width: 72, height: 72)
+            HStack(spacing: 9) {
+                Text(brief.destination.isEmpty ? "Έρευνα προορισμού" : "Έρευνα για \(brief.destination)")
+                    .font(.custom("PlusJakartaSans-Bold", size: 17))
+                    .foregroundStyle(AppPalette.ink)
+                    .multilineTextAlignment(.center)
+                Text("\(progress)/3")
+                    .font(.custom("PlusJakartaSans-SemiBold", size: 10))
+                    .monospacedDigit()
+                    .foregroundStyle(AppPalette.brand)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(AppPalette.brand.opacity(0.08), in: Capsule())
+                    .contentTransition(.numericText())
+            }
+        }
+        .padding(.horizontal, 22)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func researchOperationTimeline(height: CGFloat) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(researchOperations) { operation in
+                        researchOperationRow(operation)
+                            .id(operation.id)
+                            .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                // Anchor the active row at the bottom. Appending the next row moves
+                // the completed row upward instead of growing a list downward.
+                .frame(maxWidth: .infinity, minHeight: 136, alignment: .bottom)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            }
+            .scrollIndicators(.hidden)
+            .defaultScrollAnchor(.bottom)
+            .onChange(of: researchOperations.count) { _, _ in
+                guard let last = researchOperations.last else { return }
+                withAnimation(reduceMotion ? nil : .smooth(duration: 0.45, extraBounce: 0)) {
+                    proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
-            VStack(alignment: .leading, spacing: 6) {
+        }
+        .frame(height: height)
+        .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 18))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var researchPanelActions: some View {
+        VStack(spacing: 10) {
+            if let result = recoverableResearch {
+                let destination = (result["set"] as? [String: Any])?["destination"] as? String ?? "τελευταίου ταξιδιού"
+                Button { finishLiveResearch(result, context: recoveryContext, recover: true) } label: {
+                    Text("Ανάκτηση αποτελέσματος · \(destination)")
+                        .font(.custom("PlusJakartaSans-SemiBold", size: 12))
+                        .foregroundStyle(Color.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(AppPalette.brand, in: Capsule())
+                }
+            }
+            HStack(spacing: 10) {
+                Button { cancelLiveResearch() } label: {
+                    Text(isResearching ? "Κλείσιμο" : "Έγινε")
+                        .font(.custom("PlusJakartaSans-SemiBold", size: 13))
+                        .foregroundStyle(AppPalette.ink)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .background(AppPalette.surface, in: Capsule())
+                }
+                if liveResearchError != nil && !isResearching {
+                    Button { startLiveResearch() } label: {
+                        Text("Δοκιμή ξανά")
+                            .font(.custom("PlusJakartaSans-SemiBold", size: 13))
+                            .foregroundStyle(Color.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 44)
+                            .background(AppPalette.brand, in: Capsule())
+                    }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 12)
+        .background(AppPalette.canvas)
+    }
+
+    private func researchOperationRow(_ operation: ResearchOperation) -> some View {
+        let current = operation.step == liveResearchStep
+        let failed = current && liveResearchError != nil
+        let completed = !current || (!isResearching && !failed)
+        return HStack(alignment: .top, spacing: 11) {
+            Image(systemName: operation.symbol)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(completed ? AppPalette.secondaryInk : AppPalette.brand)
+                .frame(width: 34, height: 34)
+                .background(completed ? AppPalette.secondaryInk.opacity(0.08) : AppPalette.brand.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 4) {
                 Text(operation.title)
-                    .font(.custom("PlusJakartaSans-Bold", size: 15))
-                    .foregroundStyle(AppPalette.ink)
-                Text(operation.detail)
-                    .font(.custom("PlusJakartaSans-Regular", size: 12))
+                    .font(.custom("PlusJakartaSans-Bold", size: 13))
+                    .foregroundStyle(completed ? AppPalette.secondaryInk : AppPalette.ink)
+                Text(failed && operation.step == 3 ? "Το αποτέλεσμα δεν αποθηκεύτηκε." : operation.detail)
+                    .font(.custom("PlusJakartaSans-Regular", size: 11))
                     .foregroundStyle(AppPalette.secondaryInk)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.top, 3)
+            .padding(.top, 2)
             Spacer(minLength: 0)
         }
-        .opacity(current ? 1 : 0.5)
-        .scaleEffect(current ? 1 : 0.97, anchor: .leading)
+        .opacity(completed ? 0.6 : 1)
+        .padding(.vertical, 7)
         .accessibilityElement(children: .combine)
     }
 
