@@ -2,8 +2,10 @@ import SwiftUI
 import UIKit
 import MapKit
 import CoreLocation
+import AVFoundation
 import UniformTypeIdentifiers
 import WebKit
+import Security
 
 @main
 struct TrippyApp: App {
@@ -877,6 +879,7 @@ private struct Trip: Codable, Identifiable, Equatable {
     var checklistDoneIDs: Set<String>? = nil
     var budgetEntries: [TripBudgetEntry]? = nil
     var customName: String? = nil
+    var savedPins: [PersonalPlace]? = nil
     var title: String { customName?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? brief.title }
 
 }
@@ -900,6 +903,69 @@ private struct StoredPlaceCoordinate: Codable, Equatable {
     let matchedAt: Date
 
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: latitude, longitude: longitude) }
+}
+
+@MainActor
+private final class CurrentLocationService: NSObject, ObservableObject, @preconcurrency CLLocationManagerDelegate {
+    @Published private(set) var location: CLLocation?
+    @Published private(set) var authorizationStatus: CLAuthorizationStatus = .notDetermined
+    @Published private(set) var failureMessage: String?
+
+    private let manager = CLLocationManager()
+    private var requestPending = false
+
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        authorizationStatus = manager.authorizationStatus
+    }
+
+    func requestCurrentLocation() {
+        failureMessage = nil
+        requestPending = true
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            manager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse:
+            manager.requestLocation()
+        case .denied, .restricted:
+            requestPending = false
+            failureMessage = "Ενεργοποίησε την Πρόσβαση τοποθεσίας για το Trippy από τις Ρυθμίσεις του iPhone."
+        @unknown default:
+            requestPending = false
+            failureMessage = "Δεν είναι διαθέσιμη η πρόσβαση στην τρέχουσα τοποθεσία."
+        }
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        authorizationStatus = manager.authorizationStatus
+        guard requestPending else { return }
+        switch manager.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            manager.requestLocation()
+        case .denied, .restricted:
+            requestPending = false
+            failureMessage = "Ενεργοποίησε την Πρόσβαση τοποθεσίας για το Trippy από τις Ρυθμίσεις του iPhone."
+        default:
+            break
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        requestPending = false
+        guard let freshLocation = locations.last, freshLocation.horizontalAccuracy >= 0 else {
+            failureMessage = "Το iPhone δεν επέστρεψε έγκυρη τοποθεσία. Δοκίμασε ξανά σε λίγο."
+            return
+        }
+        location = freshLocation
+        failureMessage = nil
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        requestPending = false
+        failureMessage = "Δεν ήταν δυνατή η λήψη της τοποθεσίας. Έλεγξε το GPS και δοκίμασε ξανά."
+    }
 }
 
 // Stored stop indexes belong to one research document. Rebind them by place,
@@ -1021,9 +1087,58 @@ private enum TripStorage {
     }
 }
 
+private enum BridgeTokenStore {
+    private static let service = "com.dimitrisymeonidis.trippy.bridge"
+    private static let account = "places-access-token"
+    static func load() -> String {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: service,
+                                    kSecAttrAccount as String: account,
+                                    kSecReturnData as String: true,
+                                    kSecMatchLimit as String: kSecMatchLimitOne]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else { return "" }
+        return value
+    }
+    static func save(_ value: String) {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: service,
+                                    kSecAttrAccount as String: account]
+        SecItemDelete(query as CFDictionary)
+        guard !value.isEmpty else { return }
+        var entry = query
+        entry[kSecValueData as String] = Data(value.utf8)
+        entry[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(entry as CFDictionary, nil)
+    }
+}
+
+private enum PlacesConnectionState {
+    case idle
+    case checking
+    case connected
+    case missingToken
+    case rejectedToken
+    case missingGoogleKey
+    case rateLimited
+    case gatewayError(String)
+    case googleError(String)
+}
+
+private struct PlacesGatewayHealthResponse: Decodable {
+    let gateway: String?
+    let googlePlaces: String?
+    let error: String?
+    let errorCode: String?
+    let message: String?
+}
+
 private struct TripFlowView: View {
     @AppStorage("trippy.native.darkMode") private var darkMode = false
     @AppStorage("trippy.bridgeHost") private var bridgeHost = "https://trippy-research-89fm.onrender.com/"
+    @State private var bridgeToken = BridgeTokenStore.load()
     @State private var trips = TripStorage.load()
     @State private var rootTab = "map"
     @State private var librarySection = "Trips"
@@ -1071,6 +1186,7 @@ private struct TripFlowView: View {
     @State private var socialPlaceSummary = ""
     @State private var socialEvidenceID = ""
     @State private var socialPlaceSourceID: UUID?
+    @State private var socialPlaceCity = ""
     @State private var importLinkError: String?
     @State private var importText = ""
     @State private var importError: String?
@@ -1084,6 +1200,8 @@ private struct TripFlowView: View {
     @State private var planPlaceCategory: MapPlaceCategory? = nil
     @State private var planLikedOnly = false
     @State private var showBridgeSettings = false
+    @State private var showPlacesSettings = false
+    @State private var placesConnectionState: PlacesConnectionState = .idle
     @State private var expandedDayIndices: Set<Int> = []
     @State private var expandedScheduleItemIDs: Set<String> = []
     @State private var expandedPlanPlaceIDs: Set<String> = []
@@ -1202,6 +1320,7 @@ private struct TripFlowView: View {
         .onChange(of: socialSources) { _, _ in persistSocialLibrary() }
         .onChange(of: socialPlaces) { _, _ in persistSocialLibrary() }
         .onChange(of: travelNotes) { _, _ in persistSocialLibrary(); syncShareTargets() }
+        .onChange(of: bridgeToken) { _, value in BridgeTokenStore.save(value) }
         .sheet(item: $selectedSocialSource) { source in socialSourceDetail(source) }
         .sheet(isPresented: Binding(get: { selectedTravelNoteID != nil }, set: { if !$0 { selectedTravelNoteID = nil } })) {
             if let id = selectedTravelNoteID { travelNoteDetail(id) }
@@ -1224,6 +1343,7 @@ private struct TripFlowView: View {
         .animation(.spring(response: 0.48, dampingFraction: 0.78), value: selectedCard)
         .sheet(isPresented: $showPromptSheet) { promptSheet }
         .sheet(isPresented: $showBridgeSettings) { bridgeSettingsSheet }
+        .sheet(isPresented: $showPlacesSettings) { placesSettingsSheet }
         .fullScreenCover(isPresented: $showLiveResearchSheet, onDismiss: {
             if researchOpenSettingsAfterDismiss {
                 researchOpenSettingsAfterDismiss = false
@@ -5012,23 +5132,50 @@ private extension String {
 private enum MapPlaceCategory: String, CaseIterable, Codable, Identifiable {
     case sights = "Αξιοθέατα", restaurants = "Φαγητό", coffee = "Καφές"
     case brunch = "Brunch", bars = "Μπαρ", groceries = "Προμήθειες", metro = "Μετρό", other = "Άλλα"
+    case streetFood = "Street food", burgers = "Burger", seafood = "Θαλασσινά", vegan = "Vegan"
+    case shopping = "Shopping", touristShops = "Τοπικά μαγαζιά", parks = "Πάρκα", clubs = "Clubs"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .sights: return "building.columns"
-        case .restaurants: return "fork.knife"
+        case .restaurants, .streetFood, .burgers, .seafood, .vegan: return "fork.knife"
         case .coffee: return "cup.and.saucer"
         case .brunch: return "sun.horizon"
         case .bars: return "wineglass"
+        case .shopping: return "bag"
+        case .touristShops: return "storefront"
+        case .parks: return "leaf"
+        case .clubs: return "music.note"
         case .groceries: return "basket"
         case .metro: return "tram"
         case .other: return "mappin"
         }
     }
+    var tint: Color {
+        switch self {
+        case .sights: return Color(hex: "E88752")
+        case .restaurants, .streetFood, .burgers, .seafood, .vegan: return Color(hex: "E56C52")
+        case .coffee, .brunch: return Color(hex: "A96D45")
+        case .bars, .clubs: return Color(hex: "B16E62")
+        case .groceries: return Color(hex: "7E9A69")
+        case .metro: return Color(hex: "718A83")
+        case .shopping, .touristShops: return Color(hex: "D4A34F")
+        case .parks: return Color(hex: "6F9B70")
+        case .other: return AppPalette.brand
+        }
+    }
     static func classify(_ text: String) -> Self {
         let text = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        if ["street food", "streetfood"].contains(where: text.contains) { return .streetFood }
+        if ["burger"].contains(where: text.contains) { return .burgers }
+        if ["seafood", "fish", "θαλασσι"].contains(where: text.contains) { return .seafood }
+        if ["vegan", "plant based"].contains(where: text.contains) { return .vegan }
         if ["brunch", "breakfast", "πρωιν"].contains(where: text.contains) { return .brunch }
         if ["cafe", "coffee", "καφε"].contains(where: text.contains) { return .coffee }
+        if ["club", "nightclub", "night life"].contains(where: text.contains) { return .clubs }
+        if ["park", "garden", "πάρκ", "κηπ"].contains(where: text.contains) { return .parks }
+        if ["souvenir", "tourist shop", "gift shop"].contains(where: text.contains) { return .touristShops }
+        if ["shopping", "mall", "clothing", "retail"].contains(where: text.contains) { return .shopping }
         if ["bar", "pub", "nightlife", "μπαρ"].contains(where: text.contains) { return .bars }
         if ["grocery", "supermarket", "supplies", "προμηθ"].contains(where: text.contains) { return .groceries }
         if ["metro", "subway", "transit", "μετρο"].contains(where: text.contains) { return .metro }
@@ -5036,6 +5183,103 @@ private enum MapPlaceCategory: String, CaseIterable, Codable, Identifiable {
         if ["sight", "museum", "landmark", "attraction", "αξιοθ", "μουσει"].contains(where: text.contains) { return .sights }
         return .other
     }
+}
+
+private enum SearchPlaceKind: String, Codable { case area, attraction, place }
+
+private enum MapSearchFilter: String, CaseIterable, Identifiable {
+    case all, places, cities, food, cafes, sights
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .all: "Όλα"
+        case .places: "Μέρη"
+        case .cities: "Πόλεις & περιοχές"
+        case .food: "Φαγητό"
+        case .cafes: "Καφέ"
+        case .sights: "Αξιοθέατα"
+        }
+    }
+    func includes(_ place: PersonalPlace) -> Bool {
+        switch self {
+        case .all: true
+        case .places: place.searchKind != .area
+        case .cities: place.searchKind == .area
+        case .food: [.restaurants, .streetFood, .burgers, .seafood, .vegan, .brunch].contains(place.category)
+        case .cafes: place.category == .coffee
+        case .sights: place.category == .sights || place.searchKind == .attraction
+        }
+    }
+}
+
+private struct GooglePlacePhoto: Decodable, Identifiable {
+    let name: String
+    let authorAttributions: [GooglePlaceAttribution]?
+    let googleMapsURL: String?
+    var id: String { name }
+}
+private struct GooglePlaceAttribution: Decodable, Identifiable {
+    let displayName: String
+    let uri: String?
+    let photoUri: String?
+    var id: String { uri ?? displayName }
+}
+private struct GooglePlaceReview: Decodable, Identifiable {
+    let rating: Double?
+    let text: String
+    let relativeTime: String
+    let authorName: String
+    let authorURL: String?
+    let authorPhotoURL: String?
+    let googleMapsURL: String?
+    let visitDate: GooglePlaceVisitDate?
+    var id: String { googleMapsURL ?? "\(authorName)-\(relativeTime)" }
+}
+private struct GooglePlaceVisitDate: Decodable {
+    let year: Int?
+    let month: Int?
+}
+private struct GooglePlaceDetails: Decodable {
+    let placeID: String
+    let name: String
+    let address: String
+    let latitude: Double?
+    let longitude: Double?
+    let primaryType: String
+    let rating: Double?
+    let reviewCount: Int?
+    let openNow: Bool?
+    let openingHours: [String]
+    let phoneNumber: String?
+    let websiteURL: String?
+    let googleMapsURL: String?
+    let summary: String
+    let photos: [GooglePlacePhoto]
+    let reviews: [GooglePlaceReview]
+}
+private struct GooglePlaceSearchResponse: Decodable {
+    struct Place: Decodable, Identifiable {
+        let placeID: String
+        let name: String
+        let address: String
+        let latitude: Double
+        let longitude: Double
+        let primaryType: String
+        let isArea: Bool?
+        let boundaryLevel: String?
+        let types: [String]?
+        let city: String?
+        let countryCode: String?
+        let latitudeSpan: Double?
+        let longitudeSpan: Double?
+        var id: String { placeID }
+    }
+    let places: [Place]
+}
+private struct GooglePlacesRequestError: Decodable {
+    let errorCode: String?
+    let message: String?
+    let error: String?
 }
 
 private struct PersonalPlace: Codable, Equatable, Identifiable {
@@ -5046,6 +5290,15 @@ private struct PersonalPlace: Codable, Equatable, Identifiable {
     var latitude: Double
     var longitude: Double
     var category: MapPlaceCategory
+    var searchKind: SearchPlaceKind? = nil
+    var boundaryCountryCode: String? = nil
+    var searchLatitudeSpan: Double? = nil
+    var searchLongitudeSpan: Double? = nil
+    var boundaryLevel: String? = nil
+    var searchTypes: [String]? = nil
+    var phoneNumber: String? = nil
+    var websiteURL: String? = nil
+    var googlePlaceID: String? = nil
     var savedAt = Date()
     var coordinate: CLLocationCoordinate2D { .init(latitude: latitude, longitude: longitude) }
 }
@@ -5069,6 +5322,22 @@ private enum PersonalPlaceStorage {
     }
 }
 
+private struct MapTripChoice: Identifiable {
+    let id: UUID
+    let title: String
+}
+private struct MapNoteChoice: Identifiable {
+    let id: UUID
+    let title: String
+    let tripID: UUID?
+}
+private struct TikTokPlaceCluster: Identifiable {
+    let id: String
+    let title: String
+    let city: String
+    let mentions: [SocialPlaceMention]
+}
+
 private struct WorkspaceMapPin: Identifiable {
     let id: String
     let name: String
@@ -5078,17 +5347,483 @@ private struct WorkspaceMapPin: Identifiable {
     var city: String = ""
     var address: String = ""
     var badge: String?
+    var searchKind: SearchPlaceKind = .place
+    var boundaryCountryCode: String? = nil
+    var searchLatitudeSpan: Double? = nil
+    var searchLongitudeSpan: Double? = nil
+    var boundaryLevel: String? = nil
+    var phoneNumber: String? = nil
+    var websiteURL: String? = nil
+    var googlePlaceID: String? = nil
     var personalPlace: PersonalPlace {
         PersonalPlace(id: id, name: name, city: city, address: address,
-                      latitude: coordinate.latitude, longitude: coordinate.longitude, category: category)
+                      latitude: coordinate.latitude, longitude: coordinate.longitude, category: category,
+                      searchKind: searchKind, boundaryCountryCode: boundaryCountryCode,
+                      searchLatitudeSpan: searchLatitudeSpan, searchLongitudeSpan: searchLongitudeSpan,
+                      boundaryLevel: boundaryLevel,
+                      phoneNumber: phoneNumber, websiteURL: websiteURL, googlePlaceID: googlePlaceID)
     }
 }
 
-private struct MapPlaceLevel: Identifiable {
+private struct MapPlaceLevel: Identifiable, Equatable {
     let id: String
     let title: String
     let minimumSpan: CLLocationDegrees
     let fontSize: CGFloat
+}
+
+private struct GeoBoundaryPoint: Codable, Hashable, Sendable {
+    let latitude: Double
+    let longitude: Double
+    var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: latitude, longitude: longitude) }
+}
+
+private enum GeoBoundaryLineStyle: String, Codable, Sendable {
+    case outline
+    case fill
+    case texture
+}
+
+private struct GeoBoundaryLine: Codable, Identifiable, Sendable {
+    let id: String
+    let points: [GeoBoundaryPoint]
+    let style: GeoBoundaryLineStyle
+}
+
+private struct GeoBoundaryMetadata: Decodable {
+    let boundaryISO: String?
+    let boundaryName: String?
+    let boundaryType: String?
+    let simplifiedGeometryGeoJSON: String?
+}
+
+private actor GeoBoundaryRepository {
+    static let shared = GeoBoundaryRepository()
+    private let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("TrippyGeoBoundaries", isDirectory: true)
+    private var catalog: [GeoBoundaryMetadata]?
+    private var renderedCache: [String: [GeoBoundaryLine]] = [:]
+
+    func boundary(countryISO2: String?, countryNames: [String], placeNames: [String], levelID: String,
+                  center: GeoBoundaryPoint) async throws -> [GeoBoundaryLine]? {
+        var countryKey = countryNames.map(Self.normalized).filter { !$0.isEmpty }
+        if let countryISO2 {
+            let englishName = Locale(identifier: "en").localizedString(forRegionCode: countryISO2)
+            if let englishName { countryKey.append(Self.normalized(englishName)) }
+            countryKey += Self.countryAliases[countryISO2, default: []].map(Self.normalized)
+        }
+        guard !countryKey.isEmpty else { return nil }
+
+        let countries = try await countryCatalog()
+        guard let country = countries.first(where: {
+            guard let name = $0.boundaryName else { return false }
+            return countryKey.contains(Self.normalized(name))
+        }), let iso3 = country.boundaryISO else { return nil }
+
+        let names = placeNames.map(Self.normalized).filter { !$0.isEmpty }
+        let cellKey = "\(Int((center.latitude * 40).rounded()))_\(Int((center.longitude * 40).rounded()))"
+        let cacheKey = "v3_\(iso3)_\(levelID)_\(cellKey)_\(names.sorted().joined(separator: "_"))"
+        if let cached = renderedCache[cacheKey] { return cached }
+        if let data = cachedData(named: "shape_\(cacheKey).json"),
+           let lines = try? JSONDecoder().decode([GeoBoundaryLine].self, from: data) {
+            renderedCache[cacheKey] = lines
+            return lines
+        }
+
+        for adminLevel in Self.adminLevels(for: levelID) {
+            try Task.checkCancellation()
+            let metadataURL = URL(string: "https://www.geoboundaries.org/api/current/gbOpen/\(iso3)/ADM\(adminLevel)/")!
+            guard let metadataData = try? await data(from: metadataURL, cacheName: "metadata_\(iso3)_ADM\(adminLevel).json"),
+                  let metadata = Self.decodeMetadata(metadataData),
+                  let geoJSONURL = metadata.simplifiedGeometryGeoJSON.flatMap(URL.init(string:)),
+                  let geoJSON = try? await data(from: geoJSONURL, cacheName: "geojson_\(iso3)_ADM\(adminLevel).json"),
+                  let lines = Self.matchingBoundary(in: geoJSON, names: names, center: center) else { continue }
+
+            renderedCache[cacheKey] = lines
+            if let encoded = try? JSONEncoder().encode(lines) { write(encoded, named: "shape_\(cacheKey).json") }
+            return lines
+        }
+        return nil
+    }
+
+    private func countryCatalog() async throws -> [GeoBoundaryMetadata] {
+        if let catalog { return catalog }
+        let url = URL(string: "https://www.geoboundaries.org/api/current/gbOpen/ALL/ADM0/")!
+        let data = try await data(from: url, cacheName: "catalog_ADM0.json")
+        let values = Self.decodeMetadataList(data)
+        guard !values.isEmpty else { throw URLError(.cannotDecodeContentData) }
+        catalog = values
+        return values
+    }
+
+    private static let countryAliases: [String: [String]] = [
+        "US": ["United States of America"], "GB": ["UK"], "RU": ["Russian Federation"],
+        "KR": ["South Korea", "Korea, Republic of"], "KP": ["North Korea", "Korea, Democratic People's Republic of"],
+        "VN": ["Viet Nam"], "IR": ["Iran, Islamic Republic of"], "SY": ["Syrian Arab Republic"],
+        "BO": ["Bolivia, Plurinational State of"], "VE": ["Venezuela, Bolivarian Republic of"],
+        "TZ": ["United Republic of Tanzania"], "MD": ["Republic of Moldova"], "CZ": ["Czech Republic"],
+        "CI": ["Cote d'Ivoire"], "MK": ["Macedonia"], "PS": ["State of Palestine"],
+        "LA": ["Lao People's Democratic Republic"], "BN": ["Brunei Darussalam"],
+        "FM": ["Federated States of Micronesia"], "CD": ["Democratic Republic of the Congo"],
+        "CG": ["Republic of the Congo"]
+    ]
+
+    private func data(from url: URL, cacheName: String) async throws -> Data {
+        if let data = cachedData(named: cacheName) { return data }
+        var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 25)
+        request.setValue("Trippy iOS map boundaries", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        write(data, named: cacheName)
+        return data
+    }
+
+    private func cachedData(named name: String) -> Data? {
+        try? Data(contentsOf: root.appendingPathComponent(name))
+    }
+
+    private func write(_ data: Data, named name: String) {
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try data.write(to: root.appendingPathComponent(name), options: .atomic)
+        } catch { /* The in-memory result remains usable when the cache is unavailable. */ }
+    }
+
+    private static func decodeMetadata(_ data: Data) -> GeoBoundaryMetadata? {
+        if let item = try? JSONDecoder().decode(GeoBoundaryMetadata.self, from: data) { return item }
+        return decodeMetadataList(data).first
+    }
+
+    private static func decodeMetadataList(_ data: Data) -> [GeoBoundaryMetadata] {
+        if let list = try? JSONDecoder().decode([GeoBoundaryMetadata].self, from: data) { return list }
+        if let item = try? JSONDecoder().decode(GeoBoundaryMetadata.self, from: data) { return [item] }
+        return []
+    }
+
+    private static func adminLevels(for levelID: String) -> [Int] {
+        switch levelID {
+        case "country": return [0]
+        case "region": return [1, 2]
+        case "district": return [2, 1]
+        case "city": return [3, 2, 1]
+        case "area": return [3, 2]
+        default: return []
+        }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en"))
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private static func matchingBoundary(in data: Data, names: [String], center: GeoBoundaryPoint) -> [GeoBoundaryLine]? {
+        guard let collection = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let features = collection["features"] as? [[String: Any]] else { return nil }
+        var containing: [(nameMatches: Bool, lines: [GeoBoundaryLine])] = []
+        for (featureIndex, feature) in features.enumerated() {
+            guard let geometry = feature["geometry"] as? [String: Any],
+                  let type = geometry["type"] as? String,
+                  let coordinates = geometry["coordinates"] else { continue }
+            let props = feature["properties"] as? [String: Any] ?? [:]
+            let shapeName = (props["shapeName"] as? String).map(normalized) ?? ""
+            let nameMatches = !shapeName.isEmpty && names.contains(shapeName)
+            let polygons = polygonRings(type: type, coordinates: coordinates)
+            guard !polygons.isEmpty,
+                  polygons.contains(where: { polygonContains(center, rings: $0) }) else { continue }
+            let lines = linesFor(polygons: polygons, featureIndex: featureIndex)
+            if !lines.isEmpty {
+                containing.append((nameMatches, lines))
+                if nameMatches { return lines }
+            }
+        }
+        return containing.first?.lines
+    }
+
+    private static func linesFor(polygons: [[[GeoBoundaryPoint]]], featureIndex: Int) -> [GeoBoundaryLine] {
+        var result: [GeoBoundaryLine] = []
+        let texturedPolygons = Set(polygons.indices.sorted {
+            polygonExtentArea(polygons[$0]) > polygonExtentArea(polygons[$1])
+        }.prefix(24))
+        for (polygonIndex, polygon) in polygons.enumerated() {
+            for (ringIndex, ring) in polygon.enumerated() {
+                let points = simplify(ring)
+                guard points.count >= 4 else { continue }
+                if ringIndex == 0 {
+                    result.append(GeoBoundaryLine(id: "\(featureIndex)-\(polygonIndex)-fill", points: points, style: .fill))
+                }
+                result.append(GeoBoundaryLine(id: "\(featureIndex)-\(polygonIndex)-\(ringIndex)-outline", points: points, style: .outline))
+            }
+            if texturedPolygons.contains(polygonIndex) {
+                result += textureLines(in: polygon, featureIndex: featureIndex, polygonIndex: polygonIndex)
+            }
+        }
+        return result
+    }
+
+    private static func polygonExtentArea(_ rings: [[GeoBoundaryPoint]]) -> Double {
+        guard let points = rings.first, !points.isEmpty else { return 0 }
+        let latitudes = points.map(\.latitude), longitudes = points.map(\.longitude)
+        guard let minLatitude = latitudes.min(), let maxLatitude = latitudes.max(),
+              let minLongitude = longitudes.min(), let maxLongitude = longitudes.max() else { return 0 }
+        return (maxLatitude - minLatitude) * (maxLongitude - minLongitude)
+    }
+
+    private static func textureLines(in polygon: [[GeoBoundaryPoint]], featureIndex: Int, polygonIndex: Int) -> [GeoBoundaryLine] {
+        guard let outer = polygon.first, outer.count >= 4 else { return [] }
+        let points = simplify(outer)
+        let latitudeValues = points.map(\.latitude)
+        let longitudeValues = points.map(\.longitude)
+        guard let minLatitude = latitudeValues.min(), let maxLatitude = latitudeValues.max(),
+              let minLongitude = longitudeValues.min(), let maxLongitude = longitudeValues.max() else { return [] }
+        let meanLatitude = (minLatitude + maxLatitude) / 2 * .pi / 180
+        let longitudeScale = max(0.08, abs(cos(meanLatitude)))
+        let minX = minLongitude * longitudeScale, maxX = maxLongitude * longitudeScale
+        let minY = minLatitude, maxY = maxLatitude
+        let span = max(maxX - minX, maxY - minY)
+        guard span > 0 else { return [] }
+        let spacing = span / 17
+        var lines: [GeoBoundaryLine] = []
+        var offset = minX - maxY
+        let endOffset = maxX - minY
+        var lineIndex = 0
+        while offset <= endOffset {
+            let endpoints = diagonalEndpoints(offset: offset, minX: minX, maxX: maxX, minY: minY, maxY: maxY, longitudeScale: longitudeScale)
+            if let start = endpoints.first, let end = endpoints.last, start != end {
+                for (segmentIndex, segment) in clippedSegments(from: start, to: end, polygon: polygon, longitudeScale: longitudeScale).enumerated() {
+                    lines.append(GeoBoundaryLine(
+                        id: "\(featureIndex)-\(polygonIndex)-hatch-\(lineIndex)-\(segmentIndex)",
+                        points: segment,
+                        style: .texture
+                    ))
+                }
+            }
+            offset += spacing
+            lineIndex += 1
+        }
+        return lines
+    }
+
+    private static func diagonalEndpoints(offset: Double, minX: Double, maxX: Double, minY: Double, maxY: Double,
+                                          longitudeScale: Double) -> [GeoBoundaryPoint] {
+        var endpoints: [GeoBoundaryPoint] = []
+        func add(x: Double, y: Double) {
+            guard x >= minX - 1e-10, x <= maxX + 1e-10, y >= minY - 1e-10, y <= maxY + 1e-10 else { return }
+            let point = GeoBoundaryPoint(latitude: y, longitude: x / longitudeScale)
+            if !endpoints.contains(where: { abs($0.latitude - point.latitude) < 1e-9 && abs($0.longitude - point.longitude) < 1e-9 }) {
+                endpoints.append(point)
+            }
+        }
+        add(x: offset + minY, y: minY)
+        add(x: offset + maxY, y: maxY)
+        add(x: minX, y: minX - offset)
+        add(x: maxX, y: maxX - offset)
+        guard endpoints.count >= 2 else { return [] }
+        return Array(endpoints.prefix(2))
+    }
+
+    private static func clippedSegments(from start: GeoBoundaryPoint, to end: GeoBoundaryPoint,
+                                        polygon: [[GeoBoundaryPoint]], longitudeScale: Double) -> [[GeoBoundaryPoint]] {
+        var cuts = [0.0, 1.0]
+        for ring in polygon {
+            guard ring.count > 1 else { continue }
+            for index in ring.indices {
+                let a = ring[index]
+                let b = ring[(index + 1) % ring.count]
+                if let t = intersectionParameter(start, end, a, b, longitudeScale: longitudeScale) { cuts.append(t) }
+            }
+        }
+        cuts.sort()
+        var uniqueCuts: [Double] = []
+        for cut in cuts where uniqueCuts.last.map({ abs($0 - cut) > 1e-7 }) ?? true { uniqueCuts.append(cut) }
+        guard uniqueCuts.count > 1 else { return [] }
+        var segments: [[GeoBoundaryPoint]] = []
+        for index in 0..<(uniqueCuts.count - 1) {
+            let lower = uniqueCuts[index], upper = uniqueCuts[index + 1]
+            guard upper - lower > 1e-7 else { continue }
+            let midpoint = interpolate(start, end, (lower + upper) / 2)
+            guard polygonContains(midpoint, rings: polygon) else { continue }
+            segments.append([interpolate(start, end, lower), interpolate(start, end, upper)])
+        }
+        return segments
+    }
+
+    private static func intersectionParameter(_ start: GeoBoundaryPoint, _ end: GeoBoundaryPoint,
+                                              _ edgeStart: GeoBoundaryPoint, _ edgeEnd: GeoBoundaryPoint,
+                                              longitudeScale: Double) -> Double? {
+        let rx = (end.longitude - start.longitude) * longitudeScale
+        let ry = end.latitude - start.latitude
+        let sx = (edgeEnd.longitude - edgeStart.longitude) * longitudeScale
+        let sy = edgeEnd.latitude - edgeStart.latitude
+        let denominator = rx * sy - ry * sx
+        guard abs(denominator) > 1e-12 else { return nil }
+        let qx = (edgeStart.longitude - start.longitude) * longitudeScale
+        let qy = edgeStart.latitude - start.latitude
+        let t = (qx * sy - qy * sx) / denominator
+        let u = (qx * ry - qy * rx) / denominator
+        return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? t : nil
+    }
+
+    private static func interpolate(_ start: GeoBoundaryPoint, _ end: GeoBoundaryPoint, _ fraction: Double) -> GeoBoundaryPoint {
+        GeoBoundaryPoint(latitude: start.latitude + (end.latitude - start.latitude) * fraction,
+                         longitude: start.longitude + (end.longitude - start.longitude) * fraction)
+    }
+
+    private static func polygonRings(type: String, coordinates: Any) -> [[[GeoBoundaryPoint]]] {
+        func rings(_ raw: Any) -> [[GeoBoundaryPoint]] {
+            guard let values = raw as? [Any] else { return [] }
+            return values.compactMap { rawRing in
+                guard let positions = rawRing as? [Any] else { return nil }
+                let points = positions.compactMap { position -> GeoBoundaryPoint? in
+                    guard let pair = position as? [NSNumber], pair.count >= 2 else { return nil }
+                    return GeoBoundaryPoint(latitude: pair[1].doubleValue, longitude: pair[0].doubleValue)
+                }
+                return points.count >= 4 ? points : nil
+            }
+        }
+        switch type {
+        case "Polygon": return [rings(coordinates)].filter { !$0.isEmpty }
+        case "MultiPolygon":
+            guard let polygons = coordinates as? [Any] else { return [] }
+            return polygons.map(rings).filter { !$0.isEmpty }
+        default: return []
+        }
+    }
+
+    private static func polygonContains(_ point: GeoBoundaryPoint, rings: [[GeoBoundaryPoint]]) -> Bool {
+        guard let outer = rings.first, pointInRing(point, ring: outer) else { return false }
+        return !rings.dropFirst().contains(where: { pointInRing(point, ring: $0) })
+    }
+
+    private static func pointInRing(_ point: GeoBoundaryPoint, ring: [GeoBoundaryPoint]) -> Bool {
+        guard ring.count > 2 else { return false }
+        var inside = false
+        var previous = ring.count - 1
+        for index in ring.indices {
+            let a = ring[index], b = ring[previous]
+            let crosses = (a.latitude > point.latitude) != (b.latitude > point.latitude)
+            if crosses {
+                let longitude = (b.longitude - a.longitude) * (point.latitude - a.latitude) /
+                    (b.latitude - a.latitude) + a.longitude
+                if point.longitude < longitude { inside.toggle() }
+            }
+            previous = index
+        }
+        return inside
+    }
+
+    private static func simplify(_ closedRing: [GeoBoundaryPoint], maximumPoints: Int = 480) -> [GeoBoundaryPoint] {
+        var ring = closedRing
+        if ring.count > 1, ring.first == ring.last { ring.removeLast() }
+        guard ring.count > maximumPoints else { return ring + (ring.first.map { [$0] } ?? []) }
+        let anchor = ring[0]
+        let farthest = ring.indices.dropFirst().max { lhs, rhs in
+            squaredDistance(ring[lhs], anchor) < squaredDistance(ring[rhs], anchor)
+        } ?? ring.count / 2
+        let firstPath = Array(ring[0...farthest])
+        let secondPath = Array(ring[farthest...]) + [ring[0]]
+        var tolerance = 0.00005
+        var result = ring
+        while result.count > maximumPoints && tolerance < 8 {
+            let first = ramerDouglasPeucker(firstPath, tolerance: tolerance)
+            let second = ramerDouglasPeucker(secondPath, tolerance: tolerance)
+            result = first + Array(second.dropFirst())
+            tolerance *= 2
+        }
+        if result.first != result.last, let first = result.first { result.append(first) }
+        return result
+    }
+
+    private static func ramerDouglasPeucker(_ points: [GeoBoundaryPoint], tolerance: Double) -> [GeoBoundaryPoint] {
+        guard points.count > 2 else { return points }
+        var keep = Array(repeating: false, count: points.count)
+        keep[0] = true; keep[points.count - 1] = true
+        var stack = [(0, points.count - 1)]
+        while let (start, end) = stack.popLast() {
+            guard end > start + 1 else { continue }
+            var farthest = tolerance
+            var farthestIndex: Int?
+            for index in (start + 1)..<end {
+                let distance = segmentDistance(points[index], from: points[start], to: points[end])
+                if distance > farthest { farthest = distance; farthestIndex = index }
+            }
+            if let farthestIndex {
+                keep[farthestIndex] = true
+                stack.append((start, farthestIndex)); stack.append((farthestIndex, end))
+            }
+        }
+        return points.indices.compactMap { keep[$0] ? points[$0] : nil }
+    }
+
+    private static func segmentDistance(_ point: GeoBoundaryPoint, from start: GeoBoundaryPoint, to end: GeoBoundaryPoint) -> Double {
+        let meanLatitude = (start.latitude + end.latitude + point.latitude) / 3 * .pi / 180
+        let scale = cos(meanLatitude)
+        let px = point.longitude * scale, py = point.latitude
+        let ax = start.longitude * scale, ay = start.latitude
+        let bx = end.longitude * scale, by = end.latitude
+        let dx = bx - ax, dy = by - ay
+        let length = dx * dx + dy * dy
+        let fraction = length == 0 ? 0 : max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / length))
+        return hypot(px - (ax + fraction * dx), py - (ay + fraction * dy))
+    }
+
+    private static func squaredDistance(_ lhs: GeoBoundaryPoint, _ rhs: GeoBoundaryPoint) -> Double {
+        let latitudeScale = cos((lhs.latitude + rhs.latitude) / 2 * .pi / 180)
+        let dx = (lhs.longitude - rhs.longitude) * latitudeScale
+        let dy = lhs.latitude - rhs.latitude
+        return dx * dx + dy * dy
+    }
+}
+
+private struct PinCelebrationView: View {
+    let emoji: String
+    @State private var burst = false
+    private let colors: [Color] = [Color(hex: "E56C52"), Color(hex: "E7B45C"), Color(hex: "83A477"), Color(hex: "E99B79")]
+    var body: some View {
+        ZStack {
+            Canvas { context, size in
+                let center = CGPoint(x: size.width / 2, y: size.height / 2 + 8)
+                for index in 0..<18 {
+                    let angle = Double(index) * (.pi * 2 / 18)
+                    let distance = burst ? 48.0 : 2.0
+                    let point = CGPoint(x: center.x + cos(angle) * distance, y: center.y + sin(angle) * distance)
+                    let rect = CGRect(x: point.x - 3, y: point.y - 5, width: 6, height: 10)
+                    context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(colors[index % colors.count].opacity(burst ? 0.0 : 0.95)))
+                }
+            }
+            Text(emoji).font(.system(size: 38)).scaleEffect(burst ? 1.15 : 0.42).offset(y: 8)
+        }
+        .frame(width: 160, height: 92)
+        .onAppear { withAnimation(.easeOut(duration: 0.72)) { burst = true } }
+    }
+}
+
+private struct SearchMapPinShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addCurve(to: CGPoint(x: rect.minX, y: rect.height * 0.43), control1: CGPoint(x: rect.width * 0.28, y: rect.height * 0.74), control2: CGPoint(x: rect.minX, y: rect.height * 0.64))
+        path.addArc(center: CGPoint(x: rect.midX, y: rect.height * 0.4), radius: rect.width * 0.42, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
+        path.addCurve(to: CGPoint(x: rect.midX, y: rect.maxY), control1: CGPoint(x: rect.maxX, y: rect.height * 0.64), control2: CGPoint(x: rect.width * 0.72, y: rect.height * 0.74))
+        path.closeSubpath()
+        return path
+    }
+}
+private struct SearchMapPinView: View {
+    let category: MapPlaceCategory
+    var body: some View {
+        ZStack {
+            SearchMapPinShape().fill(LinearGradient(colors: [category.tint.opacity(0.88), category.tint, category.tint.opacity(0.82)], startPoint: .topLeading, endPoint: .bottomTrailing))
+            SearchMapPinShape().stroke(.white.opacity(0.92), lineWidth: 1.4)
+            Circle().fill(.white.opacity(0.22)).frame(width: 17, height: 8).blur(radius: 2).offset(x: -5, y: -12)
+            Image(systemName: category.symbol).font(.system(size: 14, weight: .bold)).foregroundStyle(.white).offset(y: -4)
+        }
+        .frame(width: 42, height: 56)
+        .shadow(color: category.tint.opacity(0.38), radius: 8, y: 5)
+        .overlay(alignment: .topLeading) { Circle().fill(.white.opacity(0.82)).frame(width: 6, height: 6).blur(radius: 1).offset(x: 12, y: 9) }
+        .frame(width: 48, height: 60).contentShape(Rectangle())
+    }
 }
 
 private struct TripRouteLeg: Identifiable {
@@ -5100,6 +5835,11 @@ private struct TripRouteLeg: Identifiable {
 }
 
 private extension TripFlowView {
+    func linkedPlaceReference(_ place: PersonalPlace) -> LinkedPlaceReference {
+        LinkedPlaceReference(id: place.id, name: place.name, address: place.address,
+                             latitude: place.latitude, longitude: place.longitude,
+                             googlePlaceID: place.googlePlaceID)
+    }
     var tripCities: [String] {
         Array(Set(trips.filter { $0.research != nil }.map { $0.brief.destination.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
     }
@@ -5114,8 +5854,28 @@ private extension TripFlowView {
             },
             routes: [], savedPlaces: $savedPlaces, destination: "", fallback: nil,
             categories: Set(MapPlaceCategory.allCases),
+            placesBaseURL: bridgeBaseURL, placesAccessToken: bridgeToken,
+            onPlacesSettings: { showPlacesSettings = true },
             onCity: { city in libraryCity = city; librarySection = "Trips"; rootTab = "library" }, focusPlaceID: focusedSavedPlaceID,
-            onNewTrip: { startNewTrip() }
+            onNewTrip: { startNewTrip() },
+            onCreateNote: { place, tripID in
+                let id = UUID(); let linked = linkedPlaceReference(place); travelNotes.insert(TravelNote(id: id, title: place.name, tripID: tripID, sourceIDs: [], userText: place.address, updatedAt: .now, linkedPlaceIDs: [place.id], linkedPlaces: [linked]), at: 0); selectedTravelNoteID = id
+            }, noteChoices: travelNotes.map { MapNoteChoice(id: $0.id, title: $0.title, tripID: $0.tripID) },
+            onAddToNote: { place, noteID in
+                guard let index = travelNotes.firstIndex(where: { $0.id == noteID }) else { return }
+                let detail = [place.name, place.address].filter { !$0.isEmpty }.joined(separator: " · ")
+                if !travelNotes[index].userText.localizedCaseInsensitiveContains(place.name) { travelNotes[index].userText += (travelNotes[index].userText.isEmpty ? "" : "\n") + detail }
+                var linked = travelNotes[index].linkedPlaceIDs ?? []; if !linked.contains(place.id) { linked.append(place.id) }; travelNotes[index].linkedPlaceIDs = linked
+                var references = travelNotes[index].linkedPlaces ?? []; let reference = linkedPlaceReference(place)
+                if !references.contains(where: { $0.id == reference.id }) { references.append(reference) }; travelNotes[index].linkedPlaces = references
+                travelNotes[index].updatedAt = .now; selectedTravelNoteID = noteID
+            }, tripChoices: trips.map { MapTripChoice(id: $0.id, title: $0.title) },
+            socialSources: socialSources, socialPlaces: socialPlaces, travelNotes: travelNotes,
+            onSaveTripPin: { tripID, place in
+                guard let index = trips.firstIndex(where: { $0.id == tripID }) else { return }
+                var pins = trips[index].savedPins ?? []; if !pins.contains(where: { $0.id == place.id }) { pins.append(place) }
+                trips[index].savedPins = pins; trips[index].updatedAt = .now; TripStorage.save(trips)
+            }
         ) {
             EmptyView()
         }
@@ -5144,7 +5904,7 @@ private extension TripFlowView {
         }.accessibilityLabel(darkMode ? "Φωτεινή εμφάνιση" : "Σκούρα εμφάνιση")
     }
     func personalPin(_ place: PersonalPlace) -> WorkspaceMapPin {
-        WorkspaceMapPin(id: place.id, name: place.name, coordinate: place.coordinate, layer: "saved", category: place.category, city: place.city, address: place.address)
+        WorkspaceMapPin(id: place.id, name: place.name, coordinate: place.coordinate, layer: "saved", category: place.category, city: place.city, address: place.address, searchKind: place.searchKind ?? .place, boundaryCountryCode: place.boundaryCountryCode, searchLatitudeSpan: place.searchLatitudeSpan, searchLongitudeSpan: place.searchLongitudeSpan, phoneNumber: place.phoneNumber, websiteURL: place.websiteURL, googlePlaceID: place.googlePlaceID)
     }
     var filteredLibraryTrips: [Trip] {
         trips.filter { trip in
@@ -5156,7 +5916,8 @@ private extension TripFlowView {
         switch librarySection {
         case "Notes": return "Αναζήτηση σημειώσεων"
         case "Inbox": return "Αναζήτηση πηγών"
-        case "Saved": return "Αναζήτηση στα μέρη σου"
+        case "Videos": return "Αναζήτηση σε TikTok videos"
+        case "Pins": return "Αναζήτηση στα Pins σου"
         default: return "Αναζήτηση ταξιδιών"
         }
     }
@@ -5189,7 +5950,7 @@ private extension TripFlowView {
                     }
                     ScrollView(.horizontal) {
                         HStack(spacing: 24) {
-                            ForEach(["Trips", "Saved", "Notes", "Inbox"], id: \.self) { section in
+                            ForEach(["Trips", "Pins", "Videos", "Notes", "Inbox"], id: \.self) { section in
                                 Button {
                                     withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { librarySection = section }
                                 } label: {
@@ -5212,9 +5973,13 @@ private extension TripFlowView {
                             ContentUnavailableView(libraryCity == nil ? "Το επόμενο ταξίδι αρχίζει εδώ" : "Κανένα ταξίδι με αυτά τα φίλτρα", systemImage: "suitcase.rolling", description: Text("Πάτησε + για να φτιάξεις το brief σου."))
                         }
                         ForEach(filteredLibraryTrips) { trip in libraryTripRow(trip) }
-                    } else if librarySection == "Saved" { savedLibrary; socialSavedPlaces }
+                    } else if librarySection == "Pins" { savedLibrary; socialSavedPlaces }
+                    else if librarySection == "Videos" { videoLibrary }
                     else if librarySection == "Notes" { notesLibrary }
                     else { socialInboxLibrary }
+                    if librarySection == "Trips", let city = libraryCity {
+                        socialPlaceVideoCarousel(city: city)
+                    }
                 }.padding(.horizontal, 24).padding(.top, 24).padding(.bottom, 32)
                     .frame(maxWidth: 720).frame(maxWidth: .infinity)
             }.background(AppPalette.canvas).toolbar(.hidden, for: .navigationBar)
@@ -5223,6 +5988,7 @@ private extension TripFlowView {
     var libraryAddMenu: some View {
         Menu {
             if librarySection == "Trips" { Button("Νέο ταξίδι", systemImage: "suitcase.rolling") { startNewTrip() } }
+            if librarySection == "Videos" { Button("Προσθήκη TikTok link", systemImage: "link") { showImportLink = true } }
             if librarySection == "Notes" {
                 Button("Νέο Note", systemImage: "square.and.pencil") {
                     let id = UUID()
@@ -5230,7 +5996,7 @@ private extension TripFlowView {
                     selectedTravelNoteID = id
                 }
             }
-            if librarySection == "Saved" { Button("Βρες ένα μέρος", systemImage: "magnifyingglass") { activeTripID = nil; stage = .library; rootTab = "map" } }
+            if librarySection == "Pins" { Button("Βρες ένα μέρος", systemImage: "magnifyingglass") { activeTripID = nil; stage = .library; rootTab = "map" } }
             Button("Προσθήκη TikTok link", systemImage: "link") { showImportLink = true }
         } label: {
             Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).foregroundStyle(AppPalette.inverseInk)
@@ -5284,7 +6050,7 @@ private extension TripFlowView {
                         Button("Άνοιγμα στο Apple Maps", systemImage: "map") {
                             let item = MKMapItem(placemark: MKPlacemark(coordinate: place.coordinate)); item.name = place.name; item.openInMaps()
                         }
-                        Button("Αφαίρεση από Saved", systemImage: "bookmark.slash", role: .destructive) { savedPlaces.removeAll { $0.id == place.id } }
+                        Button("Αφαίρεση από Pins", systemImage: "bookmark.slash", role: .destructive) { savedPlaces.removeAll { $0.id == place.id } }
                     } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                 }.foregroundStyle(AppPalette.ink)
                 Divider()
@@ -5370,9 +6136,11 @@ private extension TripFlowView {
         return legs
     }
     var tripMapWorkspace: some View {
-        TrippyMapCanvas(pins: tripWorkspacePins, cityPins: [], routes: workspaceRouteLegs,
+        TrippyMapCanvas(pins: tripWorkspacePins + (trips.first(where: { $0.id == activeTripID })?.savedPins ?? []).map(personalPin), cityPins: [], routes: workspaceRouteLegs,
                         savedPlaces: $savedPlaces, destination: brief.destination,
-                        fallback: cityCoordinates[brief.destination]?.coordinate, categories: mapCategories, onCity: { _ in }, onPlanPin: { pin in
+                        fallback: cityCoordinates[brief.destination]?.coordinate, categories: mapCategories,
+                        placesBaseURL: bridgeBaseURL, placesAccessToken: bridgeToken,
+                        onPlacesSettings: { showPlacesSettings = true }, onCity: { _ in }, onPlanPin: { pin in
             if pin.layer == "recommended", let place = placeRecords.first(where: { recordValue($0, keys: ["id", "place_id"]) == pin.id }), !dayRecords.isEmpty {
                 let index = selectedMapDay ?? 0
                 if dayRecords.indices.contains(index) { addPlaceToDay(place, date: scheduleDateKey(dayRecords[index], index: index)) }
@@ -5386,7 +6154,25 @@ private extension TripFlowView {
                 selectedMapDay = dayIndex; selectedScheduleDayIndex = dayIndex
             }
             detailsDetent = .large; showTripDetails = true
-        }, selectionKey: "\(activeTripID?.uuidString ?? ""):\(selectedMapDay.map(String.init) ?? "overview")",
+        },
+                        onNewTrip: { startNewTrip() }, onCreateNote: { place, tripID in
+                            let id = UUID(); let linked = linkedPlaceReference(place); travelNotes.insert(TravelNote(id: id, title: place.name, tripID: tripID, sourceIDs: [], userText: place.address, updatedAt: .now, linkedPlaceIDs: [place.id], linkedPlaces: [linked]), at: 0); selectedTravelNoteID = id
+                        }, noteChoices: travelNotes.map { MapNoteChoice(id: $0.id, title: $0.title, tripID: $0.tripID) },
+                        onAddToNote: { place, noteID in
+                            guard let index = travelNotes.firstIndex(where: { $0.id == noteID }) else { return }
+                            let detail = [place.name, place.address].filter { !$0.isEmpty }.joined(separator: " · ")
+                            if !travelNotes[index].userText.localizedCaseInsensitiveContains(place.name) { travelNotes[index].userText += (travelNotes[index].userText.isEmpty ? "" : "\n") + detail }
+                            var linked = travelNotes[index].linkedPlaceIDs ?? []; if !linked.contains(place.id) { linked.append(place.id) }; travelNotes[index].linkedPlaceIDs = linked
+                            var references = travelNotes[index].linkedPlaces ?? []; let reference = linkedPlaceReference(place)
+                            if !references.contains(where: { $0.id == reference.id }) { references.append(reference) }; travelNotes[index].linkedPlaces = references
+                            travelNotes[index].updatedAt = .now; selectedTravelNoteID = noteID
+                        }, tripChoices: trips.filter { $0.id == activeTripID }.map { MapTripChoice(id: $0.id, title: $0.title) },
+                        socialSources: socialSources, socialPlaces: socialPlaces, travelNotes: travelNotes,
+                        onSaveTripPin: { tripID, place in
+                            guard let index = trips.firstIndex(where: { $0.id == tripID }) else { return }
+                            var pins = trips[index].savedPins ?? []; if !pins.contains(where: { $0.id == place.id }) { pins.append(place) }
+                            trips[index].savedPins = pins; trips[index].updatedAt = .now; TripStorage.save(trips)
+                        }, selectionKey: "\(activeTripID?.uuidString ?? ""):\(selectedMapDay.map(String.init) ?? "overview")",
                         schedulablePlaceIDs: dayRecords.isEmpty ? [] : Set(placeRecords.compactMap { recordValue($0, keys: ["id", "place_id"]) }),
                         planDayTitle: "Day \((selectedMapDay ?? 0) + 1)") {
             HStack(alignment: .top, spacing: 12) {
@@ -5454,7 +6240,7 @@ private extension TripFlowView {
             Form {
                 Section("Περιεχόμενο χάρτη") {
                     ForEach(["planned", "recommended", "saved"], id: \.self) { layer in
-                        Toggle(layer == "planned" ? "Πρόγραμμα" : (layer == "recommended" ? "Προτάσεις" : "Saved"), isOn: Binding(get: { mapLayers.contains(layer) }, set: { on in
+                        Toggle(layer == "planned" ? "Πρόγραμμα" : (layer == "recommended" ? "Προτάσεις" : "Pins"), isOn: Binding(get: { mapLayers.contains(layer) }, set: { on in
                             if on { mapLayers.insert(layer) } else { mapLayers.remove(layer) }
                         }))
                     }
@@ -5616,10 +6402,21 @@ private struct TrippyMapCanvas<Header: View>: View {
     let destination: String
     let fallback: CLLocationCoordinate2D?
     let categories: Set<MapPlaceCategory>
+    let placesBaseURL: String
+    let placesAccessToken: String
+    var onPlacesSettings: (() -> Void)? = nil
     let onCity: (String) -> Void
     var onPlanPin: ((WorkspaceMapPin) -> Void)? = nil
     var focusPlaceID: String? = nil
     var onNewTrip: (() -> Void)? = nil
+    var onCreateNote: ((PersonalPlace, UUID?) -> Void)? = nil
+    var noteChoices: [MapNoteChoice] = []
+    var onAddToNote: ((PersonalPlace, UUID) -> Void)? = nil
+    var tripChoices: [MapTripChoice] = []
+    var socialSources: [ImportedSocialSource] = []
+    var socialPlaces: [SocialPlaceMention] = []
+    var travelNotes: [TravelNote] = []
+    var onSaveTripPin: ((UUID, PersonalPlace) -> Void)? = nil
     var selectionKey: String = ""
     var schedulablePlaceIDs: Set<String> = []
     var planDayTitle: String = "Day 1"
@@ -5632,63 +6429,58 @@ private struct TrippyMapCanvas<Header: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var position: MapCameraPosition = .automatic
     @State private var visibleRegion: MKCoordinateRegion?
-    @State private var mapPlaceLevels: [MapPlaceLevel] = [
-        MapPlaceLevel(id: "world", title: "Ο κόσμος", minimumSpan: 0, fontSize: 32)
-    ]
-    @State private var mapHighlightCoordinates: [CLLocationCoordinate2D] = []
-    @State private var mapHighlightOpacity = 0.0
-    @State private var mapHighlightAnimationID = UUID()
+    @State private var mapPlaceBoundaryLines: [GeoBoundaryLine] = []
+    @State private var areaHighlightOpacity = 0.0
     @State private var query = ""
     @State private var searchResults: [PersonalPlace] = []
+    @State private var searchFilter: MapSearchFilter = .all
     @State private var searching = false
     @State private var searchError: String?
+    @State private var searchSourceNotice: String?
     @State private var selectedPin: WorkspaceMapPin?
+    @State private var selectedSearchPlace: WorkspaceMapPin?
+    @State private var focusedMapPinID: String?
+    @State private var selectedPinCategory: MapPlaceCategory?
+    @State private var celebrationEmoji: String?
+    @State private var pendingPlacePanelAction: (() -> Void)?
+    @State private var googlePlaceDetails: GooglePlaceDetails?
+    @State private var resolvedGooglePlaceIDs: [String: String] = [:]
+    @State private var loadingGoogleDetails = false
+    @State private var googleDetailsError: String?
     @State private var pendingPlanPin: WorkspaceMapPin?
     @State private var renderedRoutes: [String: MKRoute] = [:]
     @State private var routeCache: [String: MKRoute] = [:]
     @State private var routing = false
     @State private var failedRoutes = 0
+    @State private var directionsRoute: MKRoute?
+    @State private var showDirections = false
+    @State private var calculatingDirections = false
+    @State private var directionsError: String?
+    @State private var locationError: String?
+    @State private var centerWhenLocationArrives = false
+    @State private var pendingDirectionsPin: WorkspaceMapPin?
+    @StateObject private var locationService = CurrentLocationService()
     @State private var homeCategories = Set(MapPlaceCategory.allCases)
     @FocusState private var searchFocused: Bool
     private var effectiveCategories: Set<MapPlaceCategory> { destination.isEmpty ? homeCategories : categories }
+    private var displayedSearchResults: [PersonalPlace] { searchResults.filter { searchFilter.includes($0) } }
     private var routeTaskID: String {
         routes.map { "\($0.id):\($0.from.latitude),\($0.from.longitude):\($0.to.latitude),\($0.to.longitude):\($0.walking)" }.joined(separator: "|")
     }
     private var pointTaskID: String { pins.map { "\($0.id):\($0.coordinate.latitude):\($0.coordinate.longitude)" }.joined(separator: "|") + cityPins.map(\.id).joined() }
-    private var cameraLookupKey: String { visibleRegion.map(cameraKey(for:)) ?? "initial" }
     private func cameraKey(for region: MKCoordinateRegion) -> String {
-        let latitudeStep = max(0.0004, min(6, region.span.latitudeDelta / 5))
-        let longitudeStep = max(0.0004, min(6, region.span.longitudeDelta / 5))
+        let latitudeStep = max(0.004, min(0.75, region.span.latitudeDelta / 3))
+        let longitudeStep = max(0.004, min(0.75, region.span.longitudeDelta / 3))
         let zoomBand = [0.08, 0.12, 0.6, 0.8, 2, 4, 8, 10, 18, 20, 95].firstIndex(where: { region.span.latitudeDelta < $0 }) ?? 11
         return "\(Int((region.center.latitude / latitudeStep).rounded())),\(Int((region.center.longitude / longitudeStep).rounded())),\(zoomBand)"
     }
-    private var activeMapPlaceLevel: MapPlaceLevel {
-        guard let span = visibleRegion?.span.latitudeDelta else { return mapPlaceLevels.last ?? MapPlaceLevel(id: "world", title: "Ο κόσμος", minimumSpan: 0, fontSize: 32) }
-        return mapPlaceLevels.last(where: { span >= $0.minimumSpan }) ?? mapPlaceLevels.first ?? MapPlaceLevel(id: "world", title: "Ο κόσμος", minimumSpan: 0, fontSize: 32)
-    }
-    private var parentMapPlaceLevel: MapPlaceLevel? {
-        // Keep the map's back hierarchy local: once the country is visible,
-        // there is no broader back action to a continent or the world.
-        guard activeMapPlaceLevel.id != "country",
-              activeMapPlaceLevel.id != "continent",
-              activeMapPlaceLevel.id != "world",
-              let index = mapPlaceLevels.firstIndex(where: { $0.id == activeMapPlaceLevel.id }),
-              mapPlaceLevels.indices.contains(index + 1) else { return nil }
-        let parent = mapPlaceLevels[index + 1]
-        return parent.id == "continent" || parent.id == "world" ? nil : parent
-    }
-    private var mapTitleFontSize: CGFloat {
-        let title = activeMapPlaceLevel.title
-        let reduction = CGFloat(max(0, title.count - 12)) * 0.45
-        return max(24, activeMapPlaceLevel.fontSize - reduction)
-    }
     private var poiCategories: [MKPointOfInterestCategory] {
         var result: [MKPointOfInterestCategory] = []
-        if effectiveCategories.contains(.sights) { result += [.museum, .nationalPark, .park, .theater] }
-        if effectiveCategories.contains(.restaurants) || effectiveCategories.contains(.brunch) { result += [.restaurant, .bakery] }
+        if effectiveCategories.contains(.sights) || effectiveCategories.contains(.parks) { result += [.museum, .nationalPark, .park, .theater] }
+        if effectiveCategories.contains(.restaurants) || effectiveCategories.contains(.brunch) || effectiveCategories.contains(.streetFood) || effectiveCategories.contains(.burgers) || effectiveCategories.contains(.seafood) || effectiveCategories.contains(.vegan) { result += [.restaurant, .bakery] }
         if effectiveCategories.contains(.coffee) { result += [.cafe] }
-        if effectiveCategories.contains(.bars) { result += [.nightlife, .brewery, .winery] }
-        if effectiveCategories.contains(.groceries) { result += [.foodMarket, .store] }
+        if effectiveCategories.contains(.bars) || effectiveCategories.contains(.clubs) { result += [.nightlife, .brewery, .winery] }
+        if effectiveCategories.contains(.groceries) || effectiveCategories.contains(.shopping) || effectiveCategories.contains(.touristShops) { result += [.foodMarket, .store] }
         if effectiveCategories.contains(.metro) { result += [.publicTransport] }
         return result
     }
@@ -5700,12 +6492,21 @@ private struct TrippyMapCanvas<Header: View>: View {
         }
     }
     var body: some View {
+        MapReader { mapProxy in
         Map(position: $position) {
-            if mapHighlightCoordinates.count >= 4, let first = mapHighlightCoordinates.first {
-                MapPolygon(coordinates: mapHighlightCoordinates)
-                    .foregroundStyle(AppPalette.accent.opacity(0.12 * mapHighlightOpacity))
-                MapPolyline(coordinates: mapHighlightCoordinates + [first])
-                    .stroke(AppPalette.accent.opacity(0.85 * mapHighlightOpacity), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [9, 6]))
+            UserAnnotation()
+            ForEach(mapPlaceBoundaryLines) { line in
+                switch line.style {
+                case .fill:
+                    MapPolygon(coordinates: line.points.map(\.coordinate))
+                        .foregroundStyle(Color(hex: "F28C28").opacity(0.045 + 0.04 * areaHighlightOpacity))
+                case .texture:
+                    MapPolyline(coordinates: line.points.map(\.coordinate))
+                        .stroke(Color(hex: "F28C28").opacity(0.10 + 0.12 * areaHighlightOpacity), style: StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round))
+                case .outline:
+                    MapPolyline(coordinates: line.points.map(\.coordinate))
+                        .stroke(Color(hex: "F28C28").opacity(0.8 + 0.2 * areaHighlightOpacity), style: StrokeStyle(lineWidth: 3 + 1.2 * areaHighlightOpacity, lineCap: .round, lineJoin: .round))
+                }
             }
             ForEach(pins.filter { effectiveCategories.contains($0.category) }) { pin in
                 Annotation(pin.name, coordinate: pin.coordinate) { pinButton(pin) }
@@ -5717,19 +6518,24 @@ private struct TrippyMapCanvas<Header: View>: View {
                         .accessibilityLabel("\(pin.name) · \(pin.badge ?? "") ταξίδια · Άνοιγμα στο Library")
                 }
             }
-            ForEach(searchResults) { place in
-                Annotation(place.name, coordinate: place.coordinate) {
-                    pinButton(WorkspaceMapPin(id: place.id, name: place.name, coordinate: place.coordinate, layer: "search", category: place.category, city: place.city, address: place.address))
-                }
+            if let place = selectedSearchPlace, place.searchKind != .area {
+                Annotation(place.name, coordinate: place.coordinate) { pinButton(place) }
             }
             ForEach(routes) { leg in
                 if let route = renderedRoutes[routeKey(leg)] {
                     MapPolyline(route.polyline).stroke(routeColor(leg.day).opacity(0.8), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
                 }
             }
+            if let directionsRoute {
+                MapPolyline(directionsRoute.polyline)
+                    .stroke(Color(hex: "F28C28"), style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+            }
         }
         .mapStyle(mapStyle)
         .mapControls { MapCompass() }
+        .simultaneousGesture(SpatialTapGesture(coordinateSpace: .local).onEnded { tap in
+            handleMapTap(at: tap.location, proxy: mapProxy)
+        })
         .overlay(alignment: .top) {
             Rectangle().fill(.ultraThinMaterial)
                 .overlay(Color.white.opacity(0.22))
@@ -5761,6 +6567,27 @@ private struct TrippyMapCanvas<Header: View>: View {
                 visibleRegion = nextRegion
             }
         }
+        .onChange(of: locationService.location?.timestamp) { _, _ in
+            guard let location = locationService.location else { return }
+            if centerWhenLocationArrives {
+                centerWhenLocationArrives = false
+                centerMap(on: location)
+            }
+            if let pin = pendingDirectionsPin {
+                pendingDirectionsPin = nil
+                Task { await calculateDirections(to: pin, from: location) }
+            }
+        }
+        .onChange(of: locationService.failureMessage) { _, message in
+            guard let message else { return }
+            if pendingDirectionsPin != nil {
+                pendingDirectionsPin = nil
+                directionsError = message
+            } else {
+                centerWhenLocationArrives = false
+                locationError = message
+            }
+        }
         .ignoresSafeArea(edges: [.top, .bottom])
         .safeAreaInset(edge: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 16) {
@@ -5769,7 +6596,6 @@ private struct TrippyMapCanvas<Header: View>: View {
                     if !searchFocused { mapOptionsMenu }
                     if destination.isEmpty, let onNewTrip { newTripMapButton(action: onNewTrip) }
                 }
-                if !searchFocused && destination.isEmpty && activeMapPlaceLevel.id != "world" && activeMapPlaceLevel.id != "continent" { homeMapPlaceTitle }
                 if !searchFocused && !destination.isEmpty { header() }
                 if searching || !searchResults.isEmpty || searchError != nil { searchPanel }
             }.frame(maxWidth: 720).frame(maxWidth: .infinity, alignment: .leading)
@@ -5784,14 +6610,23 @@ private struct TrippyMapCanvas<Header: View>: View {
         }
         .overlay(alignment: .bottomTrailing) {
             if !searchFocused {
-                mapZoomControls
-                    .padding(.trailing, 16)
-                    .padding(.bottom, 52)
+                VStack(spacing: 12) {
+                    Button(action: centerOnCurrentPosition) {
+                        Image(systemName: "location.fill")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(AppPalette.ink)
+                            .frame(width: 50, height: 50)
+                            .modifier(AdaptiveGlassControl(shape: .circle))
+                    }
+                    .buttonStyle(QuietPressStyle())
+                    .accessibilityLabel("Κέντρο στην τρέχουσα θέση")
+                    mapZoomControls
+                }
+                .padding(.trailing, 16)
+                .padding(.bottom, 52)
             }
         }
         .task(id: routeTaskID) { await updateRoutes() }
-        .task(id: cameraLookupKey) { await updateMapPlaceTitle() }
-        .task(id: mapHighlightAnimationID) { await animateMapHighlight() }
         .onChange(of: pointTaskID, initial: true) { old, new in
             if !hasFittedMap && (!pins.isEmpty || !cityPins.isEmpty) { fitMap(); hasFittedMap = true }
         }
@@ -5802,8 +6637,38 @@ private struct TrippyMapCanvas<Header: View>: View {
             }
         }
         .sheet(item: $selectedPin, onDismiss: {
+            selectedSearchPlace = nil
+            focusedMapPinID = nil
+            mapPlaceBoundaryLines = []
+            areaHighlightOpacity = 0
+            googlePlaceDetails = nil
+            resolvedGooglePlaceIDs = [:]
+            googleDetailsError = nil
+            query = ""
+            searchResults = []
             if let pin = pendingPlanPin { pendingPlanPin = nil; onPlanPin?(pin) }
+            if let action = pendingPlacePanelAction { pendingPlacePanelAction = nil; action() }
         }) { pin in selectedPlacePanel(pin) }
+        .sheet(isPresented: $showDirections) {
+            if let directionsRoute { RouteStepsSheet(route: directionsRoute) }
+        }
+        .alert("Δεν βρέθηκε διαδρομή", isPresented: Binding(
+            get: { directionsError != nil },
+            set: { if !$0 { directionsError = nil } }
+        )) {
+            Button("OK", role: .cancel) { directionsError = nil }
+        } message: {
+            Text(directionsError ?? "Δοκίμασε ξανά σε λίγο.")
+        }
+        .alert("Δεν είναι διαθέσιμη η τοποθεσία", isPresented: Binding(
+            get: { locationError != nil },
+            set: { if !$0 { locationError = nil } }
+        )) {
+            Button("Εντάξει", role: .cancel) { locationError = nil }
+        } message: {
+            Text(locationError ?? "Έλεγξε την πρόσβαση τοποθεσίας και δοκίμασε ξανά.")
+        }
+        }
     }
     func newTripMapButton(action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -5811,144 +6676,6 @@ private struct TrippyMapCanvas<Header: View>: View {
                 .foregroundStyle(AppPalette.ink).frame(width: 48, height: 48)
                 .modifier(AdaptiveGlassControl(shape: .circle))
         }.buttonStyle(QuietPressStyle()).accessibilityLabel("Νέο ταξίδι")
-    }
-    var homeMapPlaceTitle: some View {
-        HStack(alignment: .center, spacing: 9) {
-            if parentMapPlaceLevel != nil && activeMapPlaceLevel.id != "continent" {
-                Button(action: zoomToParentMapPlaceLevel) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(darkMode ? Color.white : AppPalette.brand)
-                        .frame(width: 34, height: 34)
-                        .background(darkMode ? Color(hex: "171B1A") : Color.white, in: Circle())
-                        .overlay(Circle().stroke(darkMode ? .white.opacity(0.17) : .white.opacity(0.98), lineWidth: 1))
-                        .overlay(alignment: .topLeading) {
-                            Circle().fill(.white.opacity(darkMode ? 0.18 : 0.95))
-                                .frame(width: 8, height: 8).blur(radius: 2).offset(x: 7, y: 6)
-                        }
-                        .shadow(color: .black.opacity(darkMode ? 0.42 : 0.16), radius: 7, y: 4)
-                        .shadow(color: darkMode ? .white.opacity(0.05) : .white.opacity(0.9), radius: 1, y: -1)
-                }
-                .buttonStyle(QuietPressStyle())
-                .accessibilityLabel("Πίσω στο \(parentMapPlaceLevel?.title ?? "ευρύτερο επίπεδο")")
-            }
-            Text(activeMapPlaceLevel.title)
-                .font(.custom("Georgia-BoldItalic", size: mapTitleFontSize, relativeTo: .largeTitle))
-                .tracking(-0.8).lineLimit(1).minimumScaleFactor(24 / mapTitleFontSize).allowsTightening(true)
-                .foregroundStyle(AppPalette.ink)
-                .background {
-                    Text(activeMapPlaceLevel.title)
-                        .font(.custom("Georgia-BoldItalic", size: mapTitleFontSize, relativeTo: .largeTitle))
-                        .tracking(-0.8)
-                        .foregroundStyle(Color.white)
-                        .blur(radius: 3)
-                        .accessibilityHidden(true)
-                }
-                .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
-            Spacer(minLength: 0)
-        }
-        .frame(minHeight: 48, alignment: .leading)
-        .accessibilityElement(children: .contain)
-    }
-    func zoomToParentMapPlaceLevel() {
-        guard let region = position.region ?? visibleRegion,
-              let parent = parentMapPlaceLevel else { return }
-        Task { await centerMap(on: parent, from: region) }
-    }
-    @MainActor
-    private func centerMap(on level: MapPlaceLevel, from currentRegion: MKCoordinateRegion) async {
-        var targetBounds: MKCoordinateRegion?
-        if level.id == "continent" {
-            targetBounds = continentBounds(for: level.title)
-        } else if level.id != "world" {
-            let country = mapPlaceLevels.first(where: { $0.id == "country" })?.title
-            let query = [level.title, country].compactMap { $0 }.reduce(into: [String]()) { parts, value in
-                if !parts.contains(where: { $0.localizedCaseInsensitiveCompare(value) == .orderedSame }) { parts.append(value) }
-            }.joined(separator: ", ")
-            let request = MKLocalSearch.Request()
-            request.naturalLanguageQuery = query
-            request.resultTypes = .address
-            request.region = currentRegion
-            do {
-                let response = try await MKLocalSearch(request: request).start()
-                let bounds = response.boundingRegion
-                if bounds.span.latitudeDelta > 0.001 || bounds.span.longitudeDelta > 0.001 {
-                    targetBounds = bounds
-                } else if let coordinate = response.mapItems.first?.placemark.coordinate,
-                          CLLocationCoordinate2DIsValid(coordinate) {
-                    targetBounds = MKCoordinateRegion(center: coordinate,
-                                                      span: MKCoordinateSpan(latitudeDelta: level.minimumSpan, longitudeDelta: level.minimumSpan))
-                }
-            } catch { /* Use the current view as a safe fallback. */ }
-        }
-        guard !Task.isCancelled else { return }
-        let bounds = targetBounds ?? MKCoordinateRegion(
-            center: currentRegion.center,
-            span: MKCoordinateSpan(latitudeDelta: max(level.minimumSpan * 1.35, currentRegion.span.latitudeDelta * 2.1),
-                                   longitudeDelta: max(level.minimumSpan, currentRegion.span.longitudeDelta * 2.1))
-        )
-        let fittedRegion = expandedRegion(bounds, minimumSpan: level.minimumSpan)
-        let targetRect = mapRect(for: fittedRegion)
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.42)) {
-            position = .rect(targetRect)
-        }
-        flashMapRegion(fittedRegion)
-    }
-    private func expandedRegion(_ bounds: MKCoordinateRegion, minimumSpan: CLLocationDegrees) -> MKCoordinateRegion {
-        let latitudeDelta = max(0.01, max(bounds.span.latitudeDelta * 1.24, minimumSpan * 1.35))
-        let longitudeDelta = max(0.01, max(bounds.span.longitudeDelta * 1.24, minimumSpan * 1.35))
-        return MKCoordinateRegion(center: bounds.center,
-                                  span: MKCoordinateSpan(latitudeDelta: min(170, latitudeDelta), longitudeDelta: min(350, longitudeDelta)))
-    }
-    private func mapRect(for region: MKCoordinateRegion) -> MKMapRect {
-        let halfLatitude = region.span.latitudeDelta / 2
-        let halfLongitude = region.span.longitudeDelta / 2
-        let northWest = MKMapPoint(CLLocationCoordinate2D(latitude: min(85, region.center.latitude + halfLatitude),
-                                                          longitude: region.center.longitude - halfLongitude))
-        let southEast = MKMapPoint(CLLocationCoordinate2D(latitude: max(-85, region.center.latitude - halfLatitude),
-                                                           longitude: region.center.longitude + halfLongitude))
-        return MKMapRect(x: min(northWest.x, southEast.x), y: min(northWest.y, southEast.y),
-                         width: max(1, abs(southEast.x - northWest.x)), height: max(1, abs(southEast.y - northWest.y)))
-    }
-    private func regionCorners(_ region: MKCoordinateRegion) -> [CLLocationCoordinate2D] {
-        let halfLatitude = region.span.latitudeDelta / 2
-        let halfLongitude = region.span.longitudeDelta / 2
-        let north = min(85, region.center.latitude + halfLatitude)
-        let south = max(-85, region.center.latitude - halfLatitude)
-        let west = region.center.longitude - halfLongitude
-        let east = region.center.longitude + halfLongitude
-        return [CLLocationCoordinate2D(latitude: north, longitude: west),
-                CLLocationCoordinate2D(latitude: north, longitude: east),
-                CLLocationCoordinate2D(latitude: south, longitude: east),
-                CLLocationCoordinate2D(latitude: south, longitude: west)]
-    }
-    private func flashMapRegion(_ region: MKCoordinateRegion) {
-        mapHighlightCoordinates = regionCorners(region)
-        mapHighlightOpacity = 0
-        mapHighlightAnimationID = UUID()
-    }
-    private func animateMapHighlight() async {
-        guard mapHighlightCoordinates.count >= 4 else { return }
-        for _ in 0..<2 {
-            withAnimation(.easeOut(duration: 0.22)) { mapHighlightOpacity = 1 }
-            do { try await Task.sleep(for: .milliseconds(260)) } catch { return }
-            withAnimation(.easeInOut(duration: 0.3)) { mapHighlightOpacity = 0.12 }
-            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
-        }
-        withAnimation(.easeOut(duration: 0.4)) { mapHighlightOpacity = 0 }
-        do { try await Task.sleep(for: .milliseconds(420)) } catch { return }
-        mapHighlightCoordinates = []
-    }
-    private func continentBounds(for title: String) -> MKCoordinateRegion {
-        switch title {
-        case "Ευρώπη": return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 53, longitude: 17.5), span: MKCoordinateSpan(latitudeDelta: 38, longitudeDelta: 85))
-        case "Αφρική": return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 0, longitude: 20), span: MKCoordinateSpan(latitudeDelta: 70, longitudeDelta: 70))
-        case "Ασία": return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 40, longitude: 95), span: MKCoordinateSpan(latitudeDelta: 75, longitudeDelta: 150))
-        case "Βόρεια Αμερική": return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 45, longitude: -105), span: MKCoordinateSpan(latitudeDelta: 70, longitudeDelta: 125))
-        case "Νότια Αμερική": return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: -20, longitude: -60), span: MKCoordinateSpan(latitudeDelta: 70, longitudeDelta: 52))
-        case "Ωκεανία": return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: -25, longitude: 145), span: MKCoordinateSpan(latitudeDelta: 55, longitudeDelta: 85))
-        default: return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 20, longitude: 0), span: MKCoordinateSpan(latitudeDelta: 160, longitudeDelta: 340))
-        }
     }
     @ViewBuilder
     func cityTripPin(_ pin: WorkspaceMapPin) -> some View {
@@ -6013,64 +6740,6 @@ private struct TrippyMapCanvas<Header: View>: View {
         let longitude = min(150, max(0.001, region.span.longitudeDelta / factor))
         position = .region(.init(center: region.center, span: .init(latitudeDelta: latitude, longitudeDelta: longitude)))
     }
-    func updateMapPlaceTitle() async {
-        guard destination.isEmpty, let region = visibleRegion else { return }
-        do {
-            let debounceMilliseconds: Int = region.span.latitudeDelta < 0.8 ? 55 : 105
-            try await Task.sleep(for: .milliseconds(debounceMilliseconds))
-            try Task.checkCancellation()
-            if region.span.latitudeDelta >= 18 {
-                let continent = continentName(latitude: region.center.latitude, longitude: region.center.longitude)
-                mapPlaceLevels = [
-                    MapPlaceLevel(id: "continent", title: continent, minimumSpan: 18, fontSize: 38),
-                    MapPlaceLevel(id: "world", title: "Ο κόσμος", minimumSpan: 95, fontSize: 32)
-                ]
-                return
-            }
-            let geocoder = CLGeocoder()
-            let placemarks = try await withTaskCancellationHandler {
-                try await geocoder.reverseGeocodeLocation(
-                    CLLocation(latitude: region.center.latitude, longitude: region.center.longitude)
-                )
-            } onCancel: {
-                geocoder.cancelGeocode()
-            }
-            try Task.checkCancellation()
-            guard let mark = placemarks.first else { return }
-            let candidates: [(String, String?, Double, CGFloat)] = [
-                ("area", mark.subLocality, 0, 25),
-                ("city", mark.locality, 0.12, 36),
-                ("district", mark.subAdministrativeArea, 0.8, 27),
-                ("region", mark.administrativeArea, 4, 29),
-                ("country", mark.country, 10, 35),
-                ("continent", continentName(latitude: region.center.latitude, longitude: region.center.longitude), 18, 38),
-                ("world", "Ο κόσμος", 95, 32)
-            ]
-            var seen = Set<String>()
-            let levels = candidates.compactMap { id, name, threshold, size -> MapPlaceLevel? in
-                guard let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return nil }
-                let key = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-                guard seen.insert(key).inserted else { return nil }
-                return MapPlaceLevel(id: id, title: name, minimumSpan: threshold, fontSize: size)
-            }
-            if !levels.isEmpty { mapPlaceLevels = levels }
-        } catch is CancellationError {
-            return
-        } catch {
-            // Keep the last verified place hierarchy while MapKit is unavailable.
-        }
-    }
-    func continentName(latitude: CLLocationDegrees, longitude: CLLocationDegrees) -> String {
-        switch (latitude, longitude) {
-        case (let lat, let lon) where lon < -30 && lat > 15: return "Βόρεια Αμερική"
-        case (let lat, let lon) where lon < -30 && lat <= 15: return "Νότια Αμερική"
-        case (let lat, let lon) where lon > 110 && lat < 5: return "Ωκεανία"
-        case (let lat, let lon) where lat > 34 && lat < 72 && lon > -25 && lon < 60: return "Ευρώπη"
-        case (let lat, let lon) where lat > -38 && lat < 38 && lon > -22 && lon < 56: return "Αφρική"
-        case (_, let lon) where lon > 55: return "Ασία"
-        default: return "Ο κόσμος"
-        }
-    }
     var mapOptionsMenu: some View {
         Menu {
             Picker("Εμφάνιση χάρτη", selection: $theme) {
@@ -6085,12 +6754,13 @@ private struct TrippyMapCanvas<Header: View>: View {
                 Text("Φασκόμηλο").tag("sage")
             }
             Button(darkMode ? "Φωτεινή εμφάνιση" : "Σκούρα εμφάνιση", systemImage: darkMode ? "sun.max" : "moon") { darkMode.toggle() }
-            if destination.isEmpty { Button("Κατηγορίες χάρτη", systemImage: "slider.horizontal.3") { showHomeFilters = true } }
+            Button("Google Places", systemImage: "magnifyingglass") { onPlacesSettings?() }
+            if destination.isEmpty { Button("Ρυθμίσεις χάρτη", systemImage: "slider.horizontal.3") { showHomeFilters = true } }
             Button("Εμφάνιση όλων των σημείων", systemImage: "arrow.up.left.and.arrow.down.right") { fitMap() }
         } label: {
-            Image(systemName: "square.3.layers.3d").font(.system(size: 18, weight: .medium))
+            Image(systemName: "gearshape").font(.system(size: 18, weight: .medium))
                 .foregroundStyle(AppPalette.ink).frame(width: 52, height: 52).modifier(AdaptiveGlassControl(shape: .circle))
-        }.accessibilityLabel("Εμφάνιση και επιλογές χάρτη")
+        }.accessibilityLabel("Ρυθμίσεις χάρτη")
     }
     var homeMapFilterSheet: some View {
         NavigationStack {
@@ -6119,15 +6789,18 @@ private struct TrippyMapCanvas<Header: View>: View {
                 }.padding(20)
             }
             .background(AppPalette.canvas)
-            .navigationTitle("Επιλογές χάρτη").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Ρυθμίσεις χάρτη").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Έγινε") { showHomeFilters = false }.tint(AppPalette.brand) } }
         }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
     }
     func pinButton(_ pin: WorkspaceMapPin) -> some View {
         let span = visibleRegion?.span.latitudeDelta ?? 0
         let showsName = span < 1.5
-        let iconColor = pin.layer == "recommended" ? Color(hex: "CE6651") : AppPalette.brand
-        return Button { selectedPin = pin; searchFocused = false } label: {
+        let iconColor = pin.layer == "recommended" ? Color(hex: "CE6651") : pin.category.tint
+        return Button { focusPin(pin) } label: {
+            if pin.layer == "search" {
+                SearchMapPinView(category: pin.category)
+            } else {
             HStack(spacing: 7) {
                 Image(systemName: pin.layer == "saved" ? "bookmark.fill" : pin.category.symbol)
                     .font(.system(size: 14, weight: .semibold)).foregroundStyle(iconColor)
@@ -6144,7 +6817,16 @@ private struct TrippyMapCanvas<Header: View>: View {
             .modifier(AdaptiveGlassControl(shape: .capsule))
             .overlay(Capsule().stroke(.white.opacity(0.82), lineWidth: 1))
             .shadow(color: AppPalette.ink.opacity(0.17), radius: 6, y: 2)
-        }.buttonStyle(QuietPressStyle()).accessibilityLabel("\(pin.name) · \(pin.category.rawValue)")
+            }
+        }.buttonStyle(QuietPressStyle())
+            .overlay {
+                if focusedMapPinID == pin.id {
+                    Circle().stroke(AppPalette.brand, lineWidth: 2).padding(-5)
+                        .shadow(color: AppPalette.brand.opacity(0.4), radius: 6)
+                        .allowsHitTesting(false)
+                }
+            }
+            .accessibilityLabel("\(pin.name) · \(pin.category.rawValue)")
     }
     var searchBar: some View {
         HStack(spacing: 12) {
@@ -6153,7 +6835,10 @@ private struct TrippyMapCanvas<Header: View>: View {
                 .font(.subheadline).focused($searchFocused).submitLabel(.search)
                 .onSubmit { searchFocused = false }
             if !query.isEmpty || searchFocused {
-                Button { query = ""; searchResults = []; searchError = nil; searchFocused = false } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44) }
+                Button {
+                    query = ""; searchResults = []; searchError = nil; searchSourceNotice = nil; searchFocused = false
+                    if selectedSearchPlace != nil { selectedPin = nil }
+                } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44) }
                     .accessibilityLabel("Καθαρισμός αναζήτησης")
             }
         }.padding(.leading, 18).padding(.trailing, 8).frame(minHeight: 52)
@@ -6162,103 +6847,715 @@ private struct TrippyMapCanvas<Header: View>: View {
     }
     var searchPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let searchSourceNotice {
+                HStack(spacing: 7) {
+                    if searchSourceNotice.hasPrefix("Google Places") { GooglePlacesGlyph() }
+                    else { Image(systemName: "apple.logo").font(.caption.weight(.bold)).foregroundStyle(AppPalette.secondaryInk) }
+                    Text(searchSourceNotice).font(.system(size: 10, weight: .semibold)).foregroundStyle(AppPalette.secondaryInk)
+                    Spacer()
+                }.padding(.horizontal, 14).padding(.top, 12)
+            }
             if searching {
-                HStack { TrippyLoadingEmblem(active: true).frame(width: 40, height: 40); Text("Αναζήτηση στο Apple Maps…").font(.caption) }.padding(12)
-            } else if let error = searchError {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small).tint(AppPalette.brand)
+                    Text("Αναζήτηση σε Google Places και Apple Maps…")
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(AppPalette.secondaryInk)
+                }.padding(.horizontal, 14).padding(.top, 12)
+            }
+            if searchResults.isEmpty, let error = searchError, !searching {
                 Text(error).font(.caption).padding(16)
-            } else {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(searchResults) { place in
+            } else if !searchResults.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 7) {
+                        ForEach(MapSearchFilter.allCases) { filter in
                             Button {
-                                selectedPin = WorkspaceMapPin(id: place.id, name: place.name, coordinate: place.coordinate, layer: "search", category: place.category, city: place.city, address: place.address)
-                                searchFocused = false
-                                position = .region(.init(center: place.coordinate, span: .init(latitudeDelta: 0.012, longitudeDelta: 0.012)))
+                                withAnimation(.snappy(duration: 0.2)) { searchFilter = filter }
                             } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: place.category.symbol).frame(width: 32)
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(place.name).font(.subheadline.weight(.medium))
-                                        Text(place.address).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                    Spacer(); Image(systemName: "arrow.up.right")
-                                }.padding(14).frame(minHeight: 52)
+                                Text(filter.title).font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(searchFilter == filter ? AppPalette.inverseInk : AppPalette.ink)
+                                    .padding(.horizontal, 12).frame(height: 31)
+                                    .background(searchFilter == filter ? AppPalette.brand : AppPalette.surface.opacity(0.82), in: Capsule())
+                                    .overlay(Capsule().stroke(AppPalette.ink.opacity(searchFilter == filter ? 0 : 0.08), lineWidth: 1))
                             }.buttonStyle(.plain)
                         }
+                    }.padding(.horizontal, 12).padding(.top, 11)
+                }.scrollIndicators(.hidden)
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(displayedSearchResults) { place in
+                            Button { selectSearchResult(place) } label: {
+                                HStack(spacing: 13) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 14).fill(place.searchKind == .area ? AppPalette.accent.opacity(0.42) : place.category.tint.opacity(0.14))
+                                        Image(systemName: place.searchKind == .area ? "map.fill" : place.category.symbol)
+                                            .font(.system(size: 15, weight: .semibold)).foregroundStyle(place.searchKind == .area ? AppPalette.brand : place.category.tint)
+                                    }.frame(width: 42, height: 42)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(place.name).font(.custom("PlusJakartaSans-Bold", size: 14)).foregroundStyle(AppPalette.ink)
+                                        Text(place.address.isEmpty ? place.city : place.address).font(.caption).foregroundStyle(AppPalette.secondaryInk).lineLimit(1)
+                                    }
+                                    Spacer(minLength: 4)
+                                    Text(place.searchKind == .area ? geographicScopeLabel(place.boundaryLevel) : place.category.rawValue)
+                                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(AppPalette.secondaryInk)
+                                        .padding(.horizontal, 8).padding(.vertical, 5).background(AppPalette.surface, in: Capsule())
+                                }.padding(.horizontal, 12).padding(.vertical, 8).frame(minHeight: 60)
+                                    .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            }.buttonStyle(QuietPressStyle())
+                        }
+                        if displayedSearchResults.isEmpty, !searching {
+                            Text("Δεν βρέθηκαν επιλογές σε αυτή την κατηγορία.").font(.caption).foregroundStyle(AppPalette.secondaryInk).padding(16)
+                        }
                     }
-                }.frame(maxHeight: 200)
+                }.frame(maxHeight: 250)
+                if searchSourceNotice?.hasPrefix("Google Places") == true, !searchResults.isEmpty {
+                    Text("Google Places και Apple Maps · επίλεξε ένα αποτέλεσμα για εστίαση στον χάρτη.")
+                        .font(.system(size: 10)).foregroundStyle(AppPalette.secondaryInk)
+                        .padding(.horizontal, 14).padding(.bottom, 11).padding(.top, 4)
+                }
             }
-        }.frame(maxWidth: .infinity, alignment: .leading).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(.white.opacity(0.78), lineWidth: 1))
+            .shadow(color: AppPalette.ink.opacity(0.12), radius: 18, y: 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
     }
     func searchPlaces() async {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         searchError = nil
-        guard text.count >= 2 else { searching = false; searchResults = []; return }
-        searching = true; searchResults = []
+        guard text.count >= 2 else {
+            searching = false; searchResults = []; searchSourceNotice = nil; searchFilter = .all
+            return
+        }
+        searching = true; searchResults = []; searchSourceNotice = nil
+        searchFilter = .all
         do {
-            try await Task.sleep(for: .milliseconds(450))
+            try await Task.sleep(for: .milliseconds(160))
             try Task.checkCancellation()
-            let request = MKLocalSearch.Request()
-            request.naturalLanguageQuery = destination.isEmpty ? text : "\(text), \(destination)"
-            if let region = visibleRegion { request.region = region }
-            let search = MKLocalSearch(request: request)
-            let response = try await withTaskCancellationHandler { try await search.start() } onCancel: { search.cancel() }
-            try Task.checkCancellation()
-            searchResults = response.mapItems.prefix(8).map { item in
-                let coordinate = item.placemark.coordinate
-                let name = item.name ?? text
-                return PersonalPlace(id: "apple:\(name.lowercased()):\(coordinate.latitude):\(coordinate.longitude)", name: name,
-                                     city: item.placemark.locality ?? destination, address: item.placemark.title ?? name,
-                                     latitude: coordinate.latitude, longitude: coordinate.longitude,
-                                     category: .classify(item.pointOfInterestCategory?.rawValue ?? ""))
+            let googleTask = Task { try? await searchGooglePlaces(text) }
+            let appleTask = Task { try? await searchApplePlaces(text) }
+            defer { googleTask.cancel(); appleTask.cancel() }
+            let appleResults = await withTaskCancellationHandler {
+                await appleTask.value ?? []
+            } onCancel: {
+                googleTask.cancel(); appleTask.cancel()
             }
+            try Task.checkCancellation()
+            searchResults = rankedUniqueSearchResults(appleResults, query: text)
+            if !appleResults.isEmpty { searchSourceNotice = "Apple Maps · εμφανίζονται και τα Google Places αποτελέσματα" }
+
+            let googleResults = await googleTask.value ?? []
+            try Task.checkCancellation()
+            searchResults = rankedUniqueSearchResults(googleResults + appleResults, query: text)
             searching = false
-            if searchResults.isEmpty { searchError = "Δεν βρέθηκαν αποτελέσματα. Δοκίμασε όνομα και περιοχή." }
+            if !googleResults.isEmpty {
+                searchSourceNotice = "Google Places + Apple Maps · ζωντανά αποτελέσματα"
+            } else if placesAccessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                searchSourceNotice = "Apple Maps · πρόσθεσε το Trippy bridge token στις ρυθμίσεις Google Places"
+            } else if !appleResults.isEmpty {
+                searchSourceNotice = "Apple Maps · το Google Places δεν επέστρεψε αποτελέσματα"
+            } else {
+                searchSourceNotice = "Google Places + Apple Maps"
+            }
+            if searchResults.isEmpty { searchError = "Δεν βρέθηκαν αποτελέσματα. Δοκίμασε όνομα πόλης, γειτονιάς ή μέρους." }
         } catch {
             guard !Task.isCancelled else { return }
             searching = false
             searchError = "Η αναζήτηση δεν είναι διαθέσιμη αυτή τη στιγμή. Δοκίμασε ξανά."
         }
     }
+    private func searchApplePlaces(_ text: String) async throws -> [PersonalPlace] {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = destination.isEmpty ? text : "\(text), \(destination)"
+        if let region = visibleRegion { request.region = region }
+        let search = MKLocalSearch(request: request)
+        let response = try await withTaskCancellationHandler { try await search.start() } onCancel: { search.cancel() }
+        return response.mapItems.prefix(12).compactMap { item in
+            let coordinate = item.placemark.coordinate
+            guard CLLocationCoordinate2DIsValid(coordinate) else { return nil }
+            let name = item.name ?? text
+            let placemark = item.placemark
+            let normalizedName = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            let areaNames = [placemark.locality, placemark.subAdministrativeArea, placemark.administrativeArea, placemark.country]
+                .compactMap { $0?.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) }
+            let isArea = item.pointOfInterestCategory == nil && areaNames.contains(normalizedName)
+            let kind: SearchPlaceKind = isArea ? .area : (item.pointOfInterestCategory == nil ? .attraction : .place)
+            return PersonalPlace(id: "apple:\(name.lowercased()):\(coordinate.latitude):\(coordinate.longitude)", name: name,
+                                 city: placemark.locality ?? destination, address: placemark.title ?? name,
+                                 latitude: coordinate.latitude, longitude: coordinate.longitude,
+                                 category: .classify(item.pointOfInterestCategory?.rawValue ?? name),
+                                 searchKind: kind, boundaryCountryCode: placemark.isoCountryCode,
+                                 searchLatitudeSpan: response.boundingRegion.span.latitudeDelta,
+                                 searchLongitudeSpan: response.boundingRegion.span.longitudeDelta,
+                                 boundaryLevel: boundaryLevel(for: placemark, title: name),
+                                 phoneNumber: item.phoneNumber, websiteURL: item.url?.absoluteString)
+        }
+    }
+    private func boundaryLevel(for placemark: MKPlacemark, title: String) -> String? {
+        let normalizedTitle = title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        func matches(_ value: String?) -> Bool {
+            value?.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) == normalizedTitle
+        }
+        if matches(placemark.country) { return "country" }
+        if matches(placemark.administrativeArea) { return "region" }
+        if matches(placemark.subAdministrativeArea) { return "district" }
+        if matches(placemark.locality) { return "city" }
+        return nil
+    }
+    private func rankedUniqueSearchResults(_ candidates: [PersonalPlace], query: String) -> [PersonalPlace] {
+        let normalizedQuery = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        var unique: [PersonalPlace] = []
+        for place in candidates {
+            let duplicate = unique.contains { existing in
+                if existing.googlePlaceID != nil, existing.googlePlaceID == place.googlePlaceID { return true }
+                if existing.searchKind == .area, place.searchKind == .area,
+                   existing.name.localizedCaseInsensitiveCompare(place.name) == .orderedSame { return true }
+                let meters = CLLocation(latitude: existing.latitude, longitude: existing.longitude)
+                    .distance(from: CLLocation(latitude: place.latitude, longitude: place.longitude))
+                return meters < 140 && existing.name.localizedCaseInsensitiveCompare(place.name) == .orderedSame
+            }
+            if !duplicate { unique.append(place) }
+            if unique.count == 24 { break }
+        }
+        return unique.sorted { lhs, rhs in
+            func score(_ place: PersonalPlace) -> Int {
+                let name = place.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                if name == normalizedQuery { return place.searchKind == .area ? 100 : 90 }
+                if place.searchKind == .area && name.hasPrefix(normalizedQuery) { return 80 }
+                if name.hasPrefix(normalizedQuery) { return 70 }
+                return 50
+            }
+            return score(lhs) > score(rhs)
+        }
+    }
+    private func searchGooglePlaces(_ text: String) async throws -> [PersonalPlace] {
+        guard !placesAccessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw URLError(.userAuthenticationRequired) }
+        guard var components = URLComponents(string: placesBaseURL + "/api/places/search") else { throw URLError(.badURL) }
+        let queryText = destination.isEmpty ? text : "\(text), \(destination)"
+        components.queryItems = [URLQueryItem(name: "q", value: queryText),
+                                 URLQueryItem(name: "lang", value: googlePlacesLanguage(for: text))]
+        guard let url = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(placesAccessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+        let payload = try JSONDecoder().decode(GooglePlaceSearchResponse.self, from: data)
+        return payload.places.map { place in
+            let type = place.primaryType.lowercased()
+            let knownTypes = place.types ?? []
+            let areaTypes = ["locality", "country", "administrative_area_level_1", "administrative_area_level_2", "postal_town", "neighborhood", "sublocality"]
+            let sameAsCity = place.city?.localizedCaseInsensitiveCompare(place.name) == .orderedSame
+            let area = place.isArea == true || sameAsCity
+                || knownTypes.contains(where: { candidate in areaTypes.contains(where: candidate.contains) })
+                || areaTypes.contains(where: type.contains)
+            let boundaryLevel = place.boundaryLevel ?? {
+                if knownTypes.contains("country") { return "country" }
+                if knownTypes.contains("administrative_area_level_1") { return "region" }
+                if knownTypes.contains("administrative_area_level_2") { return "district" }
+                if knownTypes.contains(where: { ["neighborhood", "sublocality"].contains($0) }) { return "area" }
+                return area ? "city" : nil
+            }()
+            let category = MapPlaceCategory.classify(place.primaryType)
+            let kind: SearchPlaceKind = area ? .area : (category == .sights ? .attraction : .place)
+            return PersonalPlace(id: "google:\(place.placeID)", name: place.name, city: place.city ?? destination,
+                                address: place.address, latitude: place.latitude, longitude: place.longitude,
+                                category: category, searchKind: kind, boundaryCountryCode: place.countryCode,
+                                searchLatitudeSpan: area ? (place.latitudeSpan ?? 1.2) : nil,
+                                searchLongitudeSpan: area ? (place.longitudeSpan ?? 1.2) : nil,
+                                boundaryLevel: boundaryLevel,
+                                searchTypes: knownTypes, googlePlaceID: place.placeID)
+        }
+    }
+    private func googlePlacesLanguage(for text: String) -> String {
+        let containsGreek = text.unicodeScalars.contains { scalar in
+            (0x0370...0x03FF).contains(scalar.value) || (0x1F00...0x1FFF).contains(scalar.value)
+        }
+        return containsGreek ? "el" : "en"
+    }
+    private func geographicScopeLabel(_ level: String?) -> String {
+        switch level {
+        case "country": "Χώρα"
+        case "region": "Περιφέρεια"
+        case "district", "area": "Περιοχή"
+        default: "Πόλη"
+        }
+    }
+    private func selectSearchResult(_ result: PersonalPlace) {
+        let place = result
+        let pin = WorkspaceMapPin(id: place.id, name: place.name, coordinate: place.coordinate, layer: "search",
+                                  category: place.category, city: place.city, address: place.address,
+                                  searchKind: place.searchKind ?? .place, boundaryCountryCode: place.boundaryCountryCode,
+                                  searchLatitudeSpan: place.searchLatitudeSpan, searchLongitudeSpan: place.searchLongitudeSpan,
+                                  boundaryLevel: place.boundaryLevel,
+                                  phoneNumber: place.phoneNumber, websiteURL: place.websiteURL, googlePlaceID: place.googlePlaceID)
+        presentPlace(pin)
+    }
+    private func presentPlace(_ pin: WorkspaceMapPin) {
+        query = ""
+        searchResults = []
+        searchFocused = false
+        searchSourceNotice = nil
+        focusedMapPinID = pin.id
+        selectedSearchPlace = pin.layer == "search" && pin.searchKind != .area ? pin : nil
+        selectedPinCategory = nil
+        googlePlaceDetails = nil
+        googleDetailsError = nil
+        let latitudeSpan = pin.searchKind == .area ? max(0.08, min(16, (pin.searchLatitudeSpan ?? 0.5) * 1.28)) : 0.012
+        let longitudeSpan = pin.searchKind == .area ? max(0.08, min(16, (pin.searchLongitudeSpan ?? 0.5) * 1.28)) : 0.012
+        let region = MKCoordinateRegion(center: pin.coordinate, span: .init(latitudeDelta: latitudeSpan, longitudeDelta: longitudeSpan))
+        withAnimation(reduceMotion ? nil : .spring(response: 0.58, dampingFraction: 0.86)) {
+            if pin.searchKind == .attraction {
+                position = .camera(MapCamera(centerCoordinate: pin.coordinate, distance: 820, heading: 0, pitch: 58))
+            } else if pin.searchKind == .place {
+                position = .camera(MapCamera(centerCoordinate: pin.coordinate, distance: 520, heading: 0, pitch: 34))
+            } else { position = .region(region) }
+        }
+        selectedPin = pin
+        guard pin.searchKind == .area else { mapPlaceBoundaryLines = []; areaHighlightOpacity = 0; return }
+        Task {
+            let lines = try? await GeoBoundaryRepository.shared.boundary(
+                countryISO2: pin.boundaryCountryCode,
+                countryNames: [pin.address, pin.city].filter { !$0.isEmpty },
+                placeNames: [pin.name], levelID: pin.boundaryLevel ?? "city",
+                center: GeoBoundaryPoint(latitude: pin.coordinate.latitude, longitude: pin.coordinate.longitude))
+            guard !Task.isCancelled, focusedMapPinID == pin.id else { return }
+            withAnimation(.easeInOut(duration: 0.35)) { mapPlaceBoundaryLines = lines ?? []; areaHighlightOpacity = 0 }
+            guard lines != nil else { return }
+            for _ in 0..<2 {
+                withAnimation(.easeOut(duration: 0.24)) { areaHighlightOpacity = 1 }
+                try? await Task.sleep(for: .milliseconds(360))
+                withAnimation(.easeInOut(duration: 0.32)) { areaHighlightOpacity = 0.12 }
+                try? await Task.sleep(for: .milliseconds(180))
+            }
+            withAnimation(.easeOut(duration: 0.35)) { areaHighlightOpacity = 0 }
+        }
+    }
+    private func focusPin(_ pin: WorkspaceMapPin) {
+        presentPlace(pin)
+    }
+    private func handleMapTap(at point: CGPoint, proxy: MapProxy) {
+        guard selectedPin != nil else { return }
+        let selectablePins = pins + cityPins + (selectedSearchPlace.map { [$0] } ?? [])
+        let touchedPin = selectablePins.contains { pin in
+            guard let anchor = proxy.convert(pin.coordinate, to: .local) else { return false }
+            return hypot(anchor.x - point.x, anchor.y - point.y) < 125
+        }
+        guard !touchedPin else { return }
+        selectedPin = nil
+    }
     func selectedPlacePanel(_ pin: WorkspaceMapPin) -> some View {
         let saved = savedPlaces.contains { samePlace($0, pin) }
-        return VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(pin.name).font(.title2.weight(.bold))
-                    Text(pin.category.rawValue).font(.subheadline).foregroundStyle(.secondary)
+        let category = selectedPinCategory ?? pin.category
+        let mentions = relatedTikTokMentions(for: pin)
+        let linkedSources = socialSources.filter { source in
+            mentions.contains(where: { $0.sourceID == source.id })
+        }
+        let linkedNotes = travelNotes.filter { note in
+            mentions.contains(where: { $0.noteID == note.id || note.sourceIDs.contains($0.sourceID) })
+                || (note.linkedPlaceIDs ?? []).contains(pin.id)
+        }
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(googlePlaceDetails?.name.nonEmpty ?? pin.name).font(.custom("PlusJakartaSans-ExtraBold", size: 26)).tracking(-0.6)
+                            .foregroundStyle(AppPalette.ink).fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 7) {
+                            Image(systemName: pin.searchKind == .area ? "map.fill" : category.symbol)
+                                .foregroundStyle(pin.searchKind == .area ? AppPalette.brand : category.tint)
+                            Text(pin.searchKind == .area ? geographicScopeLabel(pin.boundaryLevel) : (googlePlaceDetails?.primaryType.nonEmpty ?? category.rawValue))
+                            if pin.searchKind == .area, let count = cityTripCount(for: pin), count > 0 {
+                                Text("\(count) trips").font(.caption.weight(.bold)).padding(.horizontal, 9).padding(.vertical, 5)
+                                    .background(AppPalette.accent.opacity(0.35), in: Capsule())
+                            }
+                        }.font(.caption.weight(.semibold)).foregroundStyle(AppPalette.secondaryInk)
+                    }
+                    Spacer(minLength: 2)
+                    Button { selectedPin = nil } label: {
+                        Image(systemName: "xmark").font(.system(size: 13, weight: .bold)).frame(width: 40, height: 40)
+                            .background(.regularMaterial, in: Circle()).overlay(Circle().stroke(.white.opacity(0.8), lineWidth: 1))
+                    }.buttonStyle(QuietPressStyle()).accessibilityLabel("Κλείσιμο μέρους")
                 }
-                Spacer()
-                Button { selectedPin = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }.accessibilityLabel("Κλείσιμο μέρους")
+
+                if let googlePlaceDetails {
+                    VStack(alignment: .leading, spacing: 14) {
+                    if !googlePlaceDetails.photos.isEmpty {
+                        ScrollView(.horizontal) {
+                            LazyHStack(spacing: 11) {
+                                ForEach(googlePlaceDetails.photos) { photo in
+                                    GooglePlacePhotoCard(photo: photo, baseURL: placesBaseURL, accessToken: placesAccessToken)
+                                }
+                            }
+                        }.scrollIndicators(.hidden).contentMargins(.trailing, 2)
+                    } else {
+                        Label("Δεν υπάρχουν διαθέσιμες φωτογραφίες για αυτό το μέρος.", systemImage: "photo")
+                            .font(.caption).foregroundStyle(AppPalette.secondaryInk)
+                    }
+                    GooglePlacesBrandLink(url: googlePlaceDetails.googleMapsURL.flatMap(URL.init(string:)))
+                    if let rating = googlePlaceDetails.rating {
+                        HStack(spacing: 7) {
+                            Image(systemName: "star.fill").foregroundStyle(Color(hex: "E5A52B"))
+                            Text(String(format: "%.1f", rating)).font(.headline)
+                            if let count = googlePlaceDetails.reviewCount { Text("(\(count.formatted()) κριτικές)").font(.subheadline).foregroundStyle(AppPalette.secondaryInk) }
+                            Spacer()
+                            if let open = googlePlaceDetails.openNow {
+                                Label(open ? "Ανοιχτό τώρα" : "Κλειστό τώρα", systemImage: "circle.fill")
+                                    .font(.caption.weight(.bold)).foregroundStyle(open ? Color(hex: "448568") : Color(hex: "B85C52"))
+                            }
+                        }
+                    }
+                    if let summary = googlePlaceDetails.summary.nonEmpty {
+                        Text(summary).font(.subheadline).foregroundStyle(AppPalette.secondaryInk).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !googlePlaceDetails.openingHours.isEmpty {
+                        DisclosureGroup("Ώρες λειτουργίας") {
+                            VStack(alignment: .leading, spacing: 7) {
+                                ForEach(Array(googlePlaceDetails.openingHours.enumerated()), id: \.offset) { _, line in
+                                    Text(line).font(.caption).foregroundStyle(AppPalette.secondaryInk)
+                                }
+                            }.padding(.top, 8)
+                        }.font(.subheadline.weight(.semibold)).tint(AppPalette.brand)
+                    }
+                    if !googlePlaceDetails.reviews.isEmpty {
+                        DisclosureGroup("Κριτικές · \(googlePlaceDetails.reviews.count)") {
+                            VStack(alignment: .leading, spacing: 11) {
+                            Text("Google Maps").font(.caption2.weight(.medium)).foregroundStyle(AppPalette.secondaryInk)
+                            ForEach(googlePlaceDetails.reviews) { review in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(spacing: 9) {
+                                        if let avatarURL = review.authorPhotoURL.flatMap(URL.init(string:)) {
+                                            GoogleAuthorAvatar(url: avatarURL)
+                                        }
+                                        if let profile = review.authorURL.flatMap(URL.init(string:)) {
+                                            Link(review.authorName, destination: profile).font(.caption.weight(.bold))
+                                        } else { Text(review.authorName).font(.caption.weight(.bold)) }
+                                        Spacer()
+                                        if let rating = review.rating {
+                                            HStack(spacing: 2) { ForEach(0..<5, id: \.self) { index in Image(systemName: Double(index) < rating.rounded() ? "star.fill" : "star").foregroundStyle(Color(hex: "E5A52B")) } }
+                                                .font(.system(size: 9))
+                                        }
+                                        Text(review.relativeTime).font(.caption2).foregroundStyle(AppPalette.secondaryInk)
+                                    }
+                                    if let text = review.text.nonEmpty { Text(text).font(.caption).foregroundStyle(AppPalette.ink).lineLimit(4) }
+                                    if let visitDate = review.visitDate, let year = visitDate.year, let month = visitDate.month {
+                                        Text("Επίσκεψη: \(String(format: "%02d/%04d", month, year))")
+                                            .font(.caption2).foregroundStyle(AppPalette.secondaryInk)
+                                    }
+                                    if let sourceURL = review.googleMapsURL.flatMap(URL.init(string:)) {
+                                        Link("Προβολή κριτικής στο Google Maps", destination: sourceURL)
+                                            .font(.caption2.weight(.semibold)).foregroundStyle(AppPalette.brand)
+                                    }
+                                }
+                                .padding(13).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                            }
+                            }
+                        }.font(.subheadline.weight(.semibold)).tint(AppPalette.brand)
+                    }
+                    if let phone = googlePlaceDetails.phoneNumber,
+                       let url = URL(string: "tel:\(phone.filter { $0.isNumber || $0 == "+" })") {
+                        Link(destination: url) { Label(phone, systemImage: "phone.fill").font(.caption.weight(.semibold)) }.foregroundStyle(AppPalette.secondaryInk)
+                    }
+                    if let rawURL = googlePlaceDetails.websiteURL, let url = URL(string: rawURL) {
+                        Link(destination: url) { Label("Ιστότοπος", systemImage: "globe").font(.caption.weight(.semibold)) }.foregroundStyle(AppPalette.secondaryInk)
+                    }
+                    }
+                    .padding(15)
+                    .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 23, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 23, style: .continuous).stroke(.white.opacity(0.78), lineWidth: 1))
+                } else if loadingGoogleDetails {
+                    HStack(spacing: 9) { ProgressView(); Text("Φορτώνω φωτογραφίες και πληροφορίες…").font(.caption).foregroundStyle(AppPalette.secondaryInk) }
+                        .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+                } else if let googleDetailsError {
+                    Text(googleDetailsError).font(.caption).foregroundStyle(AppPalette.secondaryInk)
+                }
+                if googlePlaceDetails == nil {
+                    if let phone = pin.phoneNumber,
+                       let url = URL(string: "tel:\(phone.filter { $0.isNumber || $0 == "+" })") {
+                        Link(destination: url) { Label(phone, systemImage: "phone.fill").font(.caption.weight(.semibold)) }
+                            .foregroundStyle(AppPalette.secondaryInk)
+                    }
+                    if let rawURL = pin.websiteURL, let url = URL(string: rawURL) {
+                        Link(destination: url) { Label("Ιστότοπος", systemImage: "globe").font(.caption.weight(.semibold)) }
+                            .foregroundStyle(AppPalette.secondaryInk)
+                    }
+                }
+                if !pin.address.isEmpty { Label(pin.address, systemImage: "mappin.and.ellipse").font(.caption).foregroundStyle(AppPalette.secondaryInk) }
+
+                if !mentions.isEmpty || !linkedSources.isEmpty || !linkedNotes.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "music.note").foregroundStyle(AppPalette.brand)
+                            Text("TikTok notes").font(.custom("PlusJakartaSans-Bold", size: 17)).foregroundStyle(AppPalette.ink)
+                            Spacer()
+                            Text("\(max(linkedSources.count, mentions.count)) saves").font(.caption2.weight(.bold))
+                                .padding(.horizontal, 9).padding(.vertical, 6).background(AppPalette.brand.opacity(0.11), in: Capsule())
+                        }
+                        if !mentions.isEmpty {
+                            ForEach(mentions) { mention in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Image(systemName: "mappin.circle.fill").foregroundStyle(category.tint)
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(mention.name).font(.subheadline.weight(.bold)).foregroundStyle(AppPalette.ink)
+                                            if let summary = mention.summary.nonEmpty { Text(summary).font(.caption).foregroundStyle(AppPalette.secondaryInk).fixedSize(horizontal: false, vertical: true) }
+                                        }
+                                    }
+                                    if let note = linkedNotes.first(where: { $0.id == mention.noteID || $0.sourceIDs.contains(mention.sourceID) }),
+                                       let noteText = note.userText.nonEmpty {
+                                        Text(noteText).font(.caption).foregroundStyle(AppPalette.ink).padding(10)
+                                            .frame(maxWidth: .infinity, alignment: .leading).background(AppPalette.canvas, in: RoundedRectangle(cornerRadius: 12))
+                                    }
+                                    if let source = socialSources.first(where: { $0.id == mention.sourceID }),
+                                       let link = source.envelope.sourceURL.flatMap(URL.init(string:)) {
+                                        Link(destination: link) {
+                                            Label(source.listTitle ?? source.displayTitle ?? "Open TikTok", systemImage: "play.rectangle.fill")
+                                                .font(.caption.weight(.bold)).foregroundStyle(.white).padding(.horizontal, 13).frame(height: 38)
+                                                .background(Color(hex: "272725"), in: Capsule())
+                                        }
+                                    }
+                                }
+                                .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+                            }
+                        }
+                        if mentions.isEmpty {
+                            ForEach(linkedNotes) { note in
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(note.title).font(.caption.weight(.bold)).foregroundStyle(AppPalette.ink)
+                                    Text(note.userText.nonEmpty ?? "Saved note").font(.caption).foregroundStyle(AppPalette.secondaryInk).lineLimit(4)
+                                }.padding(13).frame(maxWidth: .infinity, alignment: .leading).background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 16))
+                            }
+                        }
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("TikTok notes").font(.custom("PlusJakartaSans-Bold", size: 17)).foregroundStyle(AppPalette.ink)
+                        Text("Τα σχετικά TikTok saves και οι σημειώσεις τους θα εμφανιστούν εδώ.")
+                            .font(.caption).foregroundStyle(AppPalette.secondaryInk)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(15)
+                    .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+                }
+                if onPlanPin != nil && (pin.layer == "planned" || pin.layer == "recommended") {
+                    Button { pendingPlanPin = pin; selectedPin = nil } label: {
+                        Label("Προσθήκη στο πρόγραμμα", systemImage: "calendar.badge.plus")
+                            .font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).frame(minHeight: 46)
+                            .foregroundStyle(AppPalette.ink).background(AppPalette.surface, in: Capsule())
+                    }.buttonStyle(QuietPressStyle())
+                }
             }
-            if !pin.address.isEmpty { Text(pin.address).font(.subheadline).foregroundStyle(.secondary) }
-            HStack(spacing: 12) {
-                Button {
-                    if saved { savedPlaces.removeAll { samePlace($0, pin) } }
-                    else { savedPlaces.append(pin.personalPlace) }
+            .padding(20)
+            .padding(.bottom, 8)
+        }
+        .scrollIndicators(.hidden)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            placeActionBar(pin, category: category, saved: saved)
+        }
+        .presentationDetents([.height(pin.searchKind == .area ? 250 : 500), .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(.regularMaterial)
+        .presentationBackgroundInteraction(.enabled(upThrough: .height(500)))
+        .overlay(alignment: .top) {
+            if let emoji = celebrationEmoji { PinCelebrationView(emoji: emoji).padding(.top, 2).transition(.scale(scale: 0.2).combined(with: .opacity)).allowsHitTesting(false) }
+        }
+        .animation(.spring(response: 0.38, dampingFraction: 0.82), value: celebrationEmoji)
+        .task(id: pin.id) { await loadGoogleDetails(for: pin) }
+    }
+    @ViewBuilder
+    private func placeActionBar(_ pin: WorkspaceMapPin, category: MapPlaceCategory, saved: Bool) -> some View {
+        VStack(spacing: 9) {
+            HStack(spacing: 8) {
+                if pin.searchKind != .area {
+                    Menu {
+                    ForEach(MapPlaceCategory.allCases) { item in
+                        Button {
+                            selectedPinCategory = item
+                            if let index = savedPlaces.firstIndex(where: { samePlace($0, pin) }) {
+                                savedPlaces[index].category = item
+                            } else {
+                                savedPlaces.append(enrichedPlace(for: pin, category: item))
+                                celebrate(item)
+                            }
+                        } label: {
+                            Label(item.rawValue, systemImage: item.symbol)
+                                .foregroundStyle(item.tint)
+                        }
+                    }
+                    if saved {
+                        Button("Αφαίρεση pin", systemImage: "bookmark.slash", role: .destructive) {
+                            savedPlaces.removeAll { samePlace($0, pin) }
+                        }
+                    }
                 } label: {
-                    Label(saved ? "Saved" : "Save", systemImage: saved ? "bookmark.fill" : "bookmark")
-                        .font(.headline).frame(maxWidth: .infinity).frame(height: 50)
+                    Label(saved ? "Pinned" : "Pin", systemImage: saved ? "bookmark.fill" : "bookmark")
+                        .font(.system(size: 12, weight: .bold)).frame(maxWidth: .infinity).frame(height: 46)
                         .foregroundStyle(AppPalette.inverseInk).background(AppPalette.brand, in: Capsule())
-                }.buttonStyle(.plain)
+                    }.buttonStyle(QuietPressStyle()).accessibilityLabel("Pin · επιλογή κατηγορίας")
+                }
+
+                if let onSaveTripPin {
+                    Menu {
+                        if tripChoices.isEmpty { Button("Δημιουργία νέου Trip", systemImage: "plus") { onNewTrip?() } }
+                        else {
+                            ForEach(tripChoices) { trip in
+                                Button(trip.title, systemImage: "suitcase.rolling") {
+                                    onSaveTripPin(trip.id, enrichedPlace(for: pin, category: category)); celebrate(category)
+                                }
+                            }
+                            if let onNewTrip { Button("Δημιουργία νέου Trip", systemImage: "plus") { onNewTrip() } }
+                        }
+                    } label: {
+                        Label("Save to Trip", systemImage: "suitcase.rolling")
+                            .font(.system(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
+                            .frame(maxWidth: .infinity).frame(height: 46).modifier(AdaptiveGlassControl(shape: .capsule))
+                    }.buttonStyle(QuietPressStyle())
+                }
+
+                if pin.searchKind != .area {
+                    Button { beginDirections(to: pin) } label: {
+                    Label(calculatingDirections ? "Loading…" : "Directions", systemImage: "figure.walk")
+                        .font(.system(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity).frame(height: 46).modifier(AdaptiveGlassControl(shape: .capsule))
+                    }.buttonStyle(QuietPressStyle()).disabled(calculatingDirections)
+                }
+            }
+            HStack(spacing: 8) {
+                Menu {
+                    if let onAddToNote, !noteChoices.isEmpty {
+                        Menu("Προσθήκη σε Note", systemImage: "text.badge.plus") {
+                            ForEach(noteChoices) { note in
+                                Button(note.tripID == nil ? note.title : "\(note.title) · Trip") {
+                                    let place = enrichedPlace(for: pin, category: category)
+                                    dismissPlacePanel(then: { onAddToNote(place, note.id) })
+                                }
+                            }
+                        }
+                    }
+                    Button("Νέα global σημείωση", systemImage: "note.text.badge.plus") {
+                        let place = enrichedPlace(for: pin, category: category)
+                        dismissPlacePanel(then: { onCreateNote?(place, nil) })
+                    }
+                    if !tripChoices.isEmpty {
+                        Menu("Νέα σημείωση για Trip", systemImage: "suitcase") {
+                            ForEach(tripChoices) { trip in
+                                Button(trip.title) {
+                                    let place = enrichedPlace(for: pin, category: category)
+                                    dismissPlacePanel(then: { onCreateNote?(place, trip.id) })
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Note", systemImage: "note.text")
+                        .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 44)
+                        .modifier(AdaptiveGlassControl(shape: .capsule))
+                }.buttonStyle(QuietPressStyle())
                 Button {
-                    let item = MKMapItem(placemark: MKPlacemark(coordinate: pin.coordinate)); item.name = pin.name
+                    let item = MKMapItem(placemark: MKPlacemark(coordinate: pin.coordinate))
+                    item.name = pin.name
                     item.openInMaps()
                 } label: {
-                    Label("Apple Maps", systemImage: "arrow.triangle.turn.up.right.diamond").font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity).frame(height: 50).modifier(AdaptiveGlassControl(shape: .capsule))
-                }.buttonStyle(.plain)
+                    Image(systemName: "arrow.up.right.square").font(.system(size: 17, weight: .semibold))
+                        .frame(width: 48, height: 44).modifier(AdaptiveGlassControl(shape: .capsule))
+                }.buttonStyle(QuietPressStyle()).accessibilityLabel("Άνοιγμα στους Χάρτες Apple")
             }
-            if onPlanPin != nil && (pin.layer == "planned" || (pin.layer == "recommended" && schedulablePlaceIDs.contains(pin.id))) {
-                Button {
-                    pendingPlanPin = pin; selectedPin = nil
-                } label: {
-                    Label(pin.layer == "planned" ? "Δες την ημέρα στο πρόγραμμα" : "Προσθήκη στο \(planDayTitle)", systemImage: pin.layer == "planned" ? "list.bullet" : "plus")
-                        .font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).frame(minHeight: 44)
-                }
+        }
+        .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 8)
+        .background(.regularMaterial)
+        .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.65)).frame(height: 1) }
+    }
+    private func dismissPlacePanel(then action: @escaping () -> Void) {
+        pendingPlacePanelAction = action
+        selectedPin = nil
+    }
+    private func enrichedPlace(for pin: WorkspaceMapPin, category: MapPlaceCategory) -> PersonalPlace {
+        var place = pin.personalPlace
+        place.category = category
+        place.googlePlaceID = pin.googlePlaceID ?? resolvedGooglePlaceIDs[pin.id]
+        return place
+    }
+    private func relatedTikTokMentions(for pin: WorkspaceMapPin) -> [SocialPlaceMention] {
+        let target = pin.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        return socialPlaces.filter { mention in
+            let candidate = mention.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            if pin.searchKind == .area,
+               [pin.name, pin.city].contains(where: { !$0.isEmpty && mention.city?.localizedCaseInsensitiveCompare($0) == .orderedSame }) {
+                return true
             }
-            Spacer(minLength: 0)
-        }.padding(24).presentationDetents([.height(330), .medium]).presentationDragIndicator(.visible)
+            if target == candidate { return true }
+            if let latitude = mention.latitude, let longitude = mention.longitude {
+                let distance = CLLocation(latitude: latitude, longitude: longitude).distance(from: CLLocation(latitude: pin.coordinate.latitude, longitude: pin.coordinate.longitude))
+                if distance <= 180 { return true }
+            }
+            return !(pin.city.isEmpty || mention.city == nil) && mention.city!.localizedCaseInsensitiveCompare(pin.city) == .orderedSame
+                && candidate.localizedCaseInsensitiveContains(target)
+        }
+    }
+    private func loadGoogleDetails(for pin: WorkspaceMapPin) async {
+        googlePlaceDetails = nil
+        googleDetailsError = nil
+        guard !placesAccessToken.isEmpty else {
+            googleDetailsError = "Σύνδεσε το Trippy Places gateway για φωτογραφίες, reviews και ωράρια Google."
+            return
+        }
+        loadingGoogleDetails = true
+        defer { loadingGoogleDetails = false }
+        var placeID = pin.googlePlaceID ?? resolvedGooglePlaceIDs[pin.id]
+        if placeID == nil {
+            let query = [pin.name, pin.address, pin.city].filter { !$0.isEmpty }.joined(separator: ", ")
+            guard let candidates = try? await searchGooglePlaces(query), !Task.isCancelled else {
+                googleDetailsError = "Δεν βρέθηκαν στοιχεία Google Places για αυτό το σημείο."
+                return
+            }
+            let origin = pin.coordinate
+            let closest = candidates.min { first, second in
+                CLLocation(latitude: first.latitude, longitude: first.longitude).distance(from: CLLocation(latitude: origin.latitude, longitude: origin.longitude))
+                    < CLLocation(latitude: second.latitude, longitude: second.longitude).distance(from: CLLocation(latitude: origin.latitude, longitude: origin.longitude))
+            }
+            guard let closest,
+                  CLLocation(latitude: closest.latitude, longitude: closest.longitude).distance(from: CLLocation(latitude: origin.latitude, longitude: origin.longitude)) < 900 else {
+                googleDetailsError = "Δεν βρέθηκαν στοιχεία Google Places αρκετά κοντά σε αυτό το pin."
+                return
+            }
+            guard let closestPlaceID = closest.googlePlaceID else { return }
+            placeID = closestPlaceID
+            guard selectedPin?.id == pin.id, !Task.isCancelled else { return }
+            resolvedGooglePlaceIDs[pin.id] = closestPlaceID
+        }
+        guard let placeID else { return }
+        guard var components = URLComponents(string: placesBaseURL + "/api/places/details") else { return }
+        components.queryItems = [URLQueryItem(name: "place_id", value: placeID)]
+        guard let url = components.url else { return }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(placesAccessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard !Task.isCancelled, selectedPin?.id == pin.id else { return }
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                let failure = try? JSONDecoder().decode(GooglePlacesRequestError.self, from: data)
+                let reason = failure?.message ?? failure?.errorCode ?? "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"
+                googleDetailsError = "Google Places: \(reason)"; return
+            }
+            googlePlaceDetails = try JSONDecoder().decode(GooglePlaceDetails.self, from: data)
+        } catch {
+            guard !Task.isCancelled else { return }
+            googleDetailsError = "Δεν ήταν δυνατή η φόρτωση πληροφοριών Google Places."
+        }
+    }
+    private func cityTripCount(for pin: WorkspaceMapPin) -> Int? {
+        let names = [pin.name, pin.city]
+        let count = cityPins.filter { candidate in names.contains { $0.localizedCaseInsensitiveCompare(candidate.name) == .orderedSame } }
+            .compactMap { Int($0.badge ?? "0") }.reduce(0, +)
+        return count == 0 ? nil : count
+    }
+    private func celebrate(_ category: MapPlaceCategory) {
+        let generator = UINotificationFeedbackGenerator(); generator.notificationOccurred(.success)
+        let symbols: [MapPlaceCategory: String] = [.restaurants: "🍜", .streetFood: "🌮", .burgers: "🍔", .seafood: "🦐", .vegan: "🥑", .coffee: "☕️", .brunch: "🥐", .bars: "🍸", .clubs: "🎶", .parks: "🌿", .sights: "✨", .shopping: "🛍️", .touristShops: "🎁", .groceries: "🧺", .metro: "🚇", .other: "📍"]
+        withAnimation { celebrationEmoji = symbols[category] ?? "✨" }
+        Task { try? await Task.sleep(for: .milliseconds(850)); withAnimation { celebrationEmoji = nil } }
     }
     func samePlace(_ place: PersonalPlace, _ pin: WorkspaceMapPin) -> Bool {
         if place.id == pin.id { return true }
@@ -6276,6 +7573,56 @@ private struct TrippyMapCanvas<Header: View>: View {
         let minLat = latitudes.min()!, maxLat = latitudes.max()!, minLon = longitudes.min()!, maxLon = longitudes.max()!
         position = .region(.init(center: .init(latitude: (minLat + maxLat) / 2, longitude: (minLon + maxLon) / 2),
                                 span: .init(latitudeDelta: max(0.015, (maxLat - minLat) * 1.8), longitudeDelta: max(0.015, (maxLon - minLon) * 1.5))))
+    }
+    private func centerOnCurrentPosition() {
+        if let location = locationService.location, Date().timeIntervalSince(location.timestamp) < 120 {
+            centerMap(on: location)
+        } else {
+            centerWhenLocationArrives = true
+            locationService.requestCurrentLocation()
+        }
+    }
+    private func centerMap(on location: CLLocation) {
+        withAnimation(.easeInOut(duration: 0.35)) {
+            position = .region(.init(center: location.coordinate,
+                                     span: .init(latitudeDelta: 0.018, longitudeDelta: 0.018)))
+        }
+    }
+    private func beginDirections(to pin: WorkspaceMapPin) {
+        pendingDirectionsPin = pin
+        if let location = locationService.location, Date().timeIntervalSince(location.timestamp) < 120 {
+            pendingDirectionsPin = nil
+            Task { await calculateDirections(to: pin, from: location) }
+        } else {
+            locationService.requestCurrentLocation()
+        }
+    }
+    private func calculateDirections(to pin: WorkspaceMapPin, from origin: CLLocation) async {
+        calculatingDirections = true
+        defer { calculatingDirections = false }
+        let request = MKDirections.Request()
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: origin.coordinate))
+        let destinationItem = MKMapItem(placemark: MKPlacemark(coordinate: pin.coordinate))
+        destinationItem.name = pin.name
+        request.destination = destinationItem
+        request.transportType = .walking
+        request.requestsAlternateRoutes = false
+        do {
+            let response = try await MKDirections(request: request).calculate()
+            guard let route = response.routes.first else {
+                directionsError = "Δεν βρέθηκε διαθέσιμη πεζή διαδρομή προς \(pin.name)."
+                return
+            }
+            directionsRoute = route
+            withAnimation(.easeInOut(duration: 0.45)) {
+                position = .rect(route.polyline.boundingMapRect)
+            }
+            selectedPin = nil
+            try? await Task.sleep(for: .milliseconds(320))
+            showDirections = true
+        } catch {
+            directionsError = "Δεν ήταν δυνατός ο υπολογισμός οδηγιών. Έλεγξε την πρόσβαση τοποθεσίας και τη σύνδεση στο internet."
+        }
     }
     func routeKey(_ leg: TripRouteLeg) -> String {
         "\(leg.from.latitude),\(leg.from.longitude):\(leg.to.latitude),\(leg.to.longitude):\(leg.walking)"
@@ -6599,21 +7946,167 @@ private extension TripFlowView {
         processingShares = true
         defer { processingShares = false }
         for envelope in SharedInbox.pending() where !socialSources.contains(where: { $0.id == envelope.id }) {
-            let source = await SharedSourceProcessor.process(envelope)
+            var source = await SharedSourceProcessor.process(envelope)
+            source.city = trips.first(where: { $0.id == envelope.destination.tripID })?.brief.destination
             socialSources.append(source)
             if envelope.destination.mode == "note" { attachSourceToNote(source, noteID: envelope.destination.noteID) }
             persistSocialLibrary()
         }
     }
+    private func sourceTextBinding(_ sourceID: UUID, field: String) -> Binding<String> {
+        Binding(get: {
+            guard let source = socialSources.first(where: { $0.id == sourceID }) else { return "" }
+            switch field {
+            case "title": return source.displayTitle ?? ""
+            case "city": return source.city ?? trips.first(where: { $0.id == source.envelope.destination.tripID })?.brief.destination ?? ""
+            default: return source.listTitle ?? ""
+            }
+        }, set: { value in
+            guard let index = socialSources.firstIndex(where: { $0.id == sourceID }) else { return }
+            let clean = value.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+            switch field {
+            case "title": socialSources[index].displayTitle = clean
+            case "city": socialSources[index].city = clean
+            default: socialSources[index].listTitle = clean
+            }
+        })
+    }
+    private func isVideoSource(_ source: ImportedSocialSource) -> Bool {
+        source.envelope.mediaKind == "video" || source.envelope.sourceURL?.localizedCaseInsensitiveContains("tiktok.com") == true
+    }
+    private func cityForSource(_ source: ImportedSocialSource) -> String {
+        source.city?.nonEmpty ?? trips.first(where: { $0.id == source.envelope.destination.tripID })?.brief.destination ?? ""
+    }
+    private func cityForMention(_ place: SocialPlaceMention) -> String {
+        if let city = place.city?.nonEmpty { return city }
+        if let tripCity = trips.first(where: { $0.id == place.tripID })?.brief.destination { return tripCity }
+        if let source = socialSources.first(where: { $0.id == place.sourceID }) { return cityForSource(source) }
+        return ""
+    }
+    var videoLibrary: some View {
+        let videos = socialSources.filter { isVideoSource($0) && sourceMatchesLibrary($0) }
+            .sorted { $0.envelope.capturedAt > $1.envelope.capturedAt }
+        return VStack(alignment: .leading, spacing: 16) {
+            if videos.isEmpty {
+                ContentUnavailableView("Τα TikTok saves σου, οργανωμένα", systemImage: "play.rectangle.on.rectangle",
+                                       description: Text("Κάνε share ένα video στο Trippy και σύνδεσέ το με πόλη, places και Notes."))
+            }
+            ForEach(videos) { source in
+                TikTokVideoMemoryCard(source: source,
+                    places: socialPlaces.filter { $0.sourceID == source.id },
+                    notes: travelNotes.filter { $0.sourceIDs.contains(source.id) },
+                    city: cityForSource(source),
+                    onOpenSource: { selectedSocialSource = source },
+                    onOpenNote: { selectedTravelNoteID = $0 })
+            }
+        }
+    }
+    private func socialPlaceVideoCarousel(city: String) -> some View {
+        let matches = socialPlaces.filter { cityForMention($0).localizedCaseInsensitiveCompare(city) == .orderedSame }
+        let linkedSourceIDs = Set(matches.map(\.sourceID))
+        let unlinkedVideos = socialSources.filter {
+            isVideoSource($0) && cityForSource($0).localizedCaseInsensitiveCompare(city) == .orderedSame && !linkedSourceIDs.contains($0.id)
+        }.sorted { $0.envelope.capturedAt > $1.envelope.capturedAt }
+        let grouped = Dictionary(grouping: matches) { $0.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) }
+        let clusters = grouped.compactMap { key, mentions -> TikTokPlaceCluster? in
+            guard let first = mentions.first else { return nil }
+            return TikTokPlaceCluster(id: key, title: first.name, city: city, mentions: mentions.sorted { mentionSourceDate($0) > mentionSourceDate($1) })
+        }.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "music.note").font(.headline).foregroundStyle(AppPalette.brand)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("TikTok saves · \(city)").font(.custom("PlusJakartaSans-Bold", size: 19)).foregroundStyle(AppPalette.ink)
+                    Text("Videos, places και τα notes τους μαζί.").font(.caption).foregroundStyle(AppPalette.secondaryInk)
+                }
+                Spacer()
+                Button("Videos") { librarySection = "Videos" }.font(.caption.weight(.bold)).foregroundStyle(AppPalette.brand)
+            }
+            if clusters.isEmpty && unlinkedVideos.isEmpty {
+                Button { showImportLink = true } label: {
+                    Label("Πρόσθεσε TikTok save για \(city)", systemImage: "plus")
+                        .font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 52)
+                        .background(AppPalette.surface, in: Capsule())
+                }.buttonStyle(.plain)
+            }
+            if !clusters.isEmpty {
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: 14) {
+                        ForEach(clusters) { cluster in
+                            TikTokPlaceMemoryCard(cluster: cluster,
+                                sources: cluster.mentions.compactMap { mention in socialSources.first { $0.id == mention.sourceID } },
+                                notes: travelNotes,
+                                onOpenSource: { sourceID in selectedSocialSource = socialSources.first { $0.id == sourceID } },
+                                onOpenNote: { selectedTravelNoteID = $0 })
+                        }
+                    }.padding(.vertical, 4)
+                }.scrollIndicators(.hidden)
+            }
+            if !unlinkedVideos.isEmpty {
+                Text("Videos που δεν έχουν ακόμη place tag").font(.caption.weight(.semibold)).foregroundStyle(AppPalette.secondaryInk)
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: 14) {
+                        ForEach(unlinkedVideos) { source in
+                            TikTokVideoMemoryCard(source: source, places: [], notes: travelNotes.filter { $0.sourceIDs.contains(source.id) },
+                                city: city, onOpenSource: { selectedSocialSource = source }, onOpenNote: { selectedTravelNoteID = $0 })
+                        }
+                    }.padding(.vertical, 4)
+                }.scrollIndicators(.hidden)
+            }
+        }.padding(.top, 8)
+    }
+    private func mentionSourceDate(_ mention: SocialPlaceMention) -> Date {
+        socialSources.first(where: { $0.id == mention.sourceID })?.envelope.capturedAt ?? .distantPast
+    }
     func attachSourceToNote(_ source: ImportedSocialSource, noteID: UUID?) {
         if let noteID, let index = travelNotes.firstIndex(where: { $0.id == noteID }) {
             if !travelNotes[index].sourceIDs.contains(source.id) { travelNotes[index].sourceIDs.append(source.id) }
+            if travelNotes[index].city == nil { travelNotes[index].city = cityForSource(source).nonEmpty }
             travelNotes[index].updatedAt = .now
         } else {
             let title = source.evidence.first?.text.split(separator: "\n").first.map(String.init) ?? "TikTok inspiration"
             travelNotes.insert(TravelNote(id: UUID(), title: String(title.prefix(80)), tripID: source.envelope.destination.tripID,
-                                         sourceIDs: [source.id], userText: "", updatedAt: .now), at: 0)
+                                         sourceIDs: [source.id], userText: "", updatedAt: .now, city: cityForSource(source).nonEmpty), at: 0)
         }
+    }
+    @MainActor private func saveTikTokPlace(from source: ImportedSocialSource) async {
+        let name = socialPlaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let city = socialPlaceCity.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        var latitude: Double?
+        var longitude: Double?
+        var resolvedCity = city
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = [name, city].filter { !$0.isEmpty }.joined(separator: ", ")
+        if let region = cityCoordinates[city]?.coordinate {
+            request.region = MKCoordinateRegion(center: region, span: .init(latitudeDelta: 1, longitudeDelta: 1))
+        }
+        if let response = try? await MKLocalSearch(request: request).start(), let item = response.mapItems.first {
+            latitude = item.placemark.coordinate.latitude
+            longitude = item.placemark.coordinate.longitude
+            resolvedCity = item.placemark.locality ?? city
+        }
+        let mentionID = UUID()
+        let noteID = UUID()
+        let tripID = source.envelope.destination.tripID
+        let evidenceText = source.evidence.first(where: { $0.id == socialEvidenceID })?.text ?? ""
+        let noteText = [socialPlaceSummary.trimmingCharacters(in: .whitespacesAndNewlines), evidenceText]
+            .filter { !$0.isEmpty }.joined(separator: "\n\n")
+        socialPlaces.append(SocialPlaceMention(id: mentionID, name: name, summary: socialPlaceSummary,
+                                              sourceID: source.id, evidenceIDs: socialEvidenceID.isEmpty ? [] : [socialEvidenceID],
+                                              tripID: tripID, latitude: latitude, longitude: longitude,
+                                              city: resolvedCity.nonEmpty, noteID: noteID))
+        if let index = socialSources.firstIndex(where: { $0.id == source.id }) {
+            var placeIDs = socialSources[index].linkedPlaceIDs ?? []
+            if !placeIDs.contains(mentionID) { placeIDs.append(mentionID) }
+            socialSources[index].linkedPlaceIDs = placeIDs
+            if socialSources[index].city == nil { socialSources[index].city = resolvedCity.nonEmpty }
+        }
+        travelNotes.insert(TravelNote(id: noteID, title: name, tripID: tripID,
+                                      sourceIDs: [source.id], userText: noteText, updatedAt: .now,
+                                      placeMentionID: mentionID, city: resolvedCity.nonEmpty), at: 0)
+        showAddSocialPlace = false
+        socialPlaceName = ""; socialPlaceSummary = ""; socialPlaceCity = ""
     }
     var socialInboxLibrary: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -6638,9 +8131,11 @@ private extension TripFlowView {
         }
     }
     func sourceMatchesLibrary(_ source: ImportedSocialSource) -> Bool {
-        let trip = trips.first { $0.id == source.envelope.destination.tripID }
-        return (libraryCity == nil || trip?.brief.destination == libraryCity) &&
-            (libraryQuery.isEmpty || source.envelope.sourceURL?.localizedCaseInsensitiveContains(libraryQuery) == true || source.evidence.contains { $0.text.localizedCaseInsensitiveContains(libraryQuery) })
+        return (libraryCity == nil || cityForSource(source).localizedCaseInsensitiveCompare(libraryCity!) == .orderedSame) &&
+            (libraryQuery.isEmpty || (source.displayTitle ?? "").localizedCaseInsensitiveContains(libraryQuery) ||
+             (source.listTitle ?? "").localizedCaseInsensitiveContains(libraryQuery) ||
+             source.envelope.sourceURL?.localizedCaseInsensitiveContains(libraryQuery) == true ||
+             source.evidence.contains { $0.text.localizedCaseInsensitiveContains(libraryQuery) })
     }
     func sourceStatus(_ source: ImportedSocialSource) -> String {
         switch source.state {
@@ -6655,7 +8150,8 @@ private extension TripFlowView {
             if travelNotes.isEmpty { ContentUnavailableView("Χώρος για την έμπνευσή σου", systemImage: "note.text", description: Text("Κράτησε ολόκληρη την πληροφορία ενός post ή τις δικές σου σημειώσεις.")) }
             ForEach(travelNotes.filter { note in
                 let trip = trips.first { $0.id == note.tripID }
-                return (libraryCity == nil || trip?.brief.destination == libraryCity) &&
+                let noteCity = note.city ?? trip?.brief.destination
+                return (libraryCity == nil || noteCity?.localizedCaseInsensitiveCompare(libraryCity!) == .orderedSame) &&
                     (libraryQuery.isEmpty || "\(note.title) \(note.userText)".localizedCaseInsensitiveContains(libraryQuery) ||
                      socialSources.filter { note.sourceIDs.contains($0.id) }.contains { source in source.evidence.contains { $0.text.localizedCaseInsensitiveContains(libraryQuery) } })
             }) { note in
@@ -6674,8 +8170,7 @@ private extension TripFlowView {
         VStack(alignment: .leading, spacing: 16) {
             if !socialPlaces.isEmpty { Text("Από την έμπνευσή σου").font(.headline) }
             ForEach(socialPlaces.filter { place in
-                let trip = trips.first { $0.id == place.tripID }
-                return (libraryCity == nil || trip?.brief.destination == libraryCity) &&
+                return (libraryCity == nil || cityForMention(place).localizedCaseInsensitiveCompare(libraryCity!) == .orderedSame) &&
                     (libraryQuery.isEmpty || place.name.localizedCaseInsensitiveContains(libraryQuery))
             }) { place in
                 Button { selectedSocialSource = socialSources.first { $0.id == place.sourceID } } label: {
@@ -6694,9 +8189,24 @@ private extension TripFlowView {
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("Video memory", systemImage: "music.note").font(.caption.weight(.bold)).foregroundStyle(AppPalette.brand)
+                        TextField("Τίτλος video", text: sourceTextBinding(source.id, field: "title"))
+                            .font(.custom("PlusJakartaSans-Bold", size: 21))
+                        HStack(spacing: 10) {
+                            TextField("Πόλη", text: sourceTextBinding(source.id, field: "city"))
+                            TextField("Τίτλος λίστας", text: sourceTextBinding(source.id, field: "list"))
+                        }.font(.subheadline)
+                        Text("Π.χ. Top 10 nightlife places · Warsaw. Το video συνδέεται με κάθε place και το note του.")
+                            .font(.caption).foregroundStyle(AppPalette.secondaryInk)
+                    }.padding(18).background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
                     Text(sourceStatus(source)).font(.subheadline).foregroundStyle(.secondary)
-                    if let link = source.envelope.sourceURL, let url = URL(string: link) { Link("Άνοιγμα αρχικού post", destination: url).font(.subheadline.weight(.semibold)) }
+                    if let link = source.envelope.sourceURL, let url = URL(string: link) { TikTokLinkPill(url: url) }
                     if let trip = trips.first(where: { $0.id == source.envelope.destination.tripID }) { Label(trip.title, systemImage: "suitcase.rolling").font(.subheadline) }
+                    if let video = source.envelope.attachments.first(where: { $0.kind == "video" }),
+                       let url = SharedInbox.attachmentURL(sourceID: source.id, attachment: video) {
+                        SharedSourceVideoThumbnail(url: url)
+                    }
                     ForEach(source.evidence.sorted { $0.order < $1.order }) { block in
                         VStack(alignment: .leading, spacing: 10) {
                             Text(block.origin == "slide_ocr" ? "Slide \(block.order + 1) · OCR" : "Κείμενο που παραδόθηκε με το share").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -6710,20 +8220,25 @@ private extension TripFlowView {
                     }
                     ForEach(source.issues, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
                     if source.evidence.isEmpty { Text("Το post δεν έχει ανακτηθεί ακόμη. Ο σύνδεσμος και ο προορισμός αποθήκευσης έχουν διατηρηθεί.").font(.subheadline) }
-                    if !source.evidence.isEmpty {
-                        Menu {
-                            Button("Νέο Note", systemImage: "square.and.pencil") { attachSourceToNote(source, noteID: nil) }
-                            ForEach(travelNotes) { note in
-                                Button(note.title) { attachSourceToNote(source, noteID: note.id) }
-                            }
-                        } label: { Label("Κράτησε όλη την πληροφορία σε Note", systemImage: "note.text.badge.plus") }.frame(minHeight: 44)
-                        Button {
-                            socialPlaceSourceID = source.id; socialPlaceName = ""; socialPlaceSummary = ""
-                            socialEvidenceID = source.evidence.first?.id ?? ""; showAddSocialPlace = true
-                        } label: { Label("Πρόσθεσε place από το κείμενο", systemImage: "mappin.and.ellipse") }.frame(minHeight: 44)
-                    }
+                    Menu {
+                        Button("Νέο Note", systemImage: "square.and.pencil") { attachSourceToNote(source, noteID: nil) }
+                        ForEach(travelNotes) { note in
+                            Button(note.title) { attachSourceToNote(source, noteID: note.id) }
+                        }
+                    } label: { Label("Κράτησε όλη την πληροφορία σε Note", systemImage: "note.text.badge.plus") }.frame(minHeight: 44)
+                    Button {
+                        socialPlaceSourceID = source.id; socialPlaceName = ""; socialPlaceSummary = ""
+                        socialPlaceCity = cityForSource(source)
+                        socialEvidenceID = source.evidence.first?.id ?? ""; showAddSocialPlace = true
+                    } label: { Label("Σύνδεσε place με αυτό το video", systemImage: "mappin.and.ellipse") }.frame(minHeight: 44)
                     ForEach(socialPlaces.filter { $0.sourceID == source.id }) { place in
-                        VStack(alignment: .leading, spacing: 6) { Text(place.name).font(.headline); Text(place.summary).font(.subheadline).foregroundStyle(.secondary) }
+                        Button { if let noteID = place.noteID { selectedTravelNoteID = noteID } } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Label(place.name, systemImage: "mappin.and.ellipse").font(.headline)
+                                Text(place.summary.nonEmpty ?? cityForMention(place)).font(.subheadline).foregroundStyle(.secondary)
+                                if place.noteID != nil { Label("Άνοιγμα place note", systemImage: "note.text").font(.caption.weight(.semibold)).foregroundStyle(AppPalette.brand) }
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.buttonStyle(.plain)
                     }
                 }.padding(24)
             }.background(AppPalette.canvas)
@@ -6736,23 +8251,20 @@ private extension TripFlowView {
         NavigationStack {
             Form {
                 TextField("Όνομα place όπως γράφεται στην πηγή", text: $socialPlaceName)
+                TextField("Πόλη / περιοχή", text: $socialPlaceCity)
                 Picker("Κείμενο τεκμηρίωσης", selection: $socialEvidenceID) {
                     ForEach(source.evidence) { Text($0.origin == "slide_ocr" ? "Slide \($0.order + 1)" : "Shared text").tag($0.id) }
                 }
                 if let evidence = source.evidence.first(where: { $0.id == socialEvidenceID }) { Text(evidence.text).font(.subheadline).textSelection(.enabled) }
                 TextField("Σύντομη πληροφορία", text: $socialPlaceSummary, axis: .vertical)
-                Text("Αποθηκεύεται ως αναφορά της πηγής. Η θέση και τα τρέχοντα στοιχεία ελέγχονται ξεχωριστά.").font(.caption).foregroundStyle(.secondary)
+                Text("Θα συνδεθεί με την πόλη, την πηγή και το δικό του place note. Η θέση γίνεται resolve από Apple Maps.").font(.caption).foregroundStyle(.secondary)
             }
             .navigationTitle("Save place")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Ακύρωση") { showAddSocialPlace = false } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        socialPlaces.append(SocialPlaceMention(id: UUID(), name: socialPlaceName.trimmingCharacters(in: .whitespacesAndNewlines),
-                                                              summary: socialPlaceSummary, sourceID: source.id, evidenceIDs: [socialEvidenceID],
-                                                              tripID: source.envelope.destination.tripID, latitude: nil, longitude: nil))
-                        showAddSocialPlace = false
-                    }.disabled(socialPlaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Save") { Task { await saveTikTokPlace(from: source) } }
+                        .disabled(socialPlaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
@@ -6770,6 +8282,28 @@ private extension TripFlowView {
                     })) {
                         Text("Γενικά Notes").tag(UUID?.none)
                         ForEach(trips) { trip in Text(trip.title).tag(Optional(trip.id)) }
+                    }
+                    if let linkedPlaces = note?.linkedPlaces, !linkedPlaces.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Συνδεδεμένα μέρη").font(.headline)
+                            ForEach(linkedPlaces) { place in
+                                Button {
+                                    let item = MKMapItem(placemark: MKPlacemark(coordinate: CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude)))
+                                    item.name = place.name
+                                    item.openInMaps()
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "mappin.and.ellipse").foregroundStyle(AppPalette.brand)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(place.name).font(.subheadline.weight(.semibold)).foregroundStyle(AppPalette.ink)
+                                            Text(place.address).font(.caption).foregroundStyle(AppPalette.secondaryInk).lineLimit(1)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(AppPalette.secondaryInk)
+                                    }.padding(12).background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                }.buttonStyle(.plain)
+                            }
+                        }
                     }
                     TextField("Οι σκέψεις σου…", text: Binding(get: { travelNotes.first { $0.id == id }?.userText ?? "" }, set: { text in
                         if let index = travelNotes.firstIndex(where: { $0.id == id }) { travelNotes[index].userText = text; travelNotes[index].updatedAt = .now }
@@ -6817,6 +8351,185 @@ private extension TripFlowView {
     }
 }
 
+private struct SharedSourceVideoThumbnail: View {
+    let url: URL
+    @State private var frame: UIImage?
+    var body: some View {
+        ZStack {
+            if let frame { Image(uiImage: frame).resizable().scaledToFill() }
+            else { RoundedRectangle(cornerRadius: 20).fill(AppPalette.ink).overlay(Image(systemName: "play.fill").font(.title).foregroundStyle(.white)) }
+            Image(systemName: "play.fill").font(.system(size: 16, weight: .bold)).foregroundStyle(.white)
+                .frame(width: 44, height: 44).background(.black.opacity(0.5), in: Circle())
+        }
+        .frame(height: 172).frame(maxWidth: .infinity).clipped().clipShape(RoundedRectangle(cornerRadius: 20))
+        .task(id: url) {
+            let generated = await Task.detached(priority: .utility) { () -> UIImage? in
+                let asset = AVURLAsset(url: url)
+                let generator = AVAssetImageGenerator(asset: asset)
+                generator.appliesPreferredTrackTransform = true
+                guard let image = try? generator.copyCGImage(at: CMTime(seconds: 1, preferredTimescale: 600), actualTime: nil) else { return nil }
+                return UIImage(cgImage: image)
+            }.value
+            if !Task.isCancelled { frame = generated }
+        }
+        .accessibilityLabel("Προεπισκόπηση αποθηκευμένου TikTok video")
+    }
+}
+
+private struct TikTokLinkPill: View {
+    let url: URL
+    var body: some View {
+        Link(destination: url) {
+            HStack(spacing: 8) {
+                Image(systemName: "music.note").font(.system(size: 13, weight: .bold))
+                Text("Open TikTok").font(.custom("PlusJakartaSans-Bold", size: 12))
+                Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .bold)).opacity(0.7)
+            }
+            .foregroundStyle(.white).padding(.horizontal, 14).frame(minHeight: 42)
+            .background(LinearGradient(colors: [Color(hex: "343433"), .black], startPoint: .topLeading, endPoint: .bottomTrailing), in: Capsule())
+            .overlay(Capsule().stroke(.white.opacity(0.3), lineWidth: 1))
+            .shadow(color: .black.opacity(0.28), radius: 8, y: 5)
+            .overlay(alignment: .topLeading) { Capsule().fill(.white.opacity(0.22)).frame(height: 1).padding(.horizontal, 12).offset(y: 2) }
+        }.buttonStyle(QuietPressStyle()).accessibilityLabel("Άνοιγμα TikTok βίντεο")
+    }
+}
+
+private struct TikTokVideoMemoryCard: View {
+    let source: ImportedSocialSource
+    let places: [SocialPlaceMention]
+    let notes: [TravelNote]
+    let city: String
+    let onOpenSource: () -> Void
+    let onOpenNote: (UUID) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(source.listTitle ?? "TikTok save").font(.caption.weight(.bold)).foregroundStyle(AppPalette.brand).lineLimit(1)
+                    Text(source.displayTitle ?? source.evidence.first?.text.split(separator: "\n").first.map(String.init) ?? "TikTok video")
+                        .font(.custom("PlusJakartaSans-Bold", size: 16)).foregroundStyle(AppPalette.ink).lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                if !city.isEmpty { Text(city).font(.caption2.weight(.semibold)).padding(.horizontal, 9).padding(.vertical, 6).background(AppPalette.surface, in: Capsule()) }
+            }
+            if let attachment = source.envelope.attachments.first(where: { $0.kind == "video" }),
+               let url = SharedInbox.attachmentURL(sourceID: source.id, attachment: attachment) {
+                Button(action: onOpenSource) { SharedSourceVideoThumbnail(url: url) }.buttonStyle(.plain)
+            } else {
+                Button(action: onOpenSource) {
+                    RoundedRectangle(cornerRadius: 20).fill(AppPalette.ink)
+                        .overlay(Image(systemName: "play.rectangle.fill").font(.system(size: 32)).foregroundStyle(.white))
+                        .frame(height: 145)
+                }.buttonStyle(.plain)
+            }
+            if !places.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("PLACES FROM THIS VIDEO").font(.custom("PlusJakartaSans-ExtraBold", size: 9)).tracking(0.9).foregroundStyle(AppPalette.secondaryInk)
+                    ForEach(places) { place in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "mappin.and.ellipse").foregroundStyle(AppPalette.brand)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(place.name).font(.subheadline.weight(.semibold)).foregroundStyle(AppPalette.ink)
+                                if let summary = place.summary.nonEmpty { Text(summary).font(.caption).foregroundStyle(AppPalette.secondaryInk).lineLimit(2) }
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+            }
+            ForEach(notes) { note in
+                Button { onOpenNote(note.id) } label: {
+                    HStack(alignment: .top, spacing: 9) {
+                        Image(systemName: "note.text").foregroundStyle(AppPalette.brand)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(note.title).font(.caption.weight(.bold)).foregroundStyle(AppPalette.ink)
+                            Text(note.userText.nonEmpty ?? "Σημείωση από αυτό το video")
+                                .font(.caption).foregroundStyle(AppPalette.secondaryInk).lineLimit(2)
+                        }
+                        Spacer(minLength: 0); Image(systemName: "chevron.right").font(.caption2).foregroundStyle(AppPalette.secondaryInk)
+                    }.padding(11).background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                }.buttonStyle(.plain)
+            }
+            if let rawURL = source.envelope.sourceURL, let url = URL(string: rawURL) { TikTokLinkPill(url: url) }
+        }
+        .padding(16).frame(width: 300, alignment: .leading)
+        .background(AppPalette.canvas, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(.white.opacity(0.8), lineWidth: 1))
+        .shadow(color: AppPalette.ink.opacity(0.1), radius: 16, y: 7)
+    }
+}
+
+private struct TikTokPlaceMemoryCard: View {
+    let cluster: TikTokPlaceCluster
+    let sources: [ImportedSocialSource]
+    let notes: [TravelNote]
+    let onOpenSource: (UUID) -> Void
+    let onOpenNote: (UUID) -> Void
+    private var uniqueSources: [ImportedSocialSource] {
+        var seen = Set<UUID>()
+        return sources.filter { seen.insert($0.id).inserted }.sorted { $0.envelope.capturedAt > $1.envelope.capturedAt }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(cluster.title).font(.custom("PlusJakartaSans-Bold", size: 18)).foregroundStyle(AppPalette.ink).lineLimit(1)
+                    Text(cluster.city).font(.caption.weight(.medium)).foregroundStyle(AppPalette.secondaryInk)
+                }
+                Spacer(minLength: 0)
+                Text("\(uniqueSources.count) videos").font(.caption2.weight(.bold)).padding(.horizontal, 9).padding(.vertical, 6)
+                    .background(AppPalette.brand.opacity(0.12), in: Capsule()).foregroundStyle(AppPalette.brand)
+            }
+            if let summary = cluster.mentions.first(where: { $0.summary.nonEmpty != nil })?.summary.nonEmpty {
+                Text(summary).font(.caption).foregroundStyle(AppPalette.secondaryInk).lineLimit(2)
+            }
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 10) {
+                    ForEach(uniqueSources) { source in
+                        VStack(alignment: .leading, spacing: 9) {
+                            Text(source.listTitle ?? source.displayTitle ?? "TikTok save")
+                                .font(.caption.weight(.bold)).foregroundStyle(AppPalette.brand).lineLimit(2).frame(height: 32, alignment: .topLeading)
+                            if let attachment = source.envelope.attachments.first(where: { $0.kind == "video" }),
+                               let url = SharedInbox.attachmentURL(sourceID: source.id, attachment: attachment) {
+                                Button { onOpenSource(source.id) } label: { SharedSourceVideoThumbnail(url: url).frame(width: 206, height: 112) }
+                                    .buttonStyle(.plain)
+                            } else {
+                                Button { onOpenSource(source.id) } label: {
+                                    RoundedRectangle(cornerRadius: 18).fill(AppPalette.ink)
+                                        .overlay(Image(systemName: "play.rectangle.fill").font(.title2).foregroundStyle(.white))
+                                        .frame(width: 206, height: 112)
+                                }.buttonStyle(.plain)
+                            }
+                            Text(source.displayTitle ?? source.evidence.first?.text.split(separator: "\n").first.map(String.init) ?? "TikTok video")
+                                .font(.caption.weight(.semibold)).foregroundStyle(AppPalette.ink).lineLimit(2).frame(height: 34, alignment: .topLeading)
+                            ForEach(notes.filter { note in
+                                note.placeMentionID.map { id in cluster.mentions.contains(where: { $0.id == id }) } ?? false
+                            }) { note in
+                                if note.sourceIDs.contains(source.id) {
+                                    Button { onOpenNote(note.id) } label: {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Label(note.title, systemImage: "note.text").font(.caption.weight(.bold)).lineLimit(1)
+                                            Text(note.userText.nonEmpty ?? "Άνοιγμα note").font(.caption2).foregroundStyle(AppPalette.secondaryInk).lineLimit(2)
+                                        }.frame(maxWidth: .infinity, minHeight: 50, alignment: .leading).padding(9)
+                                            .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 14))
+                                    }.buttonStyle(.plain)
+                                }
+                            }
+                            if let rawURL = source.envelope.sourceURL, let url = URL(string: rawURL) { TikTokLinkPill(url: url) }
+                        }
+                        .padding(11).frame(width: 228, alignment: .leading)
+                        .background(AppPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    }
+                }
+            }.scrollIndicators(.hidden)
+        }
+        .padding(15).frame(width: 326, alignment: .leading)
+        .background(AppPalette.canvas, in: RoundedRectangle(cornerRadius: 25, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 25, style: .continuous).stroke(.white.opacity(0.8), lineWidth: 1))
+        .shadow(color: AppPalette.ink.opacity(0.1), radius: 15, y: 7)
+    }
+}
+
 private struct SharedSourceImage: View {
     let url: URL
     @State private var preview: UIImage?
@@ -6832,6 +8545,200 @@ private struct SharedSourceImage: View {
                 if !Task.isCancelled { preview = image; finished = true }
             }
             .accessibilityLabel("Εικόνα από την αρχική πηγή")
+    }
+}
+
+private struct GooglePlacesGlyph: View {
+    var body: some View {
+        Text("Google Maps").font(.system(size: 12, weight: .regular))
+            .foregroundStyle(Color(hex: "5E5E5E"))
+            .accessibilityLabel("Google Maps")
+    }
+}
+
+private struct GooglePlacesBrandLink: View {
+    let url: URL?
+    var body: some View {
+        HStack(spacing: 7) {
+            GooglePlacesGlyph()
+            Spacer()
+            if let url {
+                Link(destination: url) {
+                    Label("Άνοιγμα", systemImage: "arrow.up.right").font(.caption2.weight(.bold)).foregroundStyle(AppPalette.brand)
+                }
+            }
+        }.accessibilityElement(children: .combine)
+    }
+}
+
+private struct GooglePlacePhotoCard: View {
+    let photo: GooglePlacePhoto
+    let baseURL: String
+    let accessToken: String
+    @State private var image: UIImage?
+    @State private var loading = true
+    @State private var imageError: String?
+    @State private var retryAttempt = 0
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Group {
+                if let image { Image(uiImage: image).resizable().scaledToFill() }
+                else if loading { RoundedRectangle(cornerRadius: 22).fill(AppPalette.surface).overlay(ProgressView()) }
+                else {
+                    RoundedRectangle(cornerRadius: 22).fill(AppPalette.surface)
+                        .overlay {
+                            VStack(spacing: 7) {
+                                Image(systemName: "photo.badge.exclamationmark").font(.title3).foregroundStyle(AppPalette.secondaryInk)
+                                Text(imageError ?? "Η φωτογραφία δεν φορτώθηκε")
+                                    .font(.caption2).foregroundStyle(AppPalette.secondaryInk).multilineTextAlignment(.center)
+                                Button("Δοκίμασε ξανά") { retryAttempt += 1 }
+                                    .font(.caption2.weight(.bold)).foregroundStyle(AppPalette.brand)
+                            }.padding(14)
+                        }
+                }
+            }.frame(width: 270, height: 174).clipped()
+            LinearGradient(colors: [.clear, .black.opacity(0.76)], startPoint: .center, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 3) {
+                if let attributions = photo.authorAttributions, !attributions.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 8) {
+                            ForEach(attributions) { author in
+                                if let url = author.uri.flatMap({ URL(string: $0.hasPrefix("//") ? "https:\($0)" : $0) }) {
+                                    Link(author.displayName, destination: url).font(.caption2.weight(.bold)).foregroundStyle(.white).lineLimit(1)
+                                } else { Text(author.displayName).font(.caption2.weight(.bold)).foregroundStyle(.white).lineLimit(1) }
+                            }
+                        }
+                    }.scrollIndicators(.hidden).frame(maxHeight: 16)
+                }
+                if let sourceURL = photo.googleMapsURL.flatMap(URL.init(string:)) {
+                    Link("Προβολή φωτογραφίας στο Google Maps", destination: sourceURL)
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.white)
+                } else {
+                    Text("Google Maps photo").font(.system(size: 9, weight: .semibold)).foregroundStyle(.white.opacity(0.86))
+                }
+            }.padding(11)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(.white.opacity(0.82), lineWidth: 1))
+        .task(id: "\(photo.name)-\(retryAttempt)") { await loadPhoto() }
+    }
+
+    private func loadPhoto() async {
+        loading = true
+        imageError = nil
+        defer { loading = false }
+        guard !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            imageError = "Λείπει το Trippy bridge token."
+            return
+        }
+        guard var components = URLComponents(string: baseURL + "/api/places/photo") else { return }
+        components.queryItems = [URLQueryItem(name: "name", value: photo.name), URLQueryItem(name: "max_width", value: "960")]
+        guard let url = components.url else { return }
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse else {
+            if !Task.isCancelled { imageError = "Δεν ήταν δυνατή η επικοινωνία με το Places gateway." }
+            return
+        }
+        guard (200..<300).contains(http.statusCode), let decoded = UIImage(data: data) else {
+            if !Task.isCancelled { imageError = "Η εικόνα απορρίφθηκε (HTTP \(http.statusCode))." }
+            return
+        }
+        guard !Task.isCancelled else { return }
+        image = decoded
+    }
+}
+
+private struct GoogleAuthorAvatar: View {
+    let url: URL
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image { Image(uiImage: image).resizable().scaledToFill() }
+            else { Circle().fill(AppPalette.brand.opacity(0.15)).overlay(Image(systemName: "person.fill").font(.system(size: 10)).foregroundStyle(AppPalette.brand)) }
+        }
+        .frame(width: 28, height: 28).clipShape(Circle())
+        .task(id: url) {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.urlCache = nil
+            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            let session = URLSession(configuration: configuration)
+            defer { session.finishTasksAndInvalidate() }
+            var request = URLRequest(url: url)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            guard let (data, response) = try? await session.data(for: request),
+                  let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                  let decoded = UIImage(data: data), !Task.isCancelled else { return }
+            image = decoded
+        }
+    }
+}
+
+private struct RouteStepsSheet: View {
+    let route: MKRoute
+    @Environment(\.dismiss) private var dismiss
+
+    private var steps: [MKRoute.Step] { route.steps.filter { !$0.instructions.isEmpty } }
+    private var durationText: String {
+        let minutes = max(1, Int((route.expectedTravelTime / 60).rounded()))
+        return minutes >= 60 ? "\(minutes / 60) ώ \(minutes % 60) λ" : "\(minutes) λεπτά"
+    }
+    private func distanceText(_ meters: CLLocationDistance) -> String {
+        meters >= 1000 ? String(format: "%.1f km", meters / 1000) : "\(Int(meters.rounded())) m"
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack(spacing: 14) {
+                        Image(systemName: "figure.walk").font(.title2.weight(.semibold))
+                            .foregroundStyle(AppPalette.brand).frame(width: 48, height: 48)
+                            .background(AppPalette.brand.opacity(0.12), in: Circle())
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Πεζή διαδρομή").font(.headline)
+                            Text("\(distanceText(route.distance)) · \(durationText)")
+                                .font(.subheadline).foregroundStyle(AppPalette.secondaryInk)
+                        }
+                    }.padding(.vertical, 5)
+                }
+                Section("Βήματα") {
+                    ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .top, spacing: 14) {
+                            Text("\(index + 1)").font(.caption.weight(.bold))
+                                .foregroundStyle(AppPalette.ink).frame(width: 26, height: 26)
+                                .background(AppPalette.brand.opacity(0.2), in: Circle())
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(step.instructions).font(.subheadline.weight(.medium)).foregroundStyle(AppPalette.ink)
+                                if step.distance > 0 {
+                                    Text(distanceText(step.distance)).font(.caption).foregroundStyle(AppPalette.secondaryInk)
+                                }
+                            }
+                        }.padding(.vertical, 4)
+                    }
+                    if steps.isEmpty {
+                        Text("Δεν υπάρχουν αναλυτικά βήματα για αυτή τη διαδρομή.")
+                            .foregroundStyle(AppPalette.secondaryInk)
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(AppPalette.canvas)
+            .navigationTitle("Οδηγίες")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Έγινε") { dismiss() } } }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
 
@@ -6877,12 +8784,131 @@ private extension TripFlowView {
                 Section("Υπηρεσία έρευνας") {
                     TextField("HTTPS URL", text: $bridgeHost).textInputAutocapitalization(.never)
                         .keyboardType(.URL).autocorrectionDisabled()
-                    Text("Διεύθυνση της υπηρεσίας που έχει συνδεθεί για την έρευνα του ταξιδιού σου.")
+                    Text("Διεύθυνση του server για το AI research.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.navigationTitle("Σύνδεση έρευνας").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Έγινε") { showBridgeSettings = false } } }
         }.presentationDetents([.medium]).presentationDragIndicator(.visible)
+    }
+
+    var placesSettingsSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Σύνδεση με το Trippy") {
+                    LabeledContent("Gateway") {
+                        Text(bridgeBaseURL).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
+                    }
+                    SecureField("Trippy bridge token", text: $bridgeToken)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Text("Εδώ βάζεις το TRIPPY_BRIDGE_TOKEN από το Render — όχι το Google Places API key. Αποθηκεύεται στο Keychain. Το Google key μένει μόνο στο Render. Ο έλεγχος κάνει μία αναζήτηση μόνο με Place ID, χωρίς να φορτώσει ή να αποθηκεύσει στοιχεία μέρους.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button {
+                        Task { await checkPlacesConnection() }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if isCheckingPlacesConnection { ProgressView().padding(.trailing, 5) }
+                            Text(isCheckingPlacesConnection ? "Έλεγχος σύνδεσης…" : "Έλεγχος σύνδεσης")
+                            Spacer()
+                        }
+                    }
+                    .disabled(isCheckingPlacesConnection)
+                    placesConnectionFeedback
+                }
+            }
+            .navigationTitle("Google Places")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Έγινε") { showPlacesSettings = false } } }
+        }
+        .presentationDetents([.medium]).presentationDragIndicator(.visible)
+    }
+
+    private var isCheckingPlacesConnection: Bool {
+        if case .checking = placesConnectionState { return true }
+        return false
+    }
+
+    @ViewBuilder
+    private var placesConnectionFeedback: some View {
+        switch placesConnectionState {
+        case .idle:
+            Label("Ο έλεγχος θα δοκιμάσει app → Render → Google Places.", systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.caption).foregroundStyle(.secondary)
+        case .checking:
+            Label("Ελέγχω και τα δύο σκέλη της σύνδεσης…", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                .font(.caption).foregroundStyle(.secondary)
+        case .connected:
+            Label("Συνδέθηκε: app → Render → Google Places API (New).", systemImage: "checkmark.circle.fill")
+                .font(.caption.weight(.semibold)).foregroundStyle(Color(hex: "37835F"))
+        case .missingToken:
+            Label("Λείπει το TRIPPY_BRIDGE_TOKEN. Το πεδίο δεν δέχεται το Google key.", systemImage: "key.slash")
+                .font(.caption).foregroundStyle(Color(hex: "B85C52"))
+        case .rejectedToken:
+            Label("Το Render απέρριψε το token. Χρειάζεται η ίδια τιμή TRIPPY_BRIDGE_TOKEN και στις δύο πλευρές.", systemImage: "lock.slash")
+                .font(.caption).foregroundStyle(Color(hex: "B85C52"))
+        case .missingGoogleKey:
+            Label("Το app συνδέθηκε με Render, αλλά λείπει το GOOGLE_PLACES_API_KEY από το Render Environment.", systemImage: "key.slash")
+                .font(.caption).foregroundStyle(Color(hex: "B85C52"))
+        case .rateLimited:
+            Label("Το gateway έφτασε το όριο αιτημάτων. Περίμενε λίγο και δοκίμασε ξανά.", systemImage: "hourglass")
+                .font(.caption).foregroundStyle(Color(hex: "A96D45"))
+        case .gatewayError(let message):
+            Label("Δεν απάντησε σωστά το Render gateway: \(message)", systemImage: "wifi.exclamationmark")
+                .font(.caption).foregroundStyle(Color(hex: "B85C52"))
+        case .googleError(let message):
+            VStack(alignment: .leading, spacing: 5) {
+                Label("Το app συνδέθηκε με Render. Το Google Places απέρριψε το αίτημα.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold)).foregroundStyle(Color(hex: "B85C52"))
+                Text(message).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+        }
+    }
+
+    private func checkPlacesConnection() async {
+        let token = bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            placesConnectionState = .missingToken
+            return
+        }
+        placesConnectionState = .checking
+        guard let url = URLComponents(string: bridgeBaseURL + "/api/places/status")?.url else {
+            placesConnectionState = .gatewayError("Η διεύθυνση του gateway δεν είναι έγκυρη.")
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 25
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                placesConnectionState = .gatewayError("Η απάντηση δεν ήταν έγκυρη HTTP response.")
+                return
+            }
+            let result = try? JSONDecoder().decode(PlacesGatewayHealthResponse.self, from: data)
+            if http.statusCode == 200, result?.gateway == "connected", result?.googlePlaces == "connected" {
+                placesConnectionState = .connected
+            } else if http.statusCode == 401 {
+                placesConnectionState = .rejectedToken
+            } else if result?.errorCode == "google_places_key_missing" {
+                placesConnectionState = .missingGoogleKey
+            } else if http.statusCode == 429 {
+                placesConnectionState = .rateLimited
+            } else if result?.gateway == "connected", result?.googlePlaces == "error" {
+                let code = result?.errorCode ?? "UNKNOWN"
+                let message = result?.message ?? "Άγνωστη απάντηση Google Places (\(code))."
+                placesConnectionState = .googleError("\(code): \(message)")
+            } else if http.statusCode == 404 {
+                placesConnectionState = .gatewayError("Το Render δεν έχει ακόμη το νέο endpoint ελέγχου· κάνε deploy την έκδοση του bridge.")
+            } else {
+                let detail = result?.message ?? result?.error ?? "HTTP \(http.statusCode)"
+                placesConnectionState = .gatewayError(detail)
+            }
+        } catch {
+            placesConnectionState = .gatewayError("Δεν ήταν δυνατή η πρόσβαση στο Render. Έλεγξε τη διεύθυνση και τη σύνδεση internet.")
+        }
     }
 }
 

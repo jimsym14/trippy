@@ -228,16 +228,41 @@ class RequestHandler(BaseHTTPRequestHandler):
             if target.path=='/api/places/search':
                 text=query.get('q',[''])[0].strip()
                 if len(text)<2 or len(text)>180: self.send_json(422,{'error':'invalid_query'}); return True
-                payload=google_places_json('places:searchText',api_key,body={'textQuery':text,'pageSize':8,'languageCode':'el'},
-                    field_mask='places.id,places.displayName,places.formattedAddress,places.location,places.primaryType,places.primaryTypeDisplayName')
+                language_code=query.get('lang',['en'])[0].lower()
+                if language_code not in ('en','el'): language_code='en'
+                payload=google_places_json('places:searchText',api_key,body={'textQuery':text,'pageSize':12,'languageCode':language_code},
+                    field_mask='places.id,places.displayName,places.formattedAddress,places.location,places.primaryType,places.primaryTypeDisplayName,places.types,places.addressComponents,places.viewport')
                 results=[]
                 for place in payload.get('places',[]):
                     location=place.get('location') or {}
                     title=(place.get('displayName') or {}).get('text')
                     if not title or not isinstance(location.get('latitude'),(int,float)) or not isinstance(location.get('longitude'),(int,float)): continue
+                    components=place.get('addressComponents') or []
+                    city=next((component.get('longText','') for component in components
+                        if 'locality' in component.get('types',[]) or 'postal_town' in component.get('types',[])), '')
+                    country=next((component.get('shortText','') for component in components
+                        if 'country' in component.get('types',[])), '')
+                    matching_component=next((component for component in components
+                        if title.casefold() in (component.get('longText','').casefold(),component.get('shortText','').casefold())), {})
+                    viewport=place.get('viewport') or {}
+                    low=viewport.get('low') or {}; high=viewport.get('high') or {}
+                    latitude_span=abs(high.get('latitude',0)-low.get('latitude',0)) or None
+                    longitude_span=abs(high.get('longitude',0)-low.get('longitude',0)) or None
+                    place_types=place.get('types',[])
+                    component_types=matching_component.get('types',[])
+                    if 'country' in place_types or 'country' in component_types: boundary_level='country'
+                    elif 'administrative_area_level_1' in place_types or 'administrative_area_level_1' in component_types: boundary_level='region'
+                    elif 'administrative_area_level_2' in place_types or 'administrative_area_level_2' in component_types: boundary_level='district'
+                    elif any(area_type in place_types or area_type in component_types for area_type in ('neighborhood','sublocality','sublocality_level_1')): boundary_level='area'
+                    elif any(area_type in place_types or area_type in component_types for area_type in ('locality','postal_town')): boundary_level='city'
+                    elif city and city.casefold()==title.casefold(): boundary_level='city'
+                    else: boundary_level=None
                     results.append({'placeID':place.get('id'),'name':title,'address':place.get('formattedAddress',''),
                         'latitude':location['latitude'],'longitude':location['longitude'],
-                        'primaryType':place.get('primaryTypeDisplayName',{}).get('text') or place.get('primaryType','')})
+                        'primaryType':place.get('primaryTypeDisplayName',{}).get('text') or place.get('primaryType',''),
+                        'types':place_types,'city':city,'countryCode':country,'isArea':boundary_level is not None,
+                        'boundaryLevel':boundary_level,
+                        'latitudeSpan':latitude_span,'longitudeSpan':longitude_span})
                 self.send_json(200,{'places':results}); return True
             if target.path=='/api/places/details':
                 place_id=query.get('place_id',[''])[0].strip()
@@ -286,17 +311,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                 else: self.send_image(200,content_type,image)
                 return True
         except HTTPError as error:
+            try:
+                payload=json.loads(error.read(65536))
+                details=payload.get('error',{}) if isinstance(payload,dict) else {}
+                code=details.get('status') or f'HTTP_{error.code}'
+                message=details.get('message') or 'Google Places rejected the request.'
+            except (ValueError,TypeError,json.JSONDecodeError):
+                code=f'HTTP_{error.code}'; message='Google Places rejected the request.'
             if target.path=='/api/places/status':
-                try:
-                    payload=json.loads(error.read(65536))
-                    details=payload.get('error',{}) if isinstance(payload,dict) else {}
-                    code=details.get('status') or f'HTTP_{error.code}'
-                    message=details.get('message') or 'Google Places rejected the connection check.'
-                except (ValueError,TypeError,json.JSONDecodeError):
-                    code=f'HTTP_{error.code}'; message='Google Places rejected the connection check.'
                 self.send_json(502,{'gateway':'connected','googlePlaces':'error',
                     'errorCode':code,'message':str(message)[:420]}); return True
-            self.send_json(502,{'error':'google_places_unavailable','upstream_status':error.code}); return True
+            self.send_json(502,{'error':'google_places_unavailable','upstream_status':error.code,
+                'errorCode':code,'message':str(message)[:420]}); return True
         except (URLError,TimeoutError,ValueError,KeyError,TypeError,json.JSONDecodeError):
             if target.path=='/api/places/status':
                 self.send_json(502,{'gateway':'connected','googlePlaces':'error',
