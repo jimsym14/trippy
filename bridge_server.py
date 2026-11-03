@@ -4,13 +4,16 @@ No SDK client initializes at import. Paid providers require explicit configured
 budgets. Status/results require the unguessable run capability returned by POST.
 """
 import json
+import hmac
 import logging
 import os
 from pathlib import Path
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 from uuid import uuid4, UUID
 
 from trippy_config import read_environment
@@ -37,6 +40,42 @@ class ResearchState:
         self.jobs={}
 
 state=ResearchState()
+places_limit_lock=threading.Lock()
+places_request_times=[]
+
+
+def places_key():
+    return read_environment(root()/'.env').get('GOOGLE_PLACES_API_KEY','').strip()
+
+
+def places_access_allowed(handler):
+    expected=read_environment(root()/'.env').get('TRIPPY_BRIDGE_TOKEN','').strip()
+    supplied=handler.headers.get('Authorization','')
+    supplied=supplied[7:] if supplied.startswith('Bearer ') else ''
+    return bool(expected) and hmac.compare_digest(expected,supplied)
+
+
+def allow_places_request():
+    """Keep this optional, live-only proxy from becoming an unbounded API relay."""
+    now=time.time()
+    with places_limit_lock:
+        places_request_times[:]=[stamp for stamp in places_request_times if now-stamp < 60]
+        if len(places_request_times) >= 30:
+            return False
+        places_request_times.append(now)
+        return True
+
+
+def google_places_json(path, api_key, *, body=None, field_mask=None):
+    data=json.dumps(body).encode() if body is not None else None
+    headers={'X-Goog-Api-Key':api_key,'Accept':'application/json'}
+    if data is not None: headers['Content-Type']='application/json'
+    if field_mask: headers['X-Goog-FieldMask']=field_mask
+    request=Request('https://places.googleapis.com/v1/'+path,data=data,headers=headers,
+                    method='POST' if data is not None else 'GET')
+    with urlopen(request,timeout=12) as response:
+        payload=response.read(2_000_000)
+    return json.loads(payload)
 
 
 def root(): return Path(__file__).resolve().parent
@@ -162,8 +201,112 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control','no-store')
         self.end_headers()
         self.wfile.write(json.dumps(payload,ensure_ascii=False,allow_nan=False).encode())
+    def send_image(self,status,content_type,payload):
+        self.send_response(status)
+        self.send_header('Content-Type',content_type)
+        self.send_header('Cache-Control','no-store, max-age=0')
+        self.send_header('X-Content-Type-Options','nosniff')
+        self.end_headers()
+        self.wfile.write(payload)
+    def google_places(self,target):
+        if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return True
+        api_key=places_key()
+        if not api_key:
+            self.send_json(503,{'stage':'render','errorCode':'google_places_key_missing',
+                'message':'GOOGLE_PLACES_API_KEY is missing from the Render environment.'}); return True
+        if not allow_places_request(): self.send_json(429,{'error':'places_rate_limit'}); return True
+        query=parse_qs(target.query)
+        try:
+            if target.path=='/api/places/status':
+                # One Text Search IDs-only request verifies Render -> Google without
+                # retrieving/storing place details or images.
+                google_places_json('places:searchText',api_key,
+                    body={'textQuery':'Eiffel Tower, Paris','pageSize':1,'languageCode':'en'},
+                    field_mask='places.id')
+                self.send_json(200,{'gateway':'connected','googlePlaces':'connected',
+                    'message':'Render authenticated successfully with Google Places API (New).'}); return True
+            if target.path=='/api/places/search':
+                text=query.get('q',[''])[0].strip()
+                if len(text)<2 or len(text)>180: self.send_json(422,{'error':'invalid_query'}); return True
+                payload=google_places_json('places:searchText',api_key,body={'textQuery':text,'pageSize':8,'languageCode':'el'},
+                    field_mask='places.id,places.displayName,places.formattedAddress,places.location,places.primaryType,places.primaryTypeDisplayName')
+                results=[]
+                for place in payload.get('places',[]):
+                    location=place.get('location') or {}
+                    title=(place.get('displayName') or {}).get('text')
+                    if not title or not isinstance(location.get('latitude'),(int,float)) or not isinstance(location.get('longitude'),(int,float)): continue
+                    results.append({'placeID':place.get('id'),'name':title,'address':place.get('formattedAddress',''),
+                        'latitude':location['latitude'],'longitude':location['longitude'],
+                        'primaryType':place.get('primaryTypeDisplayName',{}).get('text') or place.get('primaryType','')})
+                self.send_json(200,{'places':results}); return True
+            if target.path=='/api/places/details':
+                place_id=query.get('place_id',[''])[0].strip()
+                if not place_id or len(place_id)>180 or any(char not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for char in place_id):
+                    self.send_json(422,{'error':'invalid_place_id'}); return True
+                fields=','.join(['id','displayName','formattedAddress','location','primaryTypeDisplayName','rating','userRatingCount',
+                    'regularOpeningHours.weekdayDescriptions','currentOpeningHours.openNow','currentOpeningHours.weekdayDescriptions',
+                    'internationalPhoneNumber','websiteUri','googleMapsUri','editorialSummary','photos.name','photos.authorAttributions',
+                    'reviews.rating','reviews.text','reviews.publishTime','reviews.relativePublishTimeDescription','reviews.visitDate','reviews.authorAttribution','reviews.googleMapsUri',
+                    'photos.googleMapsUri'])
+                place=google_places_json('places/'+quote(place_id,safe=''),api_key,field_mask=fields)
+                photos=[]
+                for photo in place.get('photos',[])[:8]:
+                    name=photo.get('name')
+                    if name:
+                        photos.append({'name':name,'authorAttributions':photo.get('authorAttributions',[]),
+                            'googleMapsURL':photo.get('googleMapsUri')})
+                reviews=[]
+                for review in place.get('reviews',[])[:5]:
+                    author=review.get('authorAttribution') or {}
+                    reviews.append({'rating':review.get('rating'),'text':(review.get('text') or {}).get('text',''),
+                        'relativeTime':review.get('relativePublishTimeDescription',''),'authorName':author.get('displayName','Google Maps user'),
+                        'authorURL':author.get('uri'),'authorPhotoURL':author.get('photoUri'),'googleMapsURL':review.get('googleMapsUri'),
+                        'visitDate':review.get('visitDate')})
+                opening=place.get('currentOpeningHours') or place.get('regularOpeningHours') or {}
+                self.send_json(200,{'placeID':place.get('id',place_id),'name':(place.get('displayName') or {}).get('text',''),
+                    'address':place.get('formattedAddress',''),'latitude':(place.get('location') or {}).get('latitude'),
+                    'longitude':(place.get('location') or {}).get('longitude'),'primaryType':(place.get('primaryTypeDisplayName') or {}).get('text',''),
+                    'rating':place.get('rating'),'reviewCount':place.get('userRatingCount'),'openNow':opening.get('openNow'),
+                    'openingHours':opening.get('weekdayDescriptions',[]),'phoneNumber':place.get('internationalPhoneNumber'),
+                    'websiteURL':place.get('websiteUri'),'googleMapsURL':place.get('googleMapsUri'),
+                    'summary':(place.get('editorialSummary') or {}).get('text',''),'photos':photos,'reviews':reviews})
+                return True
+            if target.path=='/api/places/photo':
+                name=query.get('name',[''])[0]
+                if not name.startswith('places/') or '/photos/' not in name or len(name)>500:
+                    self.send_json(422,{'error':'invalid_photo_reference'}); return True
+                try: width=max(160,min(1600,int(query.get('max_width',['960'])[0])))
+                except ValueError: width=960
+                url='https://places.googleapis.com/v1/'+quote(name,safe='/')+'/media?maxWidthPx='+str(width)
+                request=Request(url,headers={'X-Goog-Api-Key':api_key,'Accept':'image/*'})
+                with urlopen(request,timeout=15) as response:
+                    image=response.read(8_000_000)
+                    content_type=response.headers.get_content_type()
+                if not content_type.startswith('image/') or not image: self.send_json(502,{'error':'photo_unavailable'})
+                else: self.send_image(200,content_type,image)
+                return True
+        except HTTPError as error:
+            if target.path=='/api/places/status':
+                try:
+                    payload=json.loads(error.read(65536))
+                    details=payload.get('error',{}) if isinstance(payload,dict) else {}
+                    code=details.get('status') or f'HTTP_{error.code}'
+                    message=details.get('message') or 'Google Places rejected the connection check.'
+                except (ValueError,TypeError,json.JSONDecodeError):
+                    code=f'HTTP_{error.code}'; message='Google Places rejected the connection check.'
+                self.send_json(502,{'gateway':'connected','googlePlaces':'error',
+                    'errorCode':code,'message':str(message)[:420]}); return True
+            self.send_json(502,{'error':'google_places_unavailable','upstream_status':error.code}); return True
+        except (URLError,TimeoutError,ValueError,KeyError,TypeError,json.JSONDecodeError):
+            if target.path=='/api/places/status':
+                self.send_json(502,{'gateway':'connected','googlePlaces':'error',
+                    'errorCode':'google_api_unreachable',
+                    'message':'Render could not reach the Google Places API.'}); return True
+            self.send_json(502,{'error':'google_places_unavailable'}); return True
+        return False
     def do_GET(self):
         target=urlsplit(self.path)
+        if target.path.startswith('/api/places/'): self.google_places(target); return
         if target.path!='/api/status': self.send_json(404,{'error':'not_found'}); return
         capabilities={'api_version':3,'research_contract_version':4,'result_schema':'trippy-research-v1',
             'pipeline_version':'trip-pipeline-v1','build_commit':os.environ.get('RENDER_GIT_COMMIT','local')}

@@ -23,6 +23,8 @@ services:
         sync: false
       - key: TRIPPY_BRIDGE_TOKEN
         sync: false
+      - key: GOOGLE_PLACES_API_KEY
+        sync: false
       # Required by the staged planner; set explicit values in Render Environment.
       - key: TRIPPY_ALLOW_PAID_RESEARCH
         sync: false
