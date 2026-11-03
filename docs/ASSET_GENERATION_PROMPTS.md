@@ -1,5 +1,7 @@
 # trippy — AI artwork prompt set
 
+> Product scope και ενεργά stages: [τελικές απαιτήσεις](FINAL_REQUIREMENTS_AND_PARITY.md), [autopilot plan](AUTOPILOT_STAGED_IMPLEMENTATION.md). Το παρόν αφορά decorative artwork· οι απαιτήσεις real venue imagery/provenance παραμένουν.
+
 This set follows the supplied trippy UI reference: warm ivory surfaces, coral/peach/yellow accents, dark forest-green typography, rounded cards, and editorial travel photography with warm natural light.
 
 ## Asset roles

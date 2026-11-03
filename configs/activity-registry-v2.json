@@ -1,0 +1,269 @@
+{
+  "version": 2,
+  "status": "offline_discovery_contract_ui_integration_pending",
+  "activities": [
+    {
+      "id": "coffee_break",
+      "label_el": "Καφές",
+      "label_en": "Coffee break",
+      "controls": [
+        "frequency",
+        "specialty"
+      ],
+      "slot": "flexible_pause",
+      "merge_with": [
+        "breakfast_out",
+        "brunch",
+        "sweet_break"
+      ]
+    },
+    {
+      "id": "brunch",
+      "label_el": "Brunch",
+      "label_en": "Brunch",
+      "controls": [
+        "frequency"
+      ],
+      "slot": "meal",
+      "merge_with": [
+        "breakfast_out",
+        "coffee_break"
+      ]
+    },
+    {
+      "id": "breakfast_at_stay",
+      "label_el": "Πρωινό στο κατάλυμα",
+      "label_en": "Breakfast at your stay",
+      "controls": [
+        "provided_buy_supplies_unknown",
+        "selected_days"
+      ],
+      "slot": "stay_time",
+      "merge_with": []
+    },
+    {
+      "id": "breakfast_out",
+      "label_el": "Πρωινό έξω",
+      "label_en": "Breakfast out",
+      "controls": [
+        "bakery_cafe_either",
+        "selected_days"
+      ],
+      "slot": "meal",
+      "merge_with": [
+        "coffee_break",
+        "brunch"
+      ]
+    },
+    {
+      "id": "picnic",
+      "label_el": "Picnic",
+      "label_en": "Picnic",
+      "controls": [
+        "buy_supplies"
+      ],
+      "slot": "meal",
+      "merge_with": []
+    },
+    {
+      "id": "local_market",
+      "label_el": "Τοπική αγορά",
+      "label_en": "Local market",
+      "controls": [
+        "food_browse"
+      ],
+      "slot": "visit",
+      "merge_with": []
+    },
+    {
+      "id": "sweet_break",
+      "label_el": "Γλυκό ή παγωτό",
+      "label_en": "Sweet break",
+      "controls": [
+        "pastry_dessert_ice_cream"
+      ],
+      "slot": "flexible_pause",
+      "merge_with": [
+        "coffee_break"
+      ]
+    },
+    {
+      "id": "sunset_view",
+      "label_el": "Ηλιοβασίλεμα",
+      "label_en": "Sunset view",
+      "controls": [
+        "rooftop_viewpoint_either"
+      ],
+      "slot": "dated_anchor",
+      "merge_with": []
+    },
+    {
+      "id": "park_pause",
+      "label_el": "Διάλειμμα σε πάρκο",
+      "label_en": "Park pause",
+      "controls": [],
+      "slot": "flexible_pause",
+      "merge_with": []
+    },
+    {
+      "id": "beach_pause",
+      "label_el": "Παραλία",
+      "label_en": "Beach pause",
+      "controls": [],
+      "slot": "flexible_pause",
+      "merge_with": []
+    },
+    {
+      "id": "aperitivo_tapas",
+      "label_el": "Aperitivo ή tapas",
+      "label_en": "Aperitivo or tapas",
+      "controls": [],
+      "slot": "meal_or_drink",
+      "merge_with": []
+    },
+    {
+      "id": "live_music",
+      "label_el": "Live μουσική",
+      "label_en": "Live music",
+      "controls": [
+        "genre"
+      ],
+      "slot": "dated_anchor",
+      "merge_with": []
+    },
+    {
+      "id": "bookshops_vintage",
+      "label_el": "Βιβλία ή vintage",
+      "label_en": "Books or vintage",
+      "controls": [
+        "books_vintage_either"
+      ],
+      "slot": "visit",
+      "merge_with": []
+    },
+    {
+      "id": "photowalk",
+      "label_el": "Photowalk",
+      "label_en": "Photowalk",
+      "controls": [],
+      "slot": "route_style",
+      "merge_with": []
+    }
+  ],
+  "facet_keys": [
+    "place_type",
+    "service",
+    "coffee_type",
+    "cuisine",
+    "dish",
+    "architecture",
+    "history_context",
+    "experience",
+    "atmosphere",
+    "music_context",
+    "audience_context",
+    "indoor_outdoor",
+    "meal_context",
+    "shopping_context",
+    "visit_mode",
+    "effort_context",
+    "family_context",
+    "dietary_statement",
+    "access_statement"
+  ],
+  "closed_values": {
+    "place_type": [
+      "cafe",
+      "bakery",
+      "restaurant",
+      "supermarket",
+      "convenience_store",
+      "market",
+      "bar",
+      "club",
+      "museum",
+      "landmark",
+      "park",
+      "beach",
+      "viewpoint",
+      "shop",
+      "hotel",
+      "church",
+      "stadium",
+      "food_hall",
+      "plaza",
+      "pastry_shop"
+    ],
+    "service": [
+      "coffee",
+      "breakfast",
+      "brunch",
+      "groceries",
+      "lunch",
+      "dinner",
+      "pastries",
+      "dessert",
+      "ice_cream",
+      "drinks",
+      "live_music"
+    ],
+    "coffee_type": [
+      "specialty",
+      "espresso",
+      "filter"
+    ],
+    "indoor_outdoor": [
+      "indoor",
+      "outdoor",
+      "both"
+    ],
+    "meal_context": [
+      "breakfast",
+      "brunch",
+      "lunch",
+      "dinner",
+      "snack"
+    ],
+    "visit_mode": [
+      "exterior",
+      "interior",
+      "guided",
+      "self_guided"
+    ]
+  },
+  "detail_keys": [
+    "reason_to_choose",
+    "reason_to_avoid",
+    "specific_tip",
+    "dish_detail",
+    "visit_detail",
+    "neighborhood_context",
+    "queue_advice",
+    "booking_statement",
+    "price_statement",
+    "duration_statement",
+    "opening_statement",
+    "season_statement",
+    "transport_statement",
+    "access_statement",
+    "dietary_statement",
+    "family_statement",
+    "historical_context",
+    "uncertain_subject"
+  ],
+  "map_layers": [
+    "plan",
+    "coffee",
+    "breakfast_brunch",
+    "restaurants",
+    "bars",
+    "sights",
+    "groceries"
+  ],
+  "map_scopes": [
+    "according_to_plan",
+    "all_known_candidates"
+  ],
+  "default_selection": "optional_soft_preference",
+  "source_policy": "All AI annotations are proposals with claim evidence; no canonical, current, allergy/access safety or planner approval."
+}

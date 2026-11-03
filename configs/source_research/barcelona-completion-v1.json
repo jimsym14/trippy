@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "pack": ".local/stage3/planner-release-v1/adjudicated-source-v2/df0b348f4558c04c/normalized.json",
+  "held": ".local/stage3/planner-release-v1/adjudicated-source-v2/df0b348f4558c04c/held-claims.json",
+  "expanded_prepared": ".local/stage3/planner-release-v1/targeted-adjudication-ai-v2/prepared.json",
+  "annotation_proposals": ".local/stage3/planner-release-v1/unattended-recovery-v1/9548b94c7a152420/annotation-proposals.json",
+  "quarantined_facets": ".local/stage3/planner-release-v1/unattended-recovery-v1/9548b94c7a152420/quarantined-facets.json",
+  "manual_tag_audit": ".local/stage3/planner-release-v1/unattended-recovery-v1/9548b94c7a152420/manual-tag-audit-v1.json",
+  "registry": "configs/activity-registry-v1.json",
+  "primary_observations": ".local/stage3/planner-release-v1/campaigns-v1/primary-observations-wave1.json",
+  "source_recipe": "configs/source_research/barcelona-curation-recipe.json",
+  "output_root": ".local/stage3/planner-release-v1/completion-v1",
+  "ledger": ".local/stage3/extraction-budget.sqlite",
+  "request_prefix": "barcelona-completion-v1",
+  "queue_cap": "4.75",
+  "shared_cap": "15.00",
+  "task_caps": {
+    "source": "1.30",
+    "facets": "1.10",
+    "details": "1.90",
+    "activity_fit": "0.35",
+    "operator_extract": "0.65"
+  },
+  "output_tokens": {
+    "source": 3000,
+    "facets": 4500,
+    "details": 4500,
+    "activity_fit": 4500,
+    "operator_extract": 3000
+  },
+  "source_per_call": 4,
+  "annotation_per_call": 16,
+  "max_request_bytes": 90000,
+  "identity_candidate_limit": 5,
+  "web_candidates_per_group": 1,
+  "max_operator_pages": 60,
+  "extract_operator_prose": true,
+  "max_attempts": 3,
+  "max_rate_limit_attempts": 8,
+  "max_ai_requests_per_stage": 100,
+  "max_http_requests": 240,
+  "max_total_wait_seconds": 43200,
+  "host_delay_seconds": 2,
+  "provider_timeout_seconds": 120,
+  "worker_timeout_seconds": 180,
+  "requested_date": null,
+  "refresh_days": {
+    "published_hours": 3,
+    "price_statement": 7,
+    "business_status": 1,
+    "menu_reference": 14,
+    "address": 30,
+    "name": 30,
+    "default": 14
+  },
+  "discovery_roles": {
+    "coffee": {
+      "source_categories": [
+        "coffee_shop",
+        "coffee_roastery",
+        "cafe"
+      ],
+      "limit": 6
+    },
+    "breakfast_bakery": {
+      "source_categories": [
+        "bakery"
+      ],
+      "limit": 6
+    },
+    "brunch": {
+      "source_categories": [
+        "brunch_restaurant",
+        "breakfast_and_brunch_restaurant",
+        "breakfast_restaurant"
+      ],
+      "limit": 4
+    },
+    "groceries": {
+      "source_categories": [
+        "grocery_store",
+        "convenience_store",
+        "supermarket"
+      ],
+      "limit": 8
+    }
+  },
+  "automatic_publication": false,
+  "web_cache_max_age_seconds": 86400,
+  "operator_feeds": []
+}

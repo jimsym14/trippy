@@ -1,0 +1,18 @@
+{
+  "synthetic": true,
+  "start_date": "2030-01-10",
+  "end_date": "2030-01-12",
+  "activities": [
+    {
+      "id": "coffee_break",
+      "frequency": "daily"
+    },
+    {
+      "id": "breakfast_out",
+      "frequency": "daily"
+    }
+  ],
+  "excluded_ids": [],
+  "locks": [],
+  "hard_requirements": []
+}

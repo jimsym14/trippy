@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "creators": [
+    {
+      "id": "1",
+      "name": "Tasos Dousis",
+      "channel_id": "UCksZM1wpXMJHPEEjRvDW6rw",
+      "language": "el",
+      "enabled": true,
+      "identity_basis": "official_api_channel_search_title_and_description_review",
+      "verified_at": "2026-10-30"
+    },
+    {
+      "id": "2",
+      "name": "Ευτύχης Μπλέτσας",
+      "channel_id": "UCVO2_vAXqk-84iByks7GvaA",
+      "language": "el",
+      "enabled": true,
+      "identity_basis": "official_api_channel_search_title_and_description_review",
+      "verified_at": "2026-10-30"
+    },
+    {
+      "id": "3",
+      "name": "tripment",
+      "channel_id": "UC2oQjQYhJwX6x8HdzEoXTmA",
+      "language": "el",
+      "enabled": true,
+      "identity_basis": "official_api_channel_search_title_and_description_review",
+      "verified_at": "2026-10-30"
+    },
+    {
+      "id": "4",
+      "name": "Patrick Guide Barcelona",
+      "channel_id": "UCYc8QG3cdJSmSTdb-mMBOKw",
+      "language": "en",
+      "enabled": true,
+      "identity_basis": "official_api_channel_search_title_and_description_review",
+      "verified_at": "2026-10-30"
+    },
+    {
+      "id": "5",
+      "name": "Happy to Wander (Travel Tips & Inspo)",
+      "channel_id": "UCu_ddDIgIZREFg_N_1-z4nQ",
+      "language": "en",
+      "enabled": true,
+      "identity_basis": "official_api_channel_search_title_and_description_review",
+      "verified_at": "2026-10-30"
+    },
+    {
+      "id": "6",
+      "name": "Spain Revealed",
+      "channel_id": "UCo1HWB7bmrjpscWdZ5Xx3Xw",
+      "language": "en",
+      "enabled": true,
+      "identity_basis": "official_api_channel_search_title_and_description_review",
+      "verified_at": "2026-10-30"
+    },
+    {
+      "id": "7",
+      "name": "Rick Steves' Europe",
+      "channel_id": "UCchgIh8Tc4sTmBfnMQ5pDdg",
+      "language": "en",
+      "enabled": true,
+      "identity_basis": "official_api_channel_search_title_and_description_review",
+      "verified_at": "2026-10-30"
+    },
+    {
+      "id": "8",
+      "name": "Wolters World",
+      "channel_id": "UCFr3sz2t3bDp6Cux08B93KQ",
+      "language": "en",
+      "enabled": true,
+      "identity_basis": "official_api_channel_search_title_and_description_review",
+      "verified_at": "2026-10-30"
+    }
+  ]
+}

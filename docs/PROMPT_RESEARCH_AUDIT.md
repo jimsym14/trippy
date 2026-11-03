@@ -1,5 +1,7 @@
 # Έλεγχος prompt έρευνας με βάση το αρχικό ταξιδιωτικό chat
 
+> Ενεργό πλάνο 29/10/2026: [τελικές απαιτήσεις και parity](FINAL_REQUIREMENTS_AND_PARITY.md), [κοινό implementation agreement](IMPLEMENTATION_AGREEMENT_PLAN.md) και [μοναδική σειρά stages για autopilot](AUTOPILOT_STAGED_IMPLEMENTATION.md). Οι τελευταίες απαιτήσεις περιλαμβάνουν semantic prompts ανά προτίμηση, κεντρική MapKit αναζήτηση/ιδιωτική αποθήκευση pin και sourced rating snapshots μόνο `/5`. Supabase Free project δημιουργήθηκε από τον χρήστη· σύνδεση/migrations δεν επαληθεύτηκαν. Παλιά scope/status/task lists είναι ιστορικά όπου διαφέρουν· οι ειδικές λεπτομέρειες του παρόντος παραμένουν όταν συμφωνούν.
+
 ## Πώς εξελίχθηκε το αίτημα
 
 1. **Αρχικό brief:** Βαρκελώνη 5–9 Δεκεμβρίου, επίδραση αργιών ανά ημέρα, πρόγραμμα, τρεις καλές περιοχές διαμονής, Booking/Airbnb και value-for-money.

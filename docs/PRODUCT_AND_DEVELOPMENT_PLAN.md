@@ -1,12 +1,14 @@
 # Trip planning app — product and development plan
 
+> Ενεργό πλάνο 29/10/2026: [τελικές απαιτήσεις και parity](FINAL_REQUIREMENTS_AND_PARITY.md), [κοινό implementation agreement](IMPLEMENTATION_AGREEMENT_PLAN.md) και [μοναδική σειρά stages για autopilot](AUTOPILOT_STAGED_IMPLEMENTATION.md). Οι τελευταίες απαιτήσεις περιλαμβάνουν semantic prompts ανά προτίμηση, κεντρική MapKit αναζήτηση/ιδιωτική αποθήκευση pin και sourced rating snapshots μόνο `/5`. Supabase Free project δημιουργήθηκε από τον χρήστη· σύνδεση/migrations δεν επαληθεύτηκαν. Παλιά scope/status/task lists είναι ιστορικά όπου διαφέρουν· οι ειδικές λεπτομέρειες του παρόντος παραμένουν όταν συμφωνούν.
+
 > Η ενεργή κατεύθυνση ενημερώθηκε στις 28/10/2026: [κοινή βάση προορισμών, private admin και έρευνα ανά ταξίδι](DESTINATION_DATABASE_REDESIGN.md). Οι περιορισμοί manual-only του παρόντος αρχικού πλάνου έχουν αντικατασταθεί από αυτή την κατεύθυνση.
 
 **Status:** first product specification / implementation baseline  
 **Working name:** trippy (temporary prototype wordmark; naming is an open product decision)  
 **Language:** Greek-first prototype, with localization designed in from the beginning.
 
-### Decisions confirmed with the product owner
+### Original decisions confirmed with the product owner (historical baseline)
 
 - Audience: detail-oriented travelers who want control without writing many prompts.
 - Core result: a day-by-day trip plan with maps, costs, bookings, holidays, attractions, food and nightlife options.
@@ -293,7 +295,9 @@ External data is optional and must be evaluated for coverage, terms, quotas, upt
 - Keep secrets out of browser storage. No AI keys or AI calls in the first release.
 - Log parser/template versions and errors without logging sensitive traveler details unnecessarily.
 
-## 12. Development task list
+## 12. Original development task list (historical)
+
+For active scope and execution order use [AUTOPILOT_STAGED_IMPLEMENTATION.md](AUTOPILOT_STAGED_IMPLEMENTATION.md). Checkboxes below describe the original prototype phases and are not a current completion ledger.
 
 ### Phase 0 — Product definition and design system
 

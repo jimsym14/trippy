@@ -1,0 +1,3 @@
+-r requirements.txt
+# Parse the generated PostgreSQL migration without contacting a real database.
+pglast>=7.0,<9.0

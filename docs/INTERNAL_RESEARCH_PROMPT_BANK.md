@@ -1,5 +1,7 @@
 # Prompts για το internal destination catalog
 
+> Ενεργό πλάνο 29/10/2026: [τελικές απαιτήσεις και parity](FINAL_REQUIREMENTS_AND_PARITY.md), [κοινό implementation agreement](IMPLEMENTATION_AGREEMENT_PLAN.md) και [μοναδική σειρά stages για autopilot](AUTOPILOT_STAGED_IMPLEMENTATION.md). Οι τελευταίες απαιτήσεις περιλαμβάνουν semantic prompts ανά προτίμηση, κεντρική MapKit αναζήτηση/ιδιωτική αποθήκευση pin και sourced rating snapshots μόνο `/5`. Supabase Free project δημιουργήθηκε από τον χρήστη· σύνδεση/migrations δεν επαληθεύτηκαν. Παλιά scope/status/task lists είναι ιστορικά όπου διαφέρουν· οι ειδικές λεπτομέρειες του παρόντος παραμένουν όταν συμφωνούν.
+
 Σχεδιασμός prompts για το πιλοτικό, όχι εγκατεστημένο admin εργαλείο. Κάθε prompt εκτελείται σε bounded batch, με budget, γνωστή έκδοση dataset και source policy. Τα placeholders συμπληρώνονται από το εργαλείο· δεν αποστέλλεται όλη η βάση. Καμία από τις παρακάτω εργασίες δεν εκτελέστηκε αυτόματα.
 
 ## 1. Discovery: μία κατηγορία × μία περιοχή
@@ -8,6 +10,7 @@
 Destination: {destination_id, name, country, geographic_scope}
 Area: {area_id, name, bounds_or_scope}
 Category: {canonical_category}
+Semantic category intent: {reviewed_category_instruction}
 Batch target/max: {target_count}/{max_count}
 Existing canonical names/provider IDs in this scope: {known_candidates}
 Allowed sources and retention/attribution rules: {source_policy}
@@ -101,6 +104,7 @@ Public holiday δεν αποδεικνύει venue closure. Unknown age δεν �
 Brief: {trip_brief}
 Bounded candidate pool: {retrieved_candidates}
 Date/price verifications: {fresh_claims}
+Compiled preferences: {versioned_semantic_instructions_with_trip_context}
 User-owned choices/edits: {must_preserve}
 Known route inputs: {coordinates_and_verified_or_estimated_transfers}
 
@@ -127,3 +131,9 @@ python3 run_research.py --brief /path/to/trip-brief.json --output-dir /tmp/tripp
 ```
 
 Αποθηκεύει scout/synthesis prompts χωρίς API calls ή ανάγνωση API keys. Μόνο με την προσθήκη `--execute` εκτελούνται οι χρεώσιμες κλήσεις. Δεν είναι ακόμη catalog scheduler, DB writer ή public admin endpoint.
+
+## Κοινός compiler και αστέρια
+
+Κάθε personalized task λαμβάνει το κοινό compiled preference bundle από το versioned registry: φυσικές οδηγίες για selected categories/local pills μαζί με full trip context, χωρίς αποκλεισμό άλλων χρήσιμων modules. Shared catalog batches χρησιμοποιούν semantic category intent χωρίς private traveler constraints.
+
+Rating extraction μόνο όπου επιτρέπεται στο ίδιο evidence/research: exact venue/branch, value σε πραγματική scale 5, platform/source, real observed time, research run και retention/check state. Unknown όπου λείπει evidence/permission. Δεν ζητούνται review texts, νέα υποχρεωτική ratings API κλήση, average διαφορετικών platforms ή AI-generated stars. [Πλήρες contract και templates](FINAL_REQUIREMENTS_AND_PARITY.md).

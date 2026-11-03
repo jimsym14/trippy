@@ -1,0 +1,12 @@
+{
+  "inputs": ".local/stage3/sources/barcelona-planner-readiness-audit.json",
+  "original": ".local/stage3/sources/barcelona-creators-extraction-prepared-20261030.json",
+  "profile": "configs/source_research/barcelona-curation-profile.json",
+  "decisions": ".local/stage3/sources/barcelona-curation-decisions-v3.json",
+  "observations": ".local/stage3/sources/barcelona-primary-observations-v2.json",
+  "identity_decisions": ".local/stage3/sources/barcelona-source-identity-decisions-v1.json",
+  "catalog": ".local/catalog.sqlite",
+  "catalog_city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+  "catalog_version_id": "2a2dbe33-5c17-5f69-b235-4f1dc716f939",
+  "root": ".local/stage3/curation"
+}

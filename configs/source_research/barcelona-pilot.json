@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "purpose": "First live pilot: broad Barcelona orientation only; review sources and content access before targeted expansion",
+  "languages": [
+    "el",
+    "en"
+  ],
+  "destination_names": {
+    "el": "Βαρκελώνη",
+    "en": "Barcelona"
+  },
+  "region_code": null,
+  "limits": {
+    "max_queries": 4,
+    "results_per_query": 10,
+    "max_video_candidates": 20
+  },
+  "topics": [
+    {
+      "id": "overview",
+      "queries": {
+        "el": [
+          "{city} ταξιδιωτικός οδηγός τι να δω τι να κάνω",
+          "{city} κρυμμένα μέρη γειτονιές ταξίδι"
+        ],
+        "en": [
+          "{city} travel guide things to do local tips",
+          "{city} hidden gems neighbourhood guide"
+        ]
+      }
+    }
+  ],
+  "creator_defaults": "creators.json"
+}

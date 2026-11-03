@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "status": "executable_private_integration_with_explicit_pending_gates",
+  "selection": ".local/stage3/planner-release-v1/active-dataset.json",
+  "integration_recipe": ".local/stage3/planner-release-v1/integrated-dataset-v1/audit-f83c88d1ff9219b2/recipe.json",
+  "registry": "configs/activity-registry-v2.json",
+  "taxonomy": "configs/barcelona-finish-taxonomy-v2.json",
+  "golden": "configs/barcelona-finish-golden-v1.json",
+  "demo_trip": "configs/barcelona-finish-demo-trip.json",
+  "output_root": ".local/stage3/planner-release-v1/finish-v1",
+  "limits": {
+    "shortlist_source_occurrences": 60,
+    "operator_pages": 30,
+    "http_requests": 150,
+    "connected_wall_seconds": 43200,
+    "transient_attempts": 4
+  },
+  "paid_calls_enabled": false,
+  "automatic_publication": false
+}

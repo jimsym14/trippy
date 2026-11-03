@@ -1,6 +1,14 @@
 # Trippy: κοινή βάση προορισμών και έρευνα ανά ταξίδι
 
-Ημερομηνία: 28 Οκτωβρίου 2026. Πρόταση αρχιτεκτονικής και εφαρμοσμένες διορθώσεις στο υπάρχον pipeline. Η βάση και το web admin δεν έχουν ακόμη εγκατασταθεί.
+> Ενεργό πλάνο 29/10/2026: [τελικές απαιτήσεις και parity](FINAL_REQUIREMENTS_AND_PARITY.md), [κοινό implementation agreement](IMPLEMENTATION_AGREEMENT_PLAN.md) και [μοναδική σειρά stages για autopilot](AUTOPILOT_STAGED_IMPLEMENTATION.md). Οι τελευταίες απαιτήσεις περιλαμβάνουν semantic prompts ανά προτίμηση, κεντρική MapKit αναζήτηση/ιδιωτική αποθήκευση pin και sourced rating snapshots μόνο `/5`. Supabase Free project δημιουργήθηκε από τον χρήστη· σύνδεση/migrations δεν επαληθεύτηκαν. Παλιά scope/status/task lists είναι ιστορικά όπου διαφέρουν· οι ειδικές λεπτομέρειες του παρόντος παραμένουν όταν συμφωνούν.
+
+Αρχική ημερομηνία: 28 Οκτωβρίου 2026. Πρόταση αρχιτεκτονικής και εφαρμοσμένες διορθώσεις στο υπάρχον pipeline. Status 29/10/2026: local normalized schema/API και [Stage-3 basic catalog](CATALOG_STAGE_3.md) εγκαταστάθηκαν: 41.461 Barcelona records, 500 preliminary shortlist, 0 enriched, migration `0003`. Remote Supabase migration, Luna enrichment και web admin UI εκκρεμούν.
+
+Συμπληρωματικό πλάνο με έλεγχο επίσημων πηγών, Overture ingestion, δυναμικό prompt scheduler, live adapters και budgets: [CATALOG_PROMPTING_AND_LIVE_DATA_PLAN.md](CATALOG_PROMPTING_AND_LIVE_DATA_PLAN.md).
+
+Νεότερη εξειδίκευση 29/10/2026 για τοπικές επιλογές input, γεωγραφική διαβάθμιση, προηγούμενες επισκέψεις, Google live UI/terms και progressive loading: [LOCAL_DISCOVERY_AND_GOOGLE_LIVE_INTEGRATION.md](LOCAL_DISCOVERY_AND_GOOGLE_LIVE_INTEGRATION.md). Ο καιρός δεν περιλαμβάνεται στο MVP.
+
+Συγκεντρωτικό πλάνο προς συμφωνία για γενικευμένο customization, stack/APIs, κόστος, user setup και σειρά υλοποίησης: [IMPLEMENTATION_AGREEMENT_PLAN.md](IMPLEMENTATION_AGREEMENT_PLAN.md).
 
 ## Απόφαση
 
@@ -109,7 +117,7 @@ flowchart TD
 
 ## Database και αποθήκευση
 
-Για αρχικό πιλοτικό προτείνεται managed PostgreSQL και managed authentication, π.χ. Supabase, με backend στο υπάρχον Render. Πρόκειται για επιλογή προς υλοποίηση, όχι provisioned υπηρεσία. Free tiers είναι χρήσιμα για δοκιμή με όρια· δεν τα θεωρούμε δωρεάν παραγωγή χωρίς περιορισμούς. Το filesystem ενός ephemeral service δεν είναι μόνιμη βάση δεδομένων.
+Για αρχικό πιλοτικό προτείνεται managed PostgreSQL και managed authentication, π.χ. Supabase, με backend στο υπάρχον Render. Το Supabase Free project δημιουργήθηκε πλέον από τον χρήστη: `https://zsecfyracbhhvxvzgvfw.supabase.co`. Η σύνδεση/schema/migrations δεν έχουν επαληθευτεί ή εφαρμοστεί στον παρόντα έλεγχο. Free tiers είναι χρήσιμα για δοκιμή με όρια· δεν τα θεωρούμε δωρεάν παραγωγή χωρίς περιορισμούς. Το filesystem ενός ephemeral service δεν είναι μόνιμη βάση δεδομένων.
 
 Βασικοί πίνακες:
 

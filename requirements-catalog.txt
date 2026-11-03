@@ -1,0 +1,3 @@
+-r requirements.txt
+# Regional GeoParquet ingestion; kept separate from the API/worker runtime.
+duckdb>=1.4.0,<3.0.0

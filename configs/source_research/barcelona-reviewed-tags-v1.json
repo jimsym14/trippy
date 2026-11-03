@@ -1,0 +1,6 @@
+{
+  "proposals": ".local/stage3/planner-release-v1/unattended-recovery-v1/9548b94c7a152420/annotation-proposals.json",
+  "audit": ".local/stage3/planner-release-v1/unattended-recovery-v1/9548b94c7a152420/manual-tag-audit-v1.json",
+  "current_pack": ".local/stage3/planner-release-v1/adjudicated-source-v2/df0b348f4558c04c/normalized.json",
+  "output_root": ".local/stage3/planner-release-v1/reviewed-annotations-v1"
+}

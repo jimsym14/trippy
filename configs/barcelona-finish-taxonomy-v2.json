@@ -1,0 +1,59 @@
+{
+  "version": 2,
+  "migrations": [
+    {
+      "annotation_key": "ce17d43a2126dd72bb438f419773054fbd37837ca0296c98652312fc78141206",
+      "source_entry_sha256": "072b74c39eb7f0725dceb859efaa561644362fe7d158ba89b2d94567bb3f361c",
+      "effective_sha256": "381f3710138a1c6bc0393eca5014f12a8efaff6b49806667c90fcfd0026b1162",
+      "key": "place_type",
+      "value": "pastry_shop",
+      "review_method": "agent_exact_source_quote_comparison",
+      "reason": "Compared the supplied source quotations and existing manual detail: The source describes Hofmann as a pastry shop and cooking school. This typed source category does not certify present operation or canonical identity."
+    },
+    {
+      "annotation_key": "0aca71eda1c9df74feae4db996532bbcddbf532e317d869aad188a99e4d3b519",
+      "source_entry_sha256": "a5dd5ec191102d1bc15d26d9c33662499bf32c90f423d6e4704fe26de6562934",
+      "effective_sha256": "54ac2a442caf89d7ddf7b9f404adfe37958d7dcd53efe0bc5f2f11876d3d31d4",
+      "key": "place_type",
+      "value": "church",
+      "review_method": "agent_exact_source_quote_comparison",
+      "reason": "Compared the supplied source quotations and existing manual detail: The source describes the Church of the Holy Family, or Sagrada Familia, as Gaudi's unfinished church. This typed source category does not certify present operation or canonical identity."
+    },
+    {
+      "annotation_key": "212309310ad7b5d6ebec91c1c80fcdcd8772a0eef63bc56e8b6a369f565e75a2",
+      "source_entry_sha256": "06f4871e247fc47fccb3c8e267a8c23b4486242c90cedddba9a6ea54ab201ffb",
+      "effective_sha256": "be124df98c4af12b7bb63537f257ae8dbda52e1f580828aadba5fa4b6dc64308",
+      "key": "place_type",
+      "value": "plaza",
+      "review_method": "agent_exact_source_quote_comparison",
+      "reason": "Compared the supplied source quotations and existing manual detail: The source describes Fosar de les Moreres as a plaza with an eternal flame commemorating Catalan soldiers fallen during the War of the Spanish Succession. This typed source category does not certify present operation or canonical identity."
+    },
+    {
+      "annotation_key": "3520f71b873d4e54325e4f9b27ee984cb2536f19558861dbfadb864ab1fd2741",
+      "source_entry_sha256": "4fe32ec6aaf0ec7a08b6ccb6265ac743da9bd9fc02ec5294f20a46a7eefbce45",
+      "effective_sha256": "98b04a0782ad4552e72997a6cd02cee906ae6c8a9faf4a2568d430cdfb3d63f9",
+      "key": "place_type",
+      "value": "church",
+      "review_method": "agent_exact_source_quote_comparison",
+      "reason": "Compared the supplied source quotations and existing manual detail: The source describes the Basilica of Santa Maria del Mar as a beautiful Gothic church. This typed source category does not certify present operation or canonical identity."
+    },
+    {
+      "annotation_key": "65c1569403b09405bc7e1a488ea05b37a7b6cb234441b15f247d0e8e56863c87",
+      "source_entry_sha256": "00de6d066ef35f7c5c2be57d7106b360cb4ccb5216c80328d5696cc4885e5bc4",
+      "effective_sha256": "d7d036517e52a247e0298dc5efb55222f51a44b0e561bfe77df74d7fa7ce83ed",
+      "key": "place_type",
+      "value": "stadium",
+      "review_method": "agent_exact_source_quote_comparison",
+      "reason": "Compared the supplied source quotations and existing manual detail: The source describes Camp Nou as a stadium with a museum and a tour. Current operation is not established. This typed source category does not certify present operation or canonical identity."
+    },
+    {
+      "annotation_key": "c61629a0dc9dcfa03e8dd90d6f4a8dd67f411b0b27a195ffac6ccbfcc02cc373",
+      "source_entry_sha256": "f5ae0acaeb7d72f443ffaaf48510701aead921da4dc1328a7531b6d6b3ecef3e",
+      "effective_sha256": "5551834b28e1579ed8bb86ba0d1818819876f098a93aad9ec58701d45785a3ba",
+      "key": "place_type",
+      "value": "plaza",
+      "review_method": "agent_exact_source_quote_comparison",
+      "reason": "Compared the supplied source quotations and existing manual detail: The source describes Plaza Real as a lively plaza with palm trees and arcaded galleries. This typed source category does not certify present operation or canonical identity."
+    }
+  ]
+}

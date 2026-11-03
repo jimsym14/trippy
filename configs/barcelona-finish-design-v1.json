@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "status": "design_only_runner_not_implemented",
+  "city_id": "barcelona",
+  "timezone": "Europe/Madrid",
+  "inputs": {
+    "selection": ".local/stage3/planner-release-v1/active-dataset.json",
+    "registry": "configs/activity-registry-v1.json",
+    "reference": "chat.md",
+    "trip_file": null
+  },
+  "default_mode": "offline",
+  "modes": ["offline", "connected", "resume", "status", "accept_private"],
+  "limits": {
+    "shortlist_unique_places": 60,
+    "candidates_per_activity_per_area": 6,
+    "gap_expansion_rounds": 1,
+    "plan_repair_rounds": 2,
+    "http_requests_per_campaign": 150,
+    "new_operator_pages": 30,
+    "luna_calls_per_campaign": 20,
+    "luna_queue_reservation_usd": "0.75",
+    "existing_luna_shared_cap_usd": "15.00",
+    "new_paid_places_cap_usd": "0.00",
+    "new_paid_routes_cap_usd": "0.00",
+    "provider_concurrency": 1,
+    "worker_deadline_seconds": 120,
+    "transient_attempts_per_job": 4,
+    "fallback_backoff_seconds": [15, 30, 60],
+    "max_connected_campaign_wall_hours": 12,
+    "heartbeat_seconds": 15,
+    "maximum_sleep_slice_seconds": 30
+  },
+  "stages": [
+    {"id": "audit", "requires": [], "network": false},
+    {"id": "compile", "requires": ["audit"], "network": false},
+    {"id": "retrieve_baseline", "requires": ["compile"], "network": false},
+    {"id": "targeted_evidence", "requires": ["retrieve_baseline"], "network": "configured_capabilities_only"},
+    {"id": "adjudicate_shortlist", "requires": ["targeted_evidence"], "network": false},
+    {"id": "plan_and_export", "requires": ["adjudicate_shortlist"], "network": "configured_routes_only"},
+    {"id": "evaluate", "requires": ["plan_and_export"], "network": false}
+  ],
+  "provider_policy": {
+    "luna": "source_bounded_proposals_only_no_web_search",
+    "local_overture": "candidates_only",
+    "operator_jsonld": "published_observations_with_conflict_checks",
+    "operator_json": "configured_mapping_only",
+    "places_api": "adapter_required_disabled",
+    "routes_api": "adapter_required_disabled",
+    "ticket_table_availability": "unsupported_until_capable_adapter_is_configured"
+  },
+  "freshness_policy": {
+    "historical_source_recommendation": "preserve_published_and_reviewed_times_not_current_fact",
+    "provider_observation": "field_specific_recheck_due_time_not_future_guarantee",
+    "dated_availability": "only_provider_reported_date_and_party_scope",
+    "hard_constraint": "explicit_applicable_evidence_or_unresolved"
+  },
+  "release_targets": {
+    "source_occurrence_conservation_percent": 100,
+    "previous_decision_provenance_preserved_percent": 100,
+    "admitted_annotation_bindings_current_percent": 100,
+    "held_or_pending_items_silently_promoted": 0,
+    "known_wrong_subject_or_fit_regressions": 0,
+    "expected_relevant_results_recall_percent": 95,
+    "expected_relevant_results_precision_percent": 95,
+    "recall_precision_requires_fixed_manually_reviewed_expected_sets": true,
+    "estimated_overall_dataset_accuracy": null,
+    "automatic_publication": false,
+    "automatic_active_selection_replacement": false
+  },
+  "scenarios": [
+    "baseline_without_optional_activities",
+    "coffee_once",
+    "coffee_every_day",
+    "coffee_merged_with_brunch",
+    "breakfast_at_stay_provided",
+    "breakfast_at_stay_buy_supplies",
+    "breakfast_at_stay_unknown",
+    "breakfast_out_bakery_or_cafe",
+    "groceries_map_layer",
+    "all_known_candidates_vs_according_to_plan",
+    "low_budget_with_real_price_unknowns",
+    "dietary_hard_requirement_with_missing_evidence",
+    "accessible_trip_with_missing_access_chain",
+    "user_locked_stop_and_local_replan",
+    "return_visit_with_exclusions",
+    "branch_conflict_moco_mood"
+  ]
+}

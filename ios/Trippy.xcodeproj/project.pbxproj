@@ -6,6 +6,27 @@
 	objectVersion = 56;
 	objects = {
 
+
+        910000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedInbox.swift; sourceTree = "<group>"; };
+        910000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+        910000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocialLibrary.swift; sourceTree = "<group>"; };
+        910000000000000000000004 = {isa = PBXFileReference; explicitFileType = wrapper.app-extension; includeInIndex = 0; path = TrippyShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+        920000000000000000000001 = {isa = PBXBuildFile; fileRef = 910000000000000000000001; };
+        920000000000000000000002 = {isa = PBXBuildFile; fileRef = 910000000000000000000001; };
+        920000000000000000000003 = {isa = PBXBuildFile; fileRef = 910000000000000000000002; };
+        920000000000000000000004 = {isa = PBXBuildFile; fileRef = 910000000000000000000003; };
+        920000000000000000000005 = {isa = PBXBuildFile; fileRef = 910000000000000000000004; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+        930000000000000000000001 = {isa = PBXGroup; children = (910000000000000000000001, ); path = Shared; sourceTree = "<group>"; };
+        930000000000000000000002 = {isa = PBXGroup; children = (910000000000000000000002, ); path = TrippyShare; sourceTree = "<group>"; };
+        940000000000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (920000000000000000000002, 920000000000000000000003, ); runOnlyForDeploymentPostprocessing = 0; };
+        940000000000000000000002 = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (920000000000000000000005, ); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
+        950000000000000000000001 = {isa = PBXNativeTarget; buildConfigurationList = 960000000000000000000001; buildPhases = (940000000000000000000001, ); buildRules = (); dependencies = (); name = TrippyShare; productName = TrippyShare; productReference = 910000000000000000000004; productType = "com.apple.product-type.app-extension"; };
+        960000000000000000000001 = {isa = XCConfigurationList; buildConfigurations = (960000000000000000000002, 960000000000000000000003, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        960000000000000000000002 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TrippyShare/TrippyShare.entitlements; DEVELOPMENT_TEAM = AFC34U72DV; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = TrippyShare/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.dimitrisymeonidis.trippy.share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+        960000000000000000000003 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TrippyShare/TrippyShare.entitlements; DEVELOPMENT_TEAM = AFC34U72DV; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = TrippyShare/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.dimitrisymeonidis.trippy.share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+        970000000000000000000001 = {isa = PBXContainerItemProxy; containerPortal = E10000000000000000000002; proxyType = 1; remoteGlobalIDString = 950000000000000000000001; remoteInfo = TrippyShare; };
+        970000000000000000000002 = {isa = PBXTargetDependency; target = 950000000000000000000001; targetProxy = 970000000000000000000001; };
+
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* TrippyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* TrippyApp.swift */; };
 		A10000000000000000000004 /* Brand in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* Brand */; };
@@ -49,6 +70,8 @@
 			isa = PBXGroup;
 			children = (
 				D10000000000000000000002 /* Trippy */,
+                930000000000000000000001,
+                930000000000000000000002,
 				D10000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -57,6 +80,7 @@
 			isa = PBXGroup;
 			children = (
 				B10000000000000000000001 /* TrippyApp.swift */,
+                910000000000000000000003,
 				B10000000000000000000005 /* Info.plist */,
 				B10000000000000000000006 /* Brand */,
 				B10000000000000000000007 /* Assets.xcassets */,
@@ -70,6 +94,7 @@
 			isa = PBXGroup;
 			children = (
 				B10000000000000000000002 /* Trippy.app */,
+                910000000000000000000004,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -97,10 +122,12 @@
 				C10000000000000000000001 /* Sources */,
 				C10000000000000000000002 /* Frameworks */,
 				C10000000000000000000003 /* Resources */,
+                940000000000000000000002,
 			);
 			buildRules = (
 			);
 			dependencies = (
+                970000000000000000000002,
 			);
 			name = Trippy;
 			productName = Trippy;
@@ -131,6 +158,7 @@
 			projectRoot = "";
 			targets = (
 				E10000000000000000000001 /* Trippy */,
+                950000000000000000000001,
 			);
 		};
 /* End PBXProject section */
@@ -160,6 +188,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000001 /* TrippyApp.swift in Sources */,
+                920000000000000000000001,
+                920000000000000000000004,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -262,6 +292,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Trippy/Info.plist;
+                CODE_SIGN_ENTITLEMENTS = Trippy/Trippy.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.dimitrisymeonidis.trippy;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -282,6 +313,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Trippy/Info.plist;
+                CODE_SIGN_ENTITLEMENTS = Trippy/Trippy.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.dimitrisymeonidis.trippy;
 				PRODUCT_NAME = "$(TARGET_NAME)";

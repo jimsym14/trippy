@@ -1,0 +1,9 @@
+{
+  "source_recipe": "configs/source_research/barcelona-curation-recipe.json",
+  "pack": ".local/stage3/planner-release-v1/adjudicated-source-v1/26a6a88097eb7eeb/normalized.json",
+  "held": ".local/stage3/planner-release-v1/adjudicated-source-v1/26a6a88097eb7eeb/held-claims.json",
+  "prepared": ".local/stage3/planner-release-v1/targeted-adjudication-ai-v2/prepared.json",
+  "handoff": ".local/stage3/planner-release-v1/unattended-v2/targeted_source_handoff.json",
+  "manual_document": ".local/stage3/planner-release-v1/manual-expanded-followup-v1.json",
+  "output_root": ".local/stage3/planner-release-v1/adjudicated-source-v2"
+}

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "source_recipe": "configs/source_research/barcelona-curation-recipe.json",
+  "normalized_input": ".local/stage3/curation/barcelona/2e886549029361f9/normalized.json",
+  "prepared": ".local/stage3/planner-release-v1/semantic-v3/prepared.json",
+  "effective": ".local/stage3/planner-release-v1/targeted-source-review-v1/resolved-source-dispositions.json",
+  "manual_documents": [
+    ".local/stage3/planner-release-v1/manual-source-review-first-batch-v1.json",
+    ".local/stage3/planner-release-v1/targeted-source-review-v1/manual-decisions.json",
+    ".local/stage3/planner-release-v1/manual-consequence-repairs-v1.json"
+  ],
+  "output_root": ".local/stage3/planner-release-v1/adjudicated-source-v1",
+  "publication": "private_source_pack_only",
+  "paid_calls": 0
+}

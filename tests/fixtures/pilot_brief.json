@@ -1,0 +1,17 @@
+{
+  "destination": "Barcelona",
+  "date_range": {
+    "arrival": "2026-12-05",
+    "departure": "2026-12-09",
+    "dates_unknown": false
+  },
+  "interests": ["Φαγητό", "Καφές", "Αξιοθέατα", "Μουσεία"],
+  "vibes": [],
+  "travelers": 3,
+  "group": "family",
+  "ages": null,
+  "budget": null,
+  "preferred_area": null,
+  "dietary_needs": [],
+  "custom_instructions": "Synthetic developer fixture. Preserve mixed interests and explicit unknowns."
+}

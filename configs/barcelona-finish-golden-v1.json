@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "edition_sha256": "ae14f5109842528d6e19dec65eba49b7d52b15d4f70c0bf49897fe8467d57c57",
+  "review_method": "agent_exact_source_quote_comparison",
+  "cases": [
+    {
+      "activity": "coffee_break",
+      "expected_source_ids": [
+        "source:d9eb95a7a7e5b78437aae33a7db3db3c8bab12a40f4fc7758c628a93b6c14c1e"
+      ],
+      "review_scope": "Manually compared coffee/breakfast source quote at La Boqueria; only reviewed coffee activity admitted."
+    },
+    {
+      "activity": "breakfast_out",
+      "expected_source_ids": [
+        "source:d9eb95a7a7e5b78437aae33a7db3db3c8bab12a40f4fc7758c628a93b6c14c1e",
+        "source:bb3d1229d7227798a75705b98425736e548d864c07ce6005ea888737d85dcba8"
+      ],
+      "review_scope": "Manually compared La Boqueria breakfast recommendation and Can Vilaro fork-breakfast description."
+    },
+    {
+      "activity": "brunch",
+      "expected_source_ids": [],
+      "review_scope": "No admitted brunch activity/service/meal context in this edition. Missing supply remains a coverage gap."
+    },
+    {
+      "activity": "groceries",
+      "expected_source_ids": [],
+      "review_scope": "No admitted supermarket/convenience-store/groceries service; a market visit does not imply grocery provision."
+    }
+  ]
+}

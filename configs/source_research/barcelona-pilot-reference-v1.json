@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "scope": "critical_recommendations_and_selected_practical_claims; not_exhaustive",
+  "source_evidence_sha256": {
+    "quxiSJMqrHk": "2bbf97d91be6524e627c1177e3d5e7dce70caf32b44693421cf97df71fd66859",
+    "RXG2VUCMPVA": "4b78c75d61cf95e60f96ff5c0c97425d78130558b5a1ae2b8dc547897e564014"
+  },
+  "targets": [
+    {
+      "id": "en-granja",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000014"
+      ],
+      "anchor": "Granja Dulcinea"
+    },
+    {
+      "id": "en-market",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000028"
+      ],
+      "anchor": "Santa Catarina market"
+    },
+    {
+      "id": "en-bar-joan",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000036"
+      ],
+      "anchor": "Bar Joan"
+    },
+    {
+      "id": "en-iberics",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000052"
+      ],
+      "anchor": "Iberics Antonio"
+    },
+    {
+      "id": "en-gispert",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000082"
+      ],
+      "anchor": "Casa Gispert"
+    },
+    {
+      "id": "en-hofmann",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000103"
+      ],
+      "anchor": "Hofmann"
+    },
+    {
+      "id": "en-campana",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000119"
+      ],
+      "anchor": "La Campana"
+    },
+    {
+      "id": "en-pineda-asr",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000145"
+      ],
+      "anchor": "la pinera"
+    },
+    {
+      "id": "en-palma",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000177"
+      ],
+      "anchor": "bodega la palma"
+    },
+    {
+      "id": "en-paixano-asr",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000203"
+      ],
+      "anchor": "can pay shano"
+    },
+    {
+      "id": "en-cova-asr",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000228"
+      ],
+      "anchor": "lakova fumada"
+    },
+    {
+      "id": "en-ramonet",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000251"
+      ],
+      "anchor": "can Ramonet"
+    },
+    {
+      "id": "el-catalunya",
+      "source_id": "quxiSJMqrHk",
+      "segments": [
+        "quxiSJMqrHk:000022"
+      ],
+      "anchor": "Πλατεία Καταλονίας"
+    },
+    {
+      "id": "el-ramblas",
+      "source_id": "quxiSJMqrHk",
+      "segments": [
+        "quxiSJMqrHk:000040"
+      ],
+      "anchor": "Las Ramblas"
+    },
+    {
+      "id": "el-market-asr",
+      "source_id": "quxiSJMqrHk",
+      "segments": [
+        "quxiSJMqrHk:000069"
+      ],
+      "anchor": "λαμποκερία"
+    },
+    {
+      "id": "el-dulcinea",
+      "source_id": "quxiSJMqrHk",
+      "segments": [
+        "quxiSJMqrHk:000288"
+      ],
+      "anchor": "Δούλτσινέα"
+    },
+    {
+      "id": "el-mila",
+      "source_id": "quxiSJMqrHk",
+      "segments": [
+        "quxiSJMqrHk:000485"
+      ],
+      "anchor": "Κάζα Μιλά"
+    },
+    {
+      "id": "el-batllo",
+      "source_id": "quxiSJMqrHk",
+      "segments": [
+        "quxiSJMqrHk:000544"
+      ],
+      "anchor": "Κάζα Πατλό"
+    },
+    {
+      "id": "el-sagrada",
+      "source_id": "quxiSJMqrHk",
+      "segments": [
+        "quxiSJMqrHk:000546"
+      ],
+      "anchor": "Σαγράδα Φαμίλια"
+    },
+    {
+      "id": "en-paixano-asr-price",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000203"
+      ],
+      "anchor": "can pay shano",
+      "dimension": "price",
+      "claim_segments": [
+        "RXG2VUCMPVA:000207",
+        "RXG2VUCMPVA:000211"
+      ]
+    },
+    {
+      "id": "en-cova-asr-queue",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000228"
+      ],
+      "anchor": "lakova fumada",
+      "dimension": "queue",
+      "claim_segments": [
+        "RXG2VUCMPVA:000246",
+        "RXG2VUCMPVA:000247",
+        "RXG2VUCMPVA:000248",
+        "RXG2VUCMPVA:000249"
+      ]
+    },
+    {
+      "id": "en-cova-asr-opening_hours",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000228"
+      ],
+      "anchor": "lakova fumada",
+      "dimension": "opening_hours",
+      "claim_segments": [
+        "RXG2VUCMPVA:000246",
+        "RXG2VUCMPVA:000247"
+      ]
+    },
+    {
+      "id": "en-gispert-other",
+      "source_id": "RXG2VUCMPVA",
+      "segments": [
+        "RXG2VUCMPVA:000082"
+      ],
+      "anchor": "Casa Gispert",
+      "dimension": "other",
+      "claim_segments": [
+        "RXG2VUCMPVA:000082",
+        "RXG2VUCMPVA:000085",
+        "RXG2VUCMPVA:000086",
+        "RXG2VUCMPVA:000087"
+      ],
+      "allowed_dimensions": [
+        "other",
+        "date"
+      ]
+    }
+  ]
+}

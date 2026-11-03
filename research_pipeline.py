@@ -7,6 +7,7 @@ and missing evidence is never converted into a made-up price or coordinate.
 import copy
 import json
 import math
+import re
 import unicodedata
 from collections import Counter
 from datetime import date, timedelta
@@ -29,22 +30,52 @@ def trip_dates(brief):
 
 def canonical_category(value):
     text = "".join(c for c in unicodedata.normalize("NFD", str(value).lower()) if not unicodedata.combining(c))
+    exact = {
+        "coffee": "coffee", "specialty_coffee": "coffee", "bakeries": "coffee",
+        "brunch": "food", "food": "food", "tapas": "food", "catalan_food": "food",
+        "seafood": "food", "street_food": "food", "vegan_food": "food", "desserts": "food",
+        "nightlife": "bar", "bars": "bar", "cocktail_bars": "bar", "wine_bars": "bar",
+        "pubs": "bar", "live_music": "bar", "clubs": "club", "clubbing": "club",
+        "sights": "attraction", "museums": "museum", "architecture": "attraction",
+        "gaudi": "attraction", "historic_places": "attraction", "churches": "attraction",
+        "art_galleries": "attraction", "outdoors": "nature", "parks": "nature",
+        "beaches": "nature", "viewpoints": "nature", "day_trips": "excursion",
+        "shopping": "shopping", "markets": "shopping", "vintage": "shopping",
+        "bookshops": "shopping", "local_design": "shopping", "events": "event",
+        "concerts": "event", "festivals": "event", "exhibitions": "event", "sports": "event",
+    }
+    normalized = re.sub(r"[\W_]+", "_", text, flags=re.UNICODE).strip("_")
+    if normalized in exact:
+        return exact[normalized]
+    words = set(re.findall(r"\w+", text, flags=re.UNICODE))
     aliases = {
         "museum": ("museum", "μουσει"),
         "excursion": ("excursion", "day_trip", "day trip", "εκδρομ"),
         "shopping": ("shopping", "market", "αγορ"),
-        "food": ("restaurant", "food", "tapas", "cafe", "εστιατορ", "φαγητ"),
+        "food": ("restaurant", "food", "tapas", "cafe", "coffee", "εστιατορ", "φαγητ"),
         "club": ("club", "clubbing"),
         "bar": ("bar", "nightlife"),
-        "nature": ("nature", "hiking", "trail", "mountain", "φυση", "φυσιο", "πεζοπορ"),
+        "nature": ("nature", "hiking", "trail", "mountain", "outdoors", "φυση", "φυσιο", "πεζοπορ"),
         "attraction": ("attraction", "sight", "αξιοθεα", "architecture", "park", "αρχιτεκτον"),
         "event": ("event", "festival", "εκδηλω"),
     }
-    return next((category for category, names in aliases.items() if any(name in text for name in names)), "other")
+    for category, names in aliases.items():
+        for name in names:
+            alias_words = re.findall(r"\w+", name, flags=re.UNICODE)
+            if not alias_words:
+                continue
+            if len(alias_words) == 1:
+                matched = any(word == alias_words[0] or (not alias_words[0].isascii() and word.startswith(alias_words[0])) for word in words)
+            else:
+                matched = name.replace("_", " ") in " ".join(words)
+            if matched:
+                return category
+    return "other"
 
 
 def requested_categories(brief):
-    return sorted({canonical_category(value) for value in brief.get("interests", []) + brief.get("vibes", [])} - {"other", "event"})
+    selected = brief.get("interests", []) + brief.get("vibes", []) + brief.get("preference_tags", [])
+    return sorted({canonical_category(value) for value in selected} - {"other", "event"})
 
 
 def build_scout_prompt(brief):
@@ -55,6 +86,7 @@ def build_scout_prompt(brief):
     return f"""Είσαι ο ερευνητής πηγών του Trippy. Ερεύνησε τον προορισμό {destination}.
 ΠΛΗΡΕΣ BRIEF (εφάρμοσε όλους τους περιορισμούς, όχι μόνο τον προορισμό):
 {json.dumps(brief, ensure_ascii=False)}
+Τα `catalog_filters` είναι οι σταθερές κατηγορίες αναζήτησης του brief: χρησιμοποίησε `overture_families` για τοπικό κατάλογο σημείων και `video_categories` για το source-research pool. Τα Overture matches είναι identity/discovery candidates, όχι συστάσεις ή απόδειξη ωραρίου, τιμής ή ποιότητας. Διατήρησε τις επιλεγμένες λεπτομερείς προτιμήσεις όταν συνθέτεις κάθε πρόταση.
 Ημερομηνίες που πρέπει να καλυφθούν: {json.dumps(dates, ensure_ascii=False)}.
 
 Δούλεψε με πίνακα γεωγραφική περιοχή × επιλεγμένη κατηγορία × ενότητα.

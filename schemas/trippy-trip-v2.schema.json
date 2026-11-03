@@ -1,0 +1,698 @@
+{
+  "$defs": {
+    "Candidate": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "user_place_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Place Id"
+        },
+        "entity_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entity Id"
+        },
+        "eligibility_status": {
+          "default": "not_checked",
+          "enum": [
+            "not_checked",
+            "candidate",
+            "eligible",
+            "ineligible",
+            "conflict"
+          ],
+          "title": "Eligibility Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "Candidate",
+      "type": "object"
+    },
+    "Coordinate": {
+      "additionalProperties": false,
+      "properties": {
+        "latitude": {
+          "anyOf": [
+            {
+              "maximum": 90,
+              "minimum": -90,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latitude"
+        },
+        "longitude": {
+          "anyOf": [
+            {
+              "maximum": 180,
+              "minimum": -180,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Longitude"
+        },
+        "status": {
+          "default": "unknown",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "title": "Coordinate",
+      "type": "object"
+    },
+    "Day": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "legacy_key": {
+          "title": "Legacy Key",
+          "type": "string"
+        },
+        "local_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Local Date"
+        },
+        "day_number": {
+          "minimum": 1,
+          "title": "Day Number",
+          "type": "integer"
+        },
+        "theme": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Theme"
+        },
+        "order_locked": {
+          "default": false,
+          "title": "Order Locked",
+          "type": "boolean"
+        },
+        "legacy_fields": {
+          "additionalProperties": true,
+          "title": "Legacy Fields",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "legacy_key",
+        "day_number"
+      ],
+      "title": "Day",
+      "type": "object"
+    },
+    "Decision": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "legacy_key": {
+          "title": "Legacy Key",
+          "type": "string"
+        },
+        "kind": {
+          "default": "activity",
+          "enum": [
+            "activity",
+            "transport",
+            "ticket",
+            "accommodation"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "purpose": {
+          "title": "Purpose",
+          "type": "string"
+        },
+        "day_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Day Id"
+        },
+        "position": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Position",
+          "type": "integer"
+        },
+        "is_scheduled": {
+          "default": true,
+          "title": "Is Scheduled",
+          "type": "boolean"
+        },
+        "time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Time"
+        },
+        "duration_minutes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Minutes"
+        },
+        "period": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Period"
+        },
+        "time_locked": {
+          "default": false,
+          "title": "Time Locked",
+          "type": "boolean"
+        },
+        "order_locked": {
+          "default": false,
+          "title": "Order Locked",
+          "type": "boolean"
+        },
+        "option_set_id": {
+          "format": "uuid",
+          "title": "Option Set Id",
+          "type": "string"
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/Candidate"
+          },
+          "title": "Candidates",
+          "type": "array"
+        },
+        "selected_candidate_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selected Candidate Id"
+        },
+        "suggested_candidate_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Suggested Candidate Id"
+        },
+        "selection_owner": {
+          "default": "ai",
+          "enum": [
+            "ai",
+            "user"
+          ],
+          "title": "Selection Owner",
+          "type": "string"
+        },
+        "selection_locked": {
+          "default": false,
+          "title": "Selection Locked",
+          "type": "boolean"
+        },
+        "revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "context": {
+          "additionalProperties": true,
+          "title": "Context",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "legacy_key",
+        "purpose",
+        "option_set_id"
+      ],
+      "title": "Decision",
+      "type": "object"
+    },
+    "ImportedClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "user_place_id": {
+          "format": "uuid",
+          "title": "User Place Id",
+          "type": "string"
+        },
+        "field_key": {
+          "title": "Field Key",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value"
+        },
+        "source_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Source Ids",
+          "type": "array"
+        },
+        "checked_on": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checked On"
+        },
+        "verification_status": {
+          "default": "unverified",
+          "enum": [
+            "unverified",
+            "unknown",
+            "not_checked"
+          ],
+          "title": "Verification Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "user_place_id",
+        "field_key",
+        "value"
+      ],
+      "title": "ImportedClaim",
+      "type": "object"
+    },
+    "ImportedSource": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "legacy_id": {
+          "title": "Legacy Id",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "publisher": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Publisher"
+        },
+        "checked_on": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checked On"
+        },
+        "legacy_fields": {
+          "additionalProperties": true,
+          "title": "Legacy Fields",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "legacy_id",
+        "url"
+      ],
+      "title": "ImportedSource",
+      "type": "object"
+    },
+    "PrivatePlace": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "legacy_id": {
+          "title": "Legacy Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "category": {
+          "title": "Category",
+          "type": "string"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "official_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Official Url"
+        },
+        "coordinates": {
+          "$ref": "#/$defs/Coordinate"
+        },
+        "coordinate_extensions": {
+          "additionalProperties": true,
+          "title": "Coordinate Extensions",
+          "type": "object"
+        },
+        "identity_status": {
+          "default": "candidate",
+          "enum": [
+            "candidate",
+            "confirmed",
+            "ambiguous",
+            "not_found"
+          ],
+          "title": "Identity Status",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "legacy_fields": {
+          "additionalProperties": true,
+          "title": "Legacy Fields",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "legacy_id",
+        "name",
+        "category"
+      ],
+      "title": "PrivatePlace",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "trippy-trip-v2",
+      "default": "trippy-trip-v2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "adapter_version": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Adapter Version",
+      "type": "integer"
+    },
+    "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+    },
+    "owner_id": {
+      "format": "uuid",
+      "title": "Owner Id",
+      "type": "string"
+    },
+    "legacy_trip_key": {
+      "minLength": 1,
+      "title": "Legacy Trip Key",
+      "type": "string"
+    },
+    "destination": {
+      "title": "Destination",
+      "type": "string"
+    },
+    "date_mode": {
+      "default": "unknown",
+      "enum": [
+        "fixed",
+        "flexible",
+        "unknown"
+      ],
+      "title": "Date Mode",
+      "type": "string"
+    },
+    "arrival_date": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Arrival Date"
+    },
+    "departure_date": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Departure Date"
+    },
+    "brief": {
+      "additionalProperties": true,
+      "title": "Brief",
+      "type": "object"
+    },
+    "places": {
+      "items": {
+        "$ref": "#/$defs/PrivatePlace"
+      },
+      "title": "Places",
+      "type": "array"
+    },
+    "catalog_entity_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "title": "Catalog Entity Ids",
+      "type": "array"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/ImportedSource"
+      },
+      "title": "Sources",
+      "type": "array"
+    },
+    "claims": {
+      "items": {
+        "$ref": "#/$defs/ImportedClaim"
+      },
+      "title": "Claims",
+      "type": "array"
+    },
+    "days": {
+      "items": {
+        "$ref": "#/$defs/Day"
+      },
+      "title": "Days",
+      "type": "array"
+    },
+    "decisions": {
+      "items": {
+        "$ref": "#/$defs/Decision"
+      },
+      "title": "Decisions",
+      "type": "array"
+    },
+    "app_owned_state": {
+      "additionalProperties": true,
+      "title": "App Owned State",
+      "type": "object"
+    },
+    "legacy_modules": {
+      "additionalProperties": true,
+      "title": "Legacy Modules",
+      "type": "object"
+    },
+    "id_map": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Id Map",
+      "type": "object"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    },
+    "source_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Source Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "owner_id",
+    "legacy_trip_key",
+    "destination",
+    "source_hash"
+  ],
+  "title": "NormalizedTrip",
+  "type": "object"
+}

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "source_recipe": "configs/source_research/barcelona-curation-recipe.json",
+  "normalized_input": ".local/stage3/curation/barcelona/2e886549029361f9/normalized.json",
+  "held_claims": ".local/stage3/planner-release-v1/adjudicated-source-v1/26a6a88097eb7eeb/held-claims.json",
+  "baseline_prepared": ".local/stage3/planner-release-v1/semantic-v3/prepared.json",
+  "output_root": ".local/stage3/planner-release-v1/targeted-adjudication-ai-v2",
+  "coverage_profile": "configs/source_research/barcelona-curation-profile.json",
+  "scenarios": "configs/source_research/barcelona-planner-scenarios.json",
+  "ledger": ".local/stage3/extraction-budget.sqlite",
+  "request_group": "barcelona-targeted-adjudication-v1",
+  "claims_per_call": 8,
+  "context_radius": 6,
+  "output_tokens": 5000,
+  "source_task_cap": "1.25",
+  "shared_cap": "15",
+  "model": "configured_luna_only",
+  "automatic_application": false
+}

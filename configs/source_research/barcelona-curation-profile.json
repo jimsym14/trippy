@@ -1,0 +1,826 @@
+{
+  "version": 1,
+  "city_id": "barcelona",
+  "source_languages": [
+    "el",
+    "en"
+  ],
+  "primary_source_languages": [
+    "el",
+    "en",
+    "es",
+    "ca"
+  ],
+  "purpose": "Evidence coverage diagnostics; keyword/candidate matches never certify fit",
+  "privacy": "Only public city observations shared; addresses/preferences in private trips",
+  "coverage_cells": [
+    {
+      "id": "mainstream_landmarks",
+      "scope": "shared",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "subcategory",
+        "other"
+      ],
+      "terms": [],
+      "queries": [
+        "{city} official landmark visitor information"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "architecture",
+      "scope": "shared",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "subcategory",
+        "other"
+      ],
+      "terms": [
+        "architecture",
+        "gaudí",
+        "modernist"
+      ],
+      "queries": [
+        "{city} architecture official visitor guide"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "historic_walks",
+      "scope": "shared",
+      "kinds": [
+        "venue",
+        "route",
+        "district"
+      ],
+      "dimensions": [
+        "subcategory",
+        "other"
+      ],
+      "terms": [
+        "historic",
+        "history",
+        "gothic"
+      ],
+      "queries": [
+        "{city} history walking route official"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "traditional_food",
+      "scope": "shared",
+      "kinds": [
+        "venue",
+        "dish"
+      ],
+      "dimensions": [
+        "cuisine",
+        "dishes"
+      ],
+      "terms": [],
+      "queries": [
+        "{city} traditional restaurants local guide menu"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "modern_food",
+      "scope": "shared",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "cuisine",
+        "vibe"
+      ],
+      "terms": [
+        "modern",
+        "contemporary"
+      ],
+      "queries": [
+        "{city} contemporary restaurants independent local guide"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "specialty_coffee",
+      "scope": "shared",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "subcategory",
+        "dishes"
+      ],
+      "terms": [
+        "specialty coffee",
+        "espresso",
+        "filter coffee"
+      ],
+      "queries": [
+        "{city} specialty coffee official locations"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "brunch_work_cafes",
+      "scope": "shared",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "subcategory",
+        "dishes",
+        "other"
+      ],
+      "terms": [
+        "brunch",
+        "wifi",
+        "work"
+      ],
+      "queries": [
+        "{city} brunch work cafe laptop policy official"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "rooftops_couples",
+      "scope": "shared",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "vibe",
+        "subcategory"
+      ],
+      "terms": [
+        "rooftop",
+        "terrace"
+      ],
+      "queries": [
+        "{city} rooftop bar official access booking"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "music_nightlife",
+      "scope": "shared",
+      "kinds": [
+        "venue",
+        "event"
+      ],
+      "dimensions": [
+        "music",
+        "subcategory"
+      ],
+      "terms": [
+        "techno",
+        "goth",
+        "house",
+        "rock"
+      ],
+      "queries": [
+        "{city} {style} nightclub official programme"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "lgbtq_nightlife",
+      "scope": "shared",
+      "kinds": [
+        "venue",
+        "event"
+      ],
+      "dimensions": [
+        "audience",
+        "subcategory"
+      ],
+      "terms": [
+        "lgbtq",
+        "queer"
+      ],
+      "queries": [
+        "{city} LGBTQ nightlife local community guide official venues"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "nearby_fast_food",
+      "scope": "on_demand",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "cuisine",
+        "subcategory"
+      ],
+      "terms": [
+        "fast food",
+        "burger",
+        "sandwich"
+      ],
+      "queries": [
+        "{city} {area} fast food official branches"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "vegan_vegetarian",
+      "scope": "shared",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "dietary",
+        "cuisine"
+      ],
+      "terms": [
+        "vegan",
+        "vegetarian",
+        "plant based"
+      ],
+      "queries": [
+        "{city} vegan vegetarian official menu"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "allergy_coeliac",
+      "scope": "on_demand",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "allergies",
+        "dietary"
+      ],
+      "terms": [
+        "allergy",
+        "coeliac",
+        "celiac",
+        "gluten free"
+      ],
+      "queries": [
+        "{city} restaurant coeliac allergy policy official"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "halal_kosher",
+      "scope": "shared",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "dietary",
+        "cuisine"
+      ],
+      "terms": [
+        "halal",
+        "kosher"
+      ],
+      "queries": [
+        "{city} halal kosher official menu certification"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "toddlers_strollers",
+      "scope": "shared",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "family",
+        "accessibility"
+      ],
+      "terms": [
+        "children",
+        "kids",
+        "stroller",
+        "pram"
+      ],
+      "queries": [
+        "{city} family toddler stroller official attraction access"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "mixed_age_tickets",
+      "scope": "trip_check",
+      "kinds": [
+        "venue",
+        "ticket"
+      ],
+      "dimensions": [
+        "tickets",
+        "price"
+      ],
+      "terms": [
+        "student",
+        "senior",
+        "child"
+      ],
+      "queries": [
+        "{city} attraction official student senior child ticket eligibility"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "wheelchair_access",
+      "scope": "shared",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "accessibility"
+      ],
+      "terms": [
+        "wheelchair",
+        "step free",
+        "adapted toilet"
+      ],
+      "queries": [
+        "{city} venue wheelchair step free adapted toilets official"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "low_walking",
+      "scope": "shared",
+      "kinds": [
+        "venue",
+        "route"
+      ],
+      "dimensions": [
+        "accessibility",
+        "duration"
+      ],
+      "terms": [
+        "seating",
+        "steps",
+        "terrain",
+        "rest"
+      ],
+      "queries": [
+        "{city} low walking routes benches official accessibility"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "rain_alternatives",
+      "scope": "trip_check",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "season",
+        "other"
+      ],
+      "terms": [
+        "indoor",
+        "rain"
+      ],
+      "queries": [
+        "{city} indoor museums current opening hours"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "holiday_dates",
+      "scope": "trip_check",
+      "kinds": [
+        "venue",
+        "event"
+      ],
+      "dimensions": [
+        "date",
+        "opening_hours"
+      ],
+      "terms": [
+        "holiday",
+        "december",
+        "christmas"
+      ],
+      "queries": [
+        "{city} {dates} official holiday closures events"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "beach_conditions",
+      "scope": "trip_check",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "season",
+        "accessibility",
+        "other"
+      ],
+      "terms": [
+        "beach",
+        "swimming",
+        "shade"
+      ],
+      "queries": [
+        "{city} official beach facilities conditions"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "montserrat_gentle",
+      "scope": "trip_check",
+      "kinds": [
+        "venue",
+        "route"
+      ],
+      "dimensions": [
+        "transport",
+        "accessibility",
+        "duration"
+      ],
+      "terms": [
+        "montserrat"
+      ],
+      "queries": [
+        "Montserrat official transport accessibility visitor information"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "excursion_alternatives",
+      "scope": "shared",
+      "kinds": [
+        "venue",
+        "city",
+        "route"
+      ],
+      "dimensions": [
+        "transport",
+        "other"
+      ],
+      "terms": [
+        "girona",
+        "sitges",
+        "costa brava"
+      ],
+      "queries": [
+        "{city} regional excursions official transport destinations"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "hiking",
+      "scope": "trip_check",
+      "kinds": [
+        "venue",
+        "route"
+      ],
+      "dimensions": [
+        "accessibility",
+        "other"
+      ],
+      "terms": [
+        "hiking",
+        "trail",
+        "terrain"
+      ],
+      "queries": [
+        "{city} official hiking trail restrictions weather access"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "museum_exhibitions",
+      "scope": "trip_check",
+      "kinds": [
+        "venue",
+        "event"
+      ],
+      "dimensions": [
+        "date",
+        "tickets",
+        "subcategory"
+      ],
+      "terms": [
+        "museum",
+        "exhibition"
+      ],
+      "queries": [
+        "{city} museums official exhibitions free entry"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "football",
+      "scope": "trip_check",
+      "kinds": [
+        "venue",
+        "event"
+      ],
+      "dimensions": [
+        "other",
+        "tickets"
+      ],
+      "terms": [
+        "football",
+        "stadium"
+      ],
+      "queries": [
+        "{city} football official stadium tours fixtures"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "local_shopping",
+      "scope": "shared",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "shopping",
+        "subcategory"
+      ],
+      "terms": [
+        "vintage",
+        "craft",
+        "design"
+      ],
+      "queries": [
+        "{city} independent vintage local design shopping official locations"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "stay_comparison",
+      "scope": "private_trip",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "accommodation"
+      ],
+      "terms": [],
+      "queries": [
+        "User supplied listing comparison; use exact private address and current quote"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "late_arrival",
+      "scope": "trip_check",
+      "kinds": [
+        "venue",
+        "transport_product"
+      ],
+      "dimensions": [
+        "transport",
+        "opening_hours"
+      ],
+      "terms": [
+        "airport",
+        "night",
+        "late"
+      ],
+      "queries": [
+        "{city} official airport night transfer timetable"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "scoped_safety",
+      "scope": "trip_check",
+      "kinds": [
+        "advice",
+        "district"
+      ],
+      "dimensions": [
+        "safety"
+      ],
+      "terms": [],
+      "queries": [
+        "{city} official visitor safety street time context"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "repeat_visitor_niche",
+      "scope": "on_demand",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [
+        "subcategory"
+      ],
+      "terms": [],
+      "queries": [
+        "{city} {interest} independent local guide alternative experiences"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "exact_budget",
+      "scope": "trip_check",
+      "kinds": [
+        "venue",
+        "ticket",
+        "transport_product"
+      ],
+      "dimensions": [
+        "price",
+        "currency",
+        "tickets"
+      ],
+      "terms": [],
+      "queries": [
+        "{city} official admission fares menu prices {dates}"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    },
+    {
+      "id": "user_import_and_locks",
+      "scope": "private_trip",
+      "kinds": [
+        "venue"
+      ],
+      "dimensions": [],
+      "terms": [],
+      "queries": [
+        "Runtime acceptance case: import source, lock choice, change dates, retain ownership"
+      ],
+      "required_gates": [
+        "canonical_identity",
+        "supported_intent",
+        "current_selected_constraints"
+      ],
+      "target": "Reviewed relevant alternatives with measured diversity; no padding quota"
+    }
+  ]
+}

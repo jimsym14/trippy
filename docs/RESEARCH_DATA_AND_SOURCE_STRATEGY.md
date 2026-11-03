@@ -1,5 +1,7 @@
 # Trippy — research data and source strategy
 
+> Ενεργό πλάνο 29/10/2026: [τελικές απαιτήσεις και parity](FINAL_REQUIREMENTS_AND_PARITY.md), [κοινό implementation agreement](IMPLEMENTATION_AGREEMENT_PLAN.md) και [μοναδική σειρά stages για autopilot](AUTOPILOT_STAGED_IMPLEMENTATION.md). Οι τελευταίες απαιτήσεις περιλαμβάνουν semantic prompts ανά προτίμηση, κεντρική MapKit αναζήτηση/ιδιωτική αποθήκευση pin και sourced rating snapshots μόνο `/5`. Supabase Free project δημιουργήθηκε από τον χρήστη· σύνδεση/migrations δεν επαληθεύτηκαν. Παλιά scope/status/task lists είναι ιστορικά όπου διαφέρουν· οι ειδικές λεπτομέρειες του παρόντος παραμένουν όταν συμφωνούν.
+
 **Status:** product and data specification, based on the original Barcelona ChatGPT conversation, the first Trippy-generated prompt, the imported `barcelona_trip_research_2026.json`, and the current Swift prototype.  
 **Purpose:** define exactly what information Trippy needs, where it can come from, what the first test did and did not provide, and how ChatGPT and non-AI sources should work together.
 
@@ -335,7 +337,7 @@ Store both:
 - `raw_research_run`: the exact imported text/file, prompt version, import time, source mode and parse diagnostics;
 - normalized entities: trips, areas, places, events, source/evidence records, route legs, itinerary days/stops, cost lines and tasks.
 
-This preserves the original response for audit and allows the normalizer to evolve without losing unknown data. Do not make raw JSON the UI database.
+Where source policy permits retention, this preserves the original response for audit and lets the normalizer evolve without losing unknown data. Restricted/expired content must be filtered or removed even from raw runs and history. Do not make raw JSON the UI database.
 
 ### Minimum reusable entity graph
 
@@ -357,7 +359,7 @@ App-owned facts (user reaction, manual edits, booking state, stop order) must be
 
 ### Normalization and validation pipeline
 
-1. Preserve pasted/file input unchanged.
+1. Preserve pasted/file input unchanged only for the permitted scope/retention; restricted content is not retained indefinitely in raw imports.
 2. Parse tolerant wrappers (fences or small preamble) but report that cleanup happened.
 3. Identify schema/version; map known aliases to normalized fields; retain unknown properties in raw/extension storage.
 4. Validate types, enums, date consistency, ID uniqueness, reference integrity, URL syntax, coordinate ranges and source links.
@@ -650,7 +652,7 @@ Suggested UI labels: **Officially confirmed**, **Provider data**, **Research fin
 | Place name/address/coordinates | MapKit + official venue page | OSM/local open-data; optional commercial place match | Resolve ambiguity and identify appropriate candidates. |
 | Famous landmark summary/aliases | Official venue/museum page | Wikidata/Wikipedia, with source/date | Summarize and contextualize. |
 | Restaurant/cafe/bar candidates | OSM/local data + MapKit + user/ChatGPT leads | Limited Foursquare/Google lookup, subject to terms | Discover suitability, hidden options and trade-offs. |
-| Rating/review count | Named provider API with current terms | Omit if not available; no substitution by an AI score | Explain differences; never fabricate a numeric rating. |
+| Rating /5 snapshot | Permitted extraction from the same research with exact venue, source and observed time | Unknown/source link when unsupported; optional licensed live API, no AI score substitution | Extract sourced numeric value; never fabricate, average platforms or label snapshot live. |
 | Hours/open on travel date | Official venue page or confirmed provider field | Contact/booking page or user check | Find and interpret exact date exceptions; report unknown if unresolved. |
 | Ticket price/eligibility | Official ticket operator | Government/tourism page, then note secondary source | Compare family/student/senior rules; app computes totals. |
 | Transit schedule/fare | Local transit authority/official GTFS/fare table | MapKit route option or official trip planner | Decide which route options are relevant and explain trade-offs. |
@@ -663,7 +665,9 @@ Suggested UI labels: **Officially confirmed**, **Provider data**, **Research fin
 
 No source is authoritative for everything. The venue controls its opening hours and ticket terms; a transit operator controls its schedule/fare; a weather provider controls its forecast; a map provider resolves its own map identity; a user controls their budget and preference. A source score should therefore be attached to **claim type + date**, not simply to a website/domain. When two sources conflict, preserve both claims, prefer the source with authority over that field, display the conflict and avoid silently selecting the more convenient answer.
 
-## 15. Implementation status and hardcoded-data audit
+## 15. Historical implementation status and hardcoded-data audit
+
+This section records an earlier prototype state. The current planning baseline has Azure bridge calls and shared scout/synthesis helpers; Supabase project creation is user-confirmed, but catalog migrations and new UI are pending. Follow FINAL_REQUIREMENTS_AND_PARITY.md and IMPLEMENTATION_AGREEMENT_PLAN.md for current status. No live certification is implied by either snapshot.
 
 ### Current status in the Swift prototype
 
@@ -866,7 +870,9 @@ Add optional “research detail” choices: concise / detailed / exhaustive and 
 - The brief never requires all customization fields; defaults yield a reasonable prompt, and advanced controls stay optional/collapsible.
 - The app separately records hard constraints, preferences, custom notes, researched facts and user decisions.
 
-## 16. Layered research workflow and Microsoft Foundry model plan
+## 16. Historical layered research workflow and Microsoft Foundry model plan
+
+The earlier manual-only/API-absence statements below are historical. Retain the layered workflow requirements, but use the existing configured Azure provider initially and audit its actual capabilities/pricing. Earlier model names/rates are reference snapshots, not mandated deployments. Weather is outside MVP. Reviews now mean sourced /5 snapshots, without review-text research.
 
 ### Current app workflow
 

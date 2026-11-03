@@ -46,28 +46,22 @@ BRIEF = {"destination": "Barcelona", "date_range": {"arrival": "2026-12-05", "de
 
 class ResearchPipelineTests(unittest.TestCase):
     def test_bridge_reports_partial_results_without_automatic_paid_retries(self):
-        sdk = types.ModuleType("openai")
-        sdk.OpenAI = Mock()
-        sdk.AzureOpenAI = Mock()
+        from tests.test_trip_pipeline import RecordedProvider
+        from trippy.planner.planning_contract import empty_batch
         spec = importlib.util.spec_from_file_location("bridge_test", Path(__file__).resolve().parents[1] / "bridge_server.py")
         bridge = importlib.util.module_from_spec(spec)
-        with patch.dict("sys.modules", {"openai": sdk}), patch.object(Path, "exists", return_value=False):
-            spec.loader.exec_module(bridge)
-        sdk.OpenAI.return_value.conversations.create.return_value.id = "fixture"
-        sdk.OpenAI.return_value.responses.create.return_value.output_text = "Fixture facts"
-        document = fixture()
-        for day in document["itinerary"]["days"]:
-            day["stops"] = []
-        sdk.AzureOpenAI.return_value.chat.completions.create.return_value.choices = [
-            types.SimpleNamespace(message=types.SimpleNamespace(content=json.dumps(document)))
-        ]
+        spec.loader.exec_module(bridge)
+        provider = RecordedProvider()
+        def normalize(system, payload, schema, task_id):
+            provider.calls.append(("normalize", task_id))
+            return empty_batch()
+        provider.normalize = normalize
         with tempfile.TemporaryDirectory() as temporary, patch.object(bridge, "__file__", str(Path(temporary) / "bridge_server.py")):
-            bridge.run_pipeline(BRIEF)
-        self.assertEqual(bridge.state.current_step, "completed")
+            job_id = bridge.run_pipeline(BRIEF, provider=provider)
+            self.assertEqual(bridge.read_job(job_id)["step"], "partial")
+            self.assertFalse(bridge.read_job(job_id)["is_running"])
         self.assertEqual(bridge.state.latest_result["quality_report"]["status"], "partial")
-        self.assertIn("κενά", bridge.state.step_message)
-        sdk.OpenAI.return_value.responses.create.assert_called_once()
-        sdk.AzureOpenAI.return_value.chat.completions.create.assert_called_once()
+        self.assertEqual(len(provider.calls), len(set(provider.calls)), "No stage was automatically repeated")
 
     def test_every_populated_day_has_a_map_with_exact_stop_order(self):
         original = fixture()
@@ -143,7 +137,7 @@ class ResearchPipelineTests(unittest.TestCase):
             brief_path.write_text(json.dumps(BRIEF))
             output = Path(temporary) / "plan"
             with patch("sys.argv", ["run_research.py", "--brief", str(brief_path), "--output-dir", str(output)]), \
-                 patch.object(run_research, "get_clients", side_effect=AssertionError("Preview called paid client")) as clients:
+                 patch.object(run_research, "AzureResearchProvider", side_effect=AssertionError("Preview called paid client")) as clients:
                 run_research.main()
             clients.assert_not_called()
             self.assertTrue((output / "scout-prompt.txt").exists())

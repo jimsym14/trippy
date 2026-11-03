@@ -1,211 +1,168 @@
-import os
-import sys
+"""Trip-scoped bridge for the resumable planning pipeline.
+
+No SDK client initializes at import. Paid providers require explicit configured
+budgets. Status/results require the unguessable run capability returned by POST.
+"""
 import json
-import time
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import os
 from pathlib import Path
-from openai import OpenAI, AzureOpenAI
-from research_pipeline import build_scout_prompt, build_synthesis_prompt, prepare_result
+import threading
+import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4, UUID
 
-def load_env():
-    env_file = Path(__file__).parent / ".env"
-    if env_file.exists():
-        with open(env_file, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    os.environ[k.strip()] = v.strip().strip("'\"")
+from trippy_config import read_environment
+from trippy.planner.planning_contract import normalized_brief
+from trippy.planner.pipeline import run as execute_plan, StageStore
+from trippy.planner.live_provider import AzureResearchProvider
 
-load_env()
 
-# State & Circuit Breaker
 class ResearchState:
     def __init__(self):
-        self.lock = threading.Lock()
-        self.is_running = False
-        self.started_at = 0
-        self.current_step = "idle"  # idle | searching_web | synthesizing_patch | completed | error
-        self.step_message = "Αναμονή για εκκίνηση"
-        self.step_index = 0
-        self.total_steps = 3
-        self.latest_result = None
-        self.error_message = None
-        self.brief_context = None
+        self.lock=threading.RLock()
+        self.is_running=False
+        self.started_at=0
+        self.current_step='idle'
+        self.step_message='Αναμονή για εκκίνηση'
+        self.step_index=0
+        self.total_steps=3
+        self.latest_result=None
+        self.error_message=None
+        self.brief_context=None
+        self.job_id=None
+        self.jobs={}
 
-state = ResearchState()
+state=ResearchState()
 
-def run_pipeline(brief_data):
-    state.is_running = True
-    state.started_at = time.time()
-    state.latest_result = None
-    state.error_message = None
-    state.brief_context = brief_data
 
+def root(): return Path(__file__).resolve().parent
+
+def job_directory(job_id):
+    UUID(job_id)
+    return root()/'.local/trip-pipeline/jobs'/job_id
+
+
+def save_job(job_id):
+    StageStore(job_directory(job_id)).write('status',state.jobs[job_id])
+
+
+def progress(job_id, step, detail):
+    labels={'searching_web':'Έρευνα για τις επιλογές σου', 'synthesizing_patch':'Οργάνωση πληροφοριών και πηγών',
+            'composing':'Σύνθεση ημερών, μετακινήσεων και κόστους', 'partial':'Το πλάνο αποθηκεύτηκε με εκκρεμότητες',
+            'completed':'Το πλάνο πέρασε τους ελέγχους'}
+    with state.lock:
+        job=state.jobs[job_id]
+        if step=='phase_completed':
+            phase={'discovery':2,'checks':3,'composition':4}[detail]
+            job['completed_research_phases']=sorted(set(job.get('completed_research_phases',[])+[phase]))
+            save_job(job_id)
+            return
+        job['step']=step; job['message']=labels.get(step,detail)
+        job['step_index']=1 if step=='searching_web' else 2 if step in {'synthesizing_patch','composing'} else 3
+        job['current_task']=detail
+        if state.job_id==job_id:
+            state.current_step=step; state.step_message=job['message']; state.step_index=job['step_index']
+        save_job(job_id)
+
+
+def begin_job(brief):
+    brief=normalized_brief(brief)
+    with state.lock:
+        # No timeout that lets a second thread overwrite a still-running job.
+        if state.is_running: raise RuntimeError('research_already_running')
+        job_id=str(uuid4())
+        state.jobs[job_id]={'job_id':job_id,'is_running':True,'step':'starting','step_index':0,'total_steps':3,
+            'message':'Ανάκτηση της διαθέσιμης έρευνας','request_context':brief,'result':None,'error':None}
+        state.is_running=True; state.started_at=time.time(); state.job_id=job_id
+        state.brief_context=brief; state.latest_result=None; state.error_message=None
+        save_job(job_id)
+        return job_id,brief
+
+
+def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None):
+    if job_id is None: job_id,brief_data=begin_job(brief_data)
     try:
-        api_key = os.environ.get("AZURE_OPENAI_API_KEY")
-        agent_endpoint = os.environ.get("AZURE_AGENT_ENDPOINT")
-        model_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
-        deployment_luna = os.environ.get("AZURE_DEPLOYMENT_LUNA", "gpt-6-luna")
-
-        # Step 1: Web Scout via Agent
+        values=read_environment(root()/'.env')
+        if provider is None:
+            ledger=Path(values.get('TRIPPY_SHARED_BUDGET_LEDGER',str(root()/'.local/stage3/extraction-budget.sqlite')))
+            if not ledger.is_absolute(): ledger=root()/ledger
+            provider=AzureResearchProvider(values,ledger)
+        result=execute_plan(brief_data,provider=provider,directory=job_directory(job_id),root=root(),
+            route_provider=route_provider,progress=lambda step,detail:progress(job_id,step,detail) if step not in {'completed','partial'} else None)
+        step='completed' if result['delivery_status']=='ready' else 'partial'
         with state.lock:
-            state.current_step = "searching_web"
-            state.step_index = 1
-            state.step_message = "Αναζήτηση επίσημων πηγών, ωραρίων και αργιών στο διαδίκτυο"
-
-        agent_client = OpenAI(
-            base_url=agent_endpoint,
-            api_key="unused",
-            default_headers={"api-key": api_key},
-            default_query={"api-version": "v1"}
-        )
-
-        prompt = build_scout_prompt(brief_data)
-
-        conversation = agent_client.conversations.create()
-        response = agent_client.responses.create(
-            conversation=conversation.id,
-            input=[{"role": "user", "content": prompt}],
-        )
-        research_text = response.output_text
-
-        # Step 2: Complete research document synthesis via Model Luna
+            state.jobs[job_id]['result']=result
+            state.latest_result=result
+            progress(job_id,step,'delivery')
+    except Exception as exc:
+        # Store a safe type, not raw provider errors that can contain request data.
         with state.lock:
-            state.current_step = "synthesizing_patch"
-            state.step_index = 2
-            state.step_message = "Σύνθεση δομημένου προγράμματος και επικύρωση κανόνων"
-
-        model_client = AzureOpenAI(
-            azure_endpoint=model_endpoint,
-            api_key=api_key,
-            api_version=api_version,
-        )
-
-        system_prompt = build_synthesis_prompt()
-
-        user_content = f"TRIP BRIEF CONTEXT:\n{json.dumps(brief_data, ensure_ascii=False)}\n\nRAW RESEARCH DATA:\n{research_text}"
-
-        chat_resp = model_client.chat.completions.create(
-            model=deployment_luna,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ],
-            response_format={"type": "json_object"}
-        )
-
-        patch_json_str = chat_resp.choices[0].message.content
-        parsed = prepare_result(json.loads(patch_json_str), brief_data)
-        patch_json_str = json.dumps(parsed, ensure_ascii=False, indent=2)
-
-        # Save copy locally
-        with open(Path(__file__).parent / "latest_research_patch.json", "w", encoding="utf-8") as f:
-            f.write(patch_json_str)
-
-        with state.lock:
-            state.current_step = "completed"
-            state.step_index = 3
-            state.step_message = ("Η έρευνα αποθηκεύτηκε με κενά που εμφανίζονται στο dashboard."
-                                  if parsed["quality_report"]["status"] == "partial"
-                                  else "Η έρευνα ολοκληρώθηκε και πέρασε τον έλεγχο κάλυψης.")
-            state.latest_result = parsed
-
-    except Exception as e:
-        with state.lock:
-            state.current_step = "error"
-            state.error_message = str(e)
-            state.step_message = f"Σφάλμα: {e}"
+            state.jobs[job_id].update(step='error',error=type(exc).__name__,message='Η έρευνα χρειάζεται έλεγχο διαμόρφωσης ή του αποθηκευμένου σταδίου.')
+            state.current_step='error'; state.error_message=type(exc).__name__
+            state.step_message=state.jobs[job_id]['message']
     finally:
-        state.is_running = False
+        with state.lock:
+            state.jobs[job_id]['is_running']=False
+            if state.job_id==job_id: state.is_running=False
+            save_job(job_id)
+    return job_id
+
+
+def read_job(job_id):
+    UUID(job_id)
+    with state.lock:
+        if job_id in state.jobs: return dict(state.jobs[job_id])
+    path=job_directory(job_id)/'status.json'
+    if not path.is_file(): return None
+    job=json.loads(path.read_text())
+    if job['is_running']:
+        # A restarted bridge cannot pretend its old thread is still working.
+        job.update(is_running=False,step='interrupted',message='Η εκτέλεση διακόπηκε· τα ολοκληρωμένα στάδια διατηρήθηκαν.')
+    return job
+
 
 class RequestHandler(BaseHTTPRequestHandler):
-    def _send_cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self._send_cors()
+    def send_json(self,status,payload):
+        self.send_response(status)
+        self.send_header('Content-Type','application/json; charset=utf-8')
+        self.send_header('Cache-Control','no-store')
         self.end_headers()
-
+        self.wfile.write(json.dumps(payload,ensure_ascii=False,allow_nan=False).encode())
     def do_GET(self):
-        if self.path == "/api/status":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self._send_cors()
-            self.end_headers()
-
-            with state.lock:
-                data = {
-                    "api_version": 2,
-                    "result_schema": "trippy-research-v1",
-                    "research_contract_version": 3,
-                    "build_commit": os.environ.get("RENDER_GIT_COMMIT", "local"),
-                    "request_context": state.brief_context,
-                    "is_running": state.is_running,
-                    "step": state.current_step,
-                    "step_index": state.step_index,
-                    "total_steps": state.total_steps,
-                    "message": state.step_message,
-                    "has_result": state.latest_result is not None,
-                    "result": state.latest_result if state.current_step == "completed" else None,
-                    "error": state.error_message
-                }
-            self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
-        else:
-            self.send_response(404)
-            self.end_headers()
-
+        target=urlsplit(self.path)
+        if target.path!='/api/status': self.send_json(404,{'error':'not_found'}); return
+        capabilities={'api_version':3,'research_contract_version':4,'result_schema':'trippy-research-v1',
+            'pipeline_version':'trip-pipeline-v1','build_commit':os.environ.get('RENDER_GIT_COMMIT','local')}
+        job_id=parse_qs(target.query).get('job_id',[None])[0]
+        if job_id is None:
+            # Preflight does not expose another run's brief, result or job capability.
+            self.send_json(200,{**capabilities,'is_running':state.is_running,'has_result':False}); return
+        try: job=read_job(job_id)
+        except (ValueError,KeyError): job=None
+        if job is None: self.send_json(404,{'error':'job_not_found'}); return
+        self.send_json(200,{**capabilities,**job,'has_result':job['result'] is not None})
     def do_POST(self):
-        if self.path == "/api/research":
-            # Circuit Breaker: Block if already running
-            if state.is_running:
-                # Check for timeout (stuck for more than 90 seconds)
-                if time.time() - state.started_at < 90:
-                    self.send_response(409)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self._send_cors()
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"error": "Μια έρευνα βρίσκεται ήδη σε εξέλιξη. Παρακαλώ περιμένετε."}, ensure_ascii=False).encode("utf-8"))
-                    return
+        if urlsplit(self.path).path!='/api/research': self.send_json(404,{'error':'not_found'}); return
+        try:
+            length=int(self.headers.get('Content-Length','0'))
+            if not 0<length<=1000000: raise ValueError('bounded_request_required')
+            brief=json.loads(self.rfile.read(length).decode())
+            job_id,brief=begin_job(brief)
+        except RuntimeError:
+            self.send_json(409,{'error':'research_already_running'}); return
+        except (ValueError,TypeError,KeyError):
+            self.send_json(422,{'error':'invalid_trip_brief'}); return
+        threading.Thread(target=run_pipeline,args=(brief,job_id),daemon=True).start()
+        self.send_json(202,{'status':'started','job_id':job_id,'status_url':'/api/status?job_id='+job_id})
+    def log_message(self,format,*args): pass
 
-            length = int(self.headers.get("Content-Length", 0))
-            raw_body = self.rfile.read(length) if length > 0 else b"{}"
-            try:
-                brief_data = json.loads(raw_body.decode("utf-8"))
-            except Exception:
-                brief_data = {}
-
-            # Start pipeline in separate thread
-            thread = threading.Thread(target=run_pipeline, args=(brief_data,), daemon=True)
-            thread.start()
-
-            self.send_response(202)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self._send_cors()
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "started", "message": "Η έρευνα ξεκίνησε."}, ensure_ascii=False).encode("utf-8"))
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, format, *args):
-        # Clean logging
-        pass
 
 def run_server(port=8080):
-    server = HTTPServer(("0.0.0.0", port), RequestHandler)
-    print(f"📡 Trippy Research API active on http://0.0.0.0:{port}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nStopping server...")
+    server=HTTPServer(('0.0.0.0',port),RequestHandler)
+    print(f'Trippy planning bridge listening on port {port}')
+    try: server.serve_forever()
+    except KeyboardInterrupt: pass
+    finally: server.server_close()
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", sys.argv[1] if len(sys.argv) > 1 else 8080))
-    run_server(port)
+if __name__=='__main__': run_server(int(os.environ.get('PORT','8080')))

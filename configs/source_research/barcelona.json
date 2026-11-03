@@ -1,0 +1,242 @@
+{
+  "version": 1,
+  "purpose": "Barcelona source discovery; query plan is not verified city knowledge",
+  "languages": [
+    "el",
+    "en"
+  ],
+  "destination_names": {
+    "el": "Βαρκελώνη",
+    "en": "Barcelona"
+  },
+  "region_code": null,
+  "limits": {
+    "max_queries": 40,
+    "results_per_query": 10,
+    "max_video_candidates": 100
+  },
+  "topics": [
+    {
+      "id": "overview",
+      "queries": {
+        "el": [
+          "{city} ταξιδιωτικός οδηγός τι να δω τι να κάνω",
+          "{city} κρυμμένα μέρη γειτονιές ταξίδι"
+        ],
+        "en": [
+          "{city} travel guide things to do local tips",
+          "{city} hidden gems neighbourhood guide"
+        ]
+      }
+    },
+    {
+      "id": "food",
+      "queries": {
+        "el": [
+          "{city} καλύτερα εστιατόρια τοπικό φαγητό",
+          "{city} πού να φάω food tour"
+        ],
+        "en": [
+          "{city} best restaurants local food",
+          "{city} modern restaurants food tour"
+        ]
+      }
+    },
+    {
+      "id": "coffee",
+      "queries": {
+        "el": [
+          "{city} καφές καφετέριες brunch",
+          "{city} πρωινό φούρνοι καφές"
+        ],
+        "en": [
+          "{city} specialty coffee cafes brunch",
+          "{city} best bakeries coffee breakfast"
+        ]
+      }
+    },
+    {
+      "id": "bars",
+      "queries": {
+        "el": [
+          "{city} νυχτερινή ζωή cocktail bars ταράτσες",
+          "{city} μπαρ κρασί μπύρα"
+        ],
+        "en": [
+          "{city} nightlife cocktail bars rooftop bars",
+          "{city} local bars wine craft beer"
+        ]
+      }
+    },
+    {
+      "id": "clubs",
+      "queries": {
+        "el": [
+          "{city} καλύτερα clubs φοιτητική νυχτερινή ζωή",
+          "{city} διασκέδαση clubs ηλεκτρονική μουσική"
+        ],
+        "en": [
+          "{city} best clubs nightlife student nightlife",
+          "{city} clubbing electronic music live music nightlife"
+        ]
+      }
+    },
+    {
+      "id": "sights",
+      "queries": {
+        "el": [
+          "{city} αξιοθέατα αρχιτεκτονική τι να δω",
+          "{city} βόλτα σημαντικά αξιοθέατα"
+        ],
+        "en": [
+          "{city} best attractions architecture landmarks",
+          "{city} must see walking tour"
+        ]
+      }
+    },
+    {
+      "id": "museums",
+      "queries": {
+        "el": [
+          "{city} μουσεία τέχνη πολιτισμός",
+          "{city} εναλλακτικά μουσεία εκθέσεις"
+        ],
+        "en": [
+          "{city} museums art galleries culture guide",
+          "{city} unusual museums exhibitions"
+        ]
+      }
+    },
+    {
+      "id": "outdoors",
+      "queries": {
+        "el": [
+          "{city} πάρκα παραλίες θέα βόλτες",
+          "{city} φύση πεζοπορία κοντά"
+        ],
+        "en": [
+          "{city} parks beaches viewpoints walks",
+          "{city} nature hiking nearby"
+        ]
+      }
+    },
+    {
+      "id": "day_trips",
+      "queries": {
+        "el": [
+          "{city} ημερήσιες εκδρομές κοντά τρένο",
+          "{city} εκδρομές χωριά κοντινά"
+        ],
+        "en": [
+          "{city} best day trips nearby train",
+          "{city} weekend excursions villages"
+        ]
+      }
+    },
+    {
+      "id": "shopping",
+      "queries": {
+        "el": [
+          "{city} αγορές παζάρια vintage τοπικά καταστήματα",
+          "{city} αγορές φαγητού γειτονιές"
+        ],
+        "en": [
+          "{city} local markets vintage shopping independent shops",
+          "{city} food markets shopping neighbourhoods"
+        ]
+      }
+    },
+    {
+      "id": "events",
+      "queries": {
+        "el": [
+          "{city} φεστιβάλ συναυλίες ζωντανή μουσική",
+          "{city} πολιτιστικές εκδηλώσεις εποχές"
+        ],
+        "en": [
+          "{city} festivals concerts live music guide",
+          "{city} seasonal cultural events"
+        ]
+      }
+    },
+    {
+      "id": "transport",
+      "queries": {
+        "el": [
+          "{city} μετακινήσεις αεροδρόμιο μέσα μεταφοράς",
+          "{city} μετρό τρένο κάρτες μεταφορών"
+        ],
+        "en": [
+          "{city} public transport airport getting around",
+          "{city} metro train transport passes guide"
+        ]
+      }
+    },
+    {
+      "id": "tickets",
+      "queries": {
+        "el": [
+          "{city} εισιτήρια αξιοθέατα κάρτες κρατήσεις",
+          "{city} κάρτες μουσείων εισιτήρια συμβουλές"
+        ],
+        "en": [
+          "{city} attraction tickets city passes reservations",
+          "{city} museum passes tickets travel tips"
+        ]
+      }
+    },
+    {
+      "id": "stay",
+      "queries": {
+        "el": [
+          "{city} καλύτερες περιοχές διαμονή γειτονιές",
+          "{city} πού να μείνω οικονομικά οικογένεια"
+        ],
+        "en": [
+          "{city} best areas to stay neighbourhoods",
+          "{city} where to stay budget family nightlife"
+        ]
+      }
+    },
+    {
+      "id": "budget_practical",
+      "queries": {
+        "el": [
+          "{city} οικονομικό ταξίδι φθηνό φαγητό fast food συμβουλές",
+          "{city} δωρεάν δραστηριότητες λάθη ταξιδιού"
+        ],
+        "en": [
+          "{city} budget travel cheap eats fast food practical tips",
+          "{city} free things to do travel mistakes"
+        ]
+      }
+    },
+    {
+      "id": "family_accessibility",
+      "queries": {
+        "el": [
+          "{city} ταξίδι παιδιά οικογένεια προσβασιμότητα",
+          "{city} προσβάσιμο ταξίδι αναπηρικό αμαξίδιο"
+        ],
+        "en": [
+          "{city} family travel kids accessible attractions mobility",
+          "{city} wheelchair accessible travel transport"
+        ]
+      }
+    },
+    {
+      "id": "dietary",
+      "queries": {
+        "el": [
+          "{city} vegan vegetarian φαγητό χωρίς γλουτένη",
+          "{city} εστιατόρια διατροφικές επιλογές"
+        ],
+        "en": [
+          "{city} vegan vegetarian gluten free food guide",
+          "{city} dietary requirements restaurants"
+        ]
+      }
+    }
+  ],
+  "creator_defaults": "creators.json"
+}

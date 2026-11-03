@@ -1,0 +1,905 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": 1,
+      "request": "First visit, three days, landmarks and a relaxed pace",
+      "baseline_assessment": "Good discovery base",
+      "remaining_checks": "Identity, actual durations, opening dates, ticket slots, route constraints",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "interest",
+              "value": "landmarks",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 2,
+      "request": "Gaudí architecture enthusiast, exterior versus paid interior choices",
+      "baseline_assessment": "Good discovery base",
+      "remaining_checks": "Current fees/slots, compare effort and value with attributed opinions",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "architecture",
+              "value": "gaudi",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 3,
+      "request": "Gothic Quarter history and a walking route",
+      "baseline_assessment": "Good discovery base",
+      "remaining_checks": "Canonical stops, complete route geometry, walking time and access conditions",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "history",
+              "value": "gothic_quarter",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 4,
+      "request": "Tapas and traditional Catalan dishes",
+      "baseline_assessment": "Good discovery base",
+      "remaining_checks": "Resolve ASR venue/dish names, branch, menu and operation; varied areas and prices",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "cuisine",
+              "value": "catalan",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 5,
+      "request": "Modern popular restaurants and new openings",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Recent independent/local food sources, operational checks, price bands",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "food_style",
+              "value": "modern",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 6,
+      "request": "Specialty coffee, brunch and quiet work cafés",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Named café pool, actual specialty/work evidence, opening times and Wi-Fi rules",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "coffee_type",
+              "value": "specialty",
+              "hard": false
+            }
+          ]
+        },
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "work_use",
+              "value": "permitted",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 7,
+      "request": "Rooftop drinks for a couple at sunset",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Exact named venue, public access/booking, price, sunset and date-specific availability",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "experience",
+              "value": "rooftop",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 8,
+      "request": "Techno, goth or student nightlife",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Specific venue/event/music evidence, admission, age limits, schedule and late return",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "music",
+              "value": "techno",
+              "hard": false
+            }
+          ]
+        },
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "music",
+              "value": "goth",
+              "hard": false
+            }
+          ]
+        },
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "audience_context",
+              "value": "student_nightlife",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 9,
+      "request": "LGBTQ+ nightlife with suitable atmosphere",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Relevant local/community sources and evidence-backed fit without stereotype inference",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "event_context",
+              "value": "lgbtq",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 10,
+      "request": "Cheap fast food near the hotel at 23:00",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Broad inventory spatial query, correct branches, menu/price, actual late opening",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "meal_type",
+              "value": "fast_food",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    },
+    {
+      "id": 11,
+      "request": "Vegan or vegetarian food for every meal",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Venue-specific menu evidence and enough alternatives along the trip route",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "dietary",
+              "value": "vegan",
+              "hard": true
+            }
+          ]
+        },
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "dietary",
+              "value": "vegetarian",
+              "hard": true
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 12,
+      "request": "Coeliac or serious nut allergy",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Specific current venue statements and unresolved-risk handling; never infer safety",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "dietary",
+              "value": "coeliac",
+              "hard": true
+            }
+          ]
+        },
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "allergy",
+              "value": "nuts",
+              "hard": true
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    },
+    {
+      "id": 13,
+      "request": "Halal food or kosher meals",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Appropriate current menu/certification/context sources and spatial alternatives",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "dietary",
+              "value": "halal_service",
+              "hard": true
+            }
+          ]
+        },
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "dietary",
+              "value": "kosher_service",
+              "hard": true
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 14,
+      "request": "Family with a toddler, stroller and short attention span",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Stroller access, toilets, effort, nap/meal constraints and age suitability",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "access",
+              "value": "stroller",
+              "hard": true
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 15,
+      "request": "Parents and a 22-year-old, mixed student/senior tickets",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Eligibility and ticket rules per person, age inputs, group costs and mixed-interest balance",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "ticket_eligibility",
+              "value": "mixed_ages",
+              "hard": true
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    },
+    {
+      "id": 16,
+      "request": "Wheelchair user, step-free transit and accessible toilets",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Verified continuous access chain, venue facilities and current lift/transit information",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "access",
+              "value": "wheelchair_chain",
+              "hard": true
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 17,
+      "request": "Senior traveler, low walking tolerance and frequent rests",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Terrain/steps, seated options, actual transfers, rest timing and accessibility detail",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "effort",
+              "value": "low_walking",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 18,
+      "request": "Rainy-day plan with indoor alternatives",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Weather-aware alternatives by location, slots and verified opening windows",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "weather_option",
+              "value": "rain",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 19,
+      "request": "December 5–9, holidays and seasonal events",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Exact calendar, holiday exceptions, official events and trip-specific availability",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "date_option",
+              "value": "holiday",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    },
+    {
+      "id": 20,
+      "request": "Summer beach day with safe swimming and shade",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Current conditions, beach facilities, transport, heat exposure and user needs",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "activity",
+              "value": "beach",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    },
+    {
+      "id": 21,
+      "request": "Montserrat day trip with a gentle walk",
+      "baseline_assessment": "Good discovery base",
+      "remaining_checks": "Current transport/tickets, terrain, weather and feasible return time",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "excursion",
+              "value": "montserrat_gentle",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 22,
+      "request": "Girona, coast or small-town excursion instead of Montserrat",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Comparable current transfers, duration, seasonal conditions and deep local options",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "excursion",
+              "value": "regional_alternative",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 23,
+      "request": "Serious hiking with an unfamiliar route",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Official route/terrain/conditions, skill constraints, daylight and return logistics",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "activity",
+              "value": "hiking",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    },
+    {
+      "id": 24,
+      "request": "Art/museum trip with free days and temporary exhibitions",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Correct museum types, exhibition dates, free-entry rules, closure and reservation conditions",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "interest",
+              "value": "museum_exhibition",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 25,
+      "request": "Football trip, stadium visit and a match",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Current stadium/tour operation, official fixture/date, ticket availability and transport",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "activity",
+              "value": "football",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    },
+    {
+      "id": 26,
+      "request": "Shopping for local design, vintage and independent crafts",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Named shops with current offerings; not just markets and shopping streets",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "shopping",
+              "value": "local_design",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 27,
+      "request": "Hotel/apartment choice comparing six user links",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "User-supplied listings, exact addresses, current quotes, terms and route comparison",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "private",
+              "value": "stay_comparison",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    },
+    {
+      "id": 28,
+      "request": "Late arrival, airport transfer and dinner after midnight",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Arrival time, real operator schedules/fare rules, correct airport and open options",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "transport",
+              "value": "late_airport_arrival",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    },
+    {
+      "id": 29,
+      "request": "Solo traveler asking “is this street safe at night?”",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Narrowly scoped supported context; avoid a neighborhood-wide safety verdict",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "safety",
+              "value": "street_time_context",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    },
+    {
+      "id": 30,
+      "request": "Repeat visitor rejecting all obvious tourist stops",
+      "baseline_assessment": "Gap",
+      "remaining_checks": "Independent/local niche discovery with explicit novelty and exclusion handling",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "experience",
+              "value": "repeat_visitor_niche",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": false
+    },
+    {
+      "id": 31,
+      "request": "Tight per-person budget including transport and tickets",
+      "baseline_assessment": "Partial",
+      "remaining_checks": "Structured current costs, inclusions, eligibility and deterministic group calculations",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "budget",
+              "value": "complete_group_cost",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    },
+    {
+      "id": 32,
+      "request": "Add a user video/place, lock a stop, then change trip dates",
+      "baseline_assessment": "Source material alone cannot establish this behavior",
+      "remaining_checks": "Provenance-aware imports, canonical mapping, lock-preserving trip overlays and revalidation",
+      "variants": [
+        {
+          "city_id": "42b5127d-f3fd-5f3b-945a-18a170979c83",
+          "on_date": "2026-12-06",
+          "needs": [
+            {
+              "facet": "private",
+              "value": "imports_and_locks",
+              "hard": false
+            }
+          ]
+        }
+      ],
+      "required_integration": [
+        "canonical_identity",
+        "supported_fit",
+        "selected_date_and_route_checks",
+        "useful_alternatives"
+      ],
+      "runtime_only": true
+    }
+  ],
+  "method": "Evidence/readiness evaluation. Empty results or correct uncertainty are not itinerary completion.",
+  "date_note": "Example evaluation date, not the actual user trip or booking."
+}

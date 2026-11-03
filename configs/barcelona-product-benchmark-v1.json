@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "scenario_manifest": "configs/barcelona-product-scenarios-v1.json",
+  "selection": ".local/stage3/planner-release-v1/active-dataset.json",
+  "registry": "configs/activity-registry-v2.json",
+  "taxonomy": "configs/barcelona-finish-taxonomy-v2.json",
+  "usage_receipts": ".local/stage3/extraction-budget.usage.jsonl",
+  "output_root": ".local/stage3/planner-release-v1/product-benchmark-v1",
+  "official_pricing_reference": {
+    "url": "https://developers.openai.com/api/docs/pricing",
+    "observed_on": "2026-11-02",
+    "model": "gpt-6-luna",
+    "standard_input_usd_per_million": "0.10",
+    "standard_output_usd_per_million": "0.50",
+    "scope": "OpenAI API reference only; not a quote for the Azure deployment. Project configured rates are used for calculations."
+  }
+}

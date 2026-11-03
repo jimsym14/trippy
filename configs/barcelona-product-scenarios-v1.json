@@ -1,0 +1,1311 @@
+{
+  "version": 1,
+  "status": "scenario_profiles_with_partial_current_execution_and_explicit_future_requirements",
+  "cases": [
+    {
+      "id": "balanced_3d",
+      "label": "Balanced sightseeing",
+      "days": 3,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "local_market",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "party": "2 adults",
+        "pace": "balanced"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "full_day_sightseeing",
+        "route_fit",
+        "canonical_locations",
+        "budget_ranges"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 1,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "Three complete geographically grouped days with sights, meals, pauses and transfers.",
+        "Source tips and two useful alternatives for major choices."
+      ]
+    },
+    {
+      "id": "family_children",
+      "label": "Family with children",
+      "days": 3,
+      "activities": [
+        {
+          "id": "park_pause",
+          "frequency": "daily"
+        },
+        {
+          "id": "sweet_break",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "party": "2 adults + ages 6 and 10",
+        "pace": "slow"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "party_age_rules",
+        "family_fit",
+        "full_day_sightseeing",
+        "route_fit",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 2,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "Child ages affect pace, attraction suitability and ticket-cost basis.",
+        "Include breaks; avoid replacing family activities with unsuitable nightlife."
+      ]
+    },
+    {
+      "id": "family_adults",
+      "label": "Family with adult child",
+      "days": 4,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "local_market",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "party": "parents + adult age 22"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "party_profile",
+        "full_day_sightseeing",
+        "route_fit",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 1,
+      "assumed_unique_place_details": 25,
+      "assumed_selected_route_edges": 16,
+      "expected_output_assertions": [
+        "Do not apply child pricing to the 22-year-old.",
+        "Provide activities and meal choices appropriate for the mixed adult group."
+      ]
+    },
+    {
+      "id": "couple",
+      "label": "Couple / relaxed",
+      "days": 3,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "sunset_view",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "party": "couple",
+        "pace": "relaxed"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "pace_controls",
+        "sunset_time_and_fit",
+        "full_day_sightseeing",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 2,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "Relaxed pace with fewer anchors and useful free time.",
+        "A sunset suggestion needs sunset fit and timing evidence, not merely a scenic tag."
+      ]
+    },
+    {
+      "id": "solo_budget",
+      "label": "Solo / low budget",
+      "days": 3,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "sweet_break",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "party": "solo",
+        "budget_basis": "EUR per person excluding flights"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "budget_ranges",
+        "full_day_sightseeing",
+        "route_fit",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 1,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "travel_budget_eur": 120,
+      "expected_output_assertions": [
+        "Per-person cost range with explicit exclusions and unknowns.",
+        "Prioritize quality/value rather than treating missing ratings or prices as zero."
+      ]
+    },
+    {
+      "id": "friends_bars",
+      "label": "Friends / evening bars",
+      "days": 3,
+      "activities": [
+        {
+          "id": "aperitivo_tapas",
+          "frequency": "daily"
+        },
+        {
+          "id": "live_music",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "party": "4 adult friends",
+        "evening": "bars"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "evening_venues",
+        "party_costs",
+        "dated_music",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 3,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "Evening alternatives suitable for four adults.",
+        "Live music must be a dated event or explicitly unverified possibility."
+      ]
+    },
+    {
+      "id": "return_visit",
+      "label": "Return visit / exclusions",
+      "days": 3,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "local_market",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "visit": "returning",
+        "avoid_repeats": true
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "novelty_ranking",
+        "full_day_sightseeing",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 1,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "exclude_coffee": true,
+      "expected_output_assertions": [
+        "Explicitly excluded places do not reappear as selected stops.",
+        "Novelty changes ranking without silently overriding user revisit choices."
+      ]
+    },
+    {
+      "id": "coffee_daily",
+      "label": "Coffee every day",
+      "days": 5,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "coffee": "one daily stop near route"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "geographic_route_fit",
+        "canonical_locations",
+        "full_day_sightseeing"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 0,
+      "assumed_unique_place_details": 30,
+      "assumed_selected_route_edges": 20,
+      "expected_output_assertions": [
+        "One coffee pause per selected day near that day route.",
+        "Merge with a meal when the selected place actually supports coffee."
+      ]
+    },
+    {
+      "id": "coffee_specialty",
+      "label": "Specialty coffee",
+      "days": 3,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "coffee_type": "specialty"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "coffee_subtype_filter",
+        "geographic_route_fit",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 2,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "Use sourced specialty-coffee service evidence.",
+        "A general cafe category alone does not satisfy specialty preference."
+      ]
+    },
+    {
+      "id": "coffee_brunch",
+      "label": "Coffee + brunch merge",
+      "days": 3,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "brunch",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "merge": "prefer one stop"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "brunch_supply",
+        "geographic_route_fit",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 2,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "A shared coffee/brunch venue yields one stop and one cost item.",
+        "Show separate alternatives if no jointly supported venue is available."
+      ]
+    },
+    {
+      "id": "stay_provided",
+      "label": "Stay breakfast provided",
+      "days": 3,
+      "activities": [
+        {
+          "id": "breakfast_at_stay",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "stay": "breakfast included user assertion"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "full_day_sightseeing",
+        "stay_location",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 0,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "stay_breakfast": "provided",
+      "expected_output_assertions": [
+        "Breakfast is a stay-time block based on user-provided provision.",
+        "Do not insert supply shopping unless another selected activity needs it."
+      ]
+    },
+    {
+      "id": "stay_supplies",
+      "label": "Stay breakfast / supplies",
+      "days": 3,
+      "activities": [
+        {
+          "id": "breakfast_at_stay",
+          "frequency": "daily"
+        },
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "stay": "apartment",
+        "supplies": "one shopping stop"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "groceries_supply",
+        "stay_location",
+        "geographic_route_fit",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 2,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "stay_breakfast": "buy_supplies",
+      "expected_output_assertions": [
+        "One relevant supply stop near the stay/route with grocery service evidence.",
+        "Avoid duplicating shopping every day without a reason."
+      ]
+    },
+    {
+      "id": "stay_unknown",
+      "label": "Stay breakfast unknown",
+      "days": 3,
+      "activities": [
+        {
+          "id": "breakfast_at_stay",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "stay": "unknown provision"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "stay_location",
+        "full_day_sightseeing"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 0,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "stay_breakfast": "unknown",
+      "expected_output_assertions": [
+        "Show provision as unknown and provide an optional breakfast alternative.",
+        "Do not invent included breakfast or its cost."
+      ]
+    },
+    {
+      "id": "bakery",
+      "label": "Bakery breakfast",
+      "days": 3,
+      "activities": [
+        {
+          "id": "breakfast_out",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "breakfast": "bakery only"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "bakery_vs_cafe_control",
+        "geographic_route_fit",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 1,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "Selected breakfast candidates satisfy the bakery preference and breakfast evidence.",
+        "Offer cafe alternatives separately when bakery supply is insufficient."
+      ]
+    },
+    {
+      "id": "vegetarian",
+      "label": "Vegetarian",
+      "days": 3,
+      "activities": [
+        {
+          "id": "brunch",
+          "frequency": "once"
+        },
+        {
+          "id": "local_market",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "diet": "vegetarian preference"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "specific_diet_preferences",
+        "dietary_service_evidence",
+        "full_day_sightseeing",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 2,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "hard_requirements": [
+        "dietary"
+      ],
+      "expected_output_assertions": [
+        "Specific vegetarian preference affects meal candidates.",
+        "Missing meal evidence does not remove unrelated sightseeing from the whole plan."
+      ]
+    },
+    {
+      "id": "vegan",
+      "label": "Vegan",
+      "days": 3,
+      "activities": [
+        {
+          "id": "breakfast_out",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "diet": "vegan"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "specific_diet_preferences",
+        "dietary_service_evidence",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 3,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "hard_requirements": [
+        "dietary"
+      ],
+      "expected_output_assertions": [
+        "Do not infer vegan suitability from a vegetarian or generic restaurant tag.",
+        "Keep relevant meal uncertainties and usable non-food itinerary visible."
+      ]
+    },
+    {
+      "id": "allergy",
+      "label": "Severe food allergy",
+      "days": 3,
+      "activities": [
+        {
+          "id": "breakfast_out",
+          "frequency": "daily"
+        },
+        {
+          "id": "brunch",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "allergy": "nuts; hard requirement"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "specific_allergy_evidence",
+        "safe_alternatives",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 3,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "hard_requirements": [
+        "allergy"
+      ],
+      "expected_output_assertions": [
+        "No venue becomes allergy-safe from transcript/menu/model inference alone.",
+        "Restrict relevant food choices and preserve unrelated itinerary anchors."
+      ]
+    },
+    {
+      "id": "wheelchair",
+      "label": "Wheelchair accessibility",
+      "days": 3,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "local_market",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "access": "step-free chain required"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "entrance_access_chain",
+        "step_free_routes",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 3,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "hard_requirements": [
+        "accessibility"
+      ],
+      "expected_output_assertions": [
+        "Selected stops/transfer chains require applicable step-free evidence.",
+        "Report unavailable access proof rather than claim that a lift verifies the entire chain."
+      ]
+    },
+    {
+      "id": "slow_walking",
+      "label": "Limited walking",
+      "days": 3,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "walking_limit_minutes": 15
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "walking_limit_control",
+        "route_fit",
+        "full_day_sightseeing",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 1,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "Route legs respect the 15-minute walking preference or offer transport.",
+        "Distinguish a preference from a hard accessibility requirement."
+      ]
+    },
+    {
+      "id": "one_day",
+      "label": "One-day stopover",
+      "days": 1,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "once"
+        },
+        {
+          "id": "local_market",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "arrival": "10:00",
+        "departure": "18:00"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "arrival_departure_anchors",
+        "full_day_sightseeing",
+        "route_fit",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 1,
+      "assumed_unique_place_details": 10,
+      "assumed_selected_route_edges": 4,
+      "expected_output_assertions": [
+        "All selected stops fit between arrival 10:00 and departure 18:00 with transfer buffers.",
+        "Do not propose a full evening after departure."
+      ]
+    },
+    {
+      "id": "late_arrival",
+      "label": "Late arrival",
+      "days": 3,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "arrival": "22:30 first day"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "arrival_departure_anchors",
+        "late_stay_transport",
+        "full_day_sightseeing",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 1,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "No daytime sightseeing is scheduled before the actual first-day arrival.",
+        "Late transfer/stay access has an explicit check or unknown."
+      ]
+    },
+    {
+      "id": "early_departure",
+      "label": "Early departure",
+      "days": 3,
+      "activities": [
+        {
+          "id": "breakfast_out",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "departure": "07:00 final day"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "arrival_departure_anchors",
+        "airport_route",
+        "full_day_sightseeing",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 1,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "Final-day airport transfer fits the 07:00 departure.",
+        "No breakfast-out stop appears after departure."
+      ]
+    },
+    {
+      "id": "locked",
+      "label": "Locked stop / local replan",
+      "days": 3,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "local_market",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "lock": "keep 10:00 stop; add activity"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "route_fit",
+        "full_day_sightseeing",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 1,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "locked_stop": true,
+      "expected_output_assertions": [
+        "The exact selected place/time remains locked during a local change.",
+        "Only dependent route legs, alternatives and totals are recalculated."
+      ]
+    },
+    {
+      "id": "date_change",
+      "label": "Date change / refresh",
+      "days": 4,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "change": "move trip one week later"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "dependency_invalidation",
+        "dated_field_refresh",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 1,
+      "assumed_unique_place_details": 25,
+      "assumed_selected_route_edges": 16,
+      "expected_output_assertions": [
+        "Refresh date-dependent opening/ticket/event/route observations.",
+        "Keep source history, preference intent and compatible locks intact."
+      ]
+    },
+    {
+      "id": "week",
+      "label": "Seven days",
+      "days": 7,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "brunch",
+          "frequency": "once"
+        },
+        {
+          "id": "local_market",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "pace": "balanced",
+        "variety": "required"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "multi_day_diversity",
+        "full_day_sightseeing",
+        "route_fit",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 2,
+      "assumed_unique_place_details": 40,
+      "assumed_selected_route_edges": 28,
+      "expected_output_assertions": [
+        "Seven usable days with varied major anchors.",
+        "Repeated coffee routines do not imply repetition of the entire day."
+      ]
+    },
+    {
+      "id": "two_weeks",
+      "label": "Fourteen days",
+      "days": 14,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "park_pause",
+          "frequency": "daily"
+        },
+        {
+          "id": "brunch",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "pace": "balanced",
+        "variety": "required"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "multi_day_diversity",
+        "full_day_sightseeing",
+        "route_fit",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 3,
+      "assumed_unique_place_details": 60,
+      "assumed_selected_route_edges": 56,
+      "expected_output_assertions": [
+        "Fourteen usable days without unlimited model input/output or global place research.",
+        "Chunk optional prose generation; preserve the same deterministic plan decisions."
+      ]
+    },
+    {
+      "id": "premium",
+      "label": "Higher budget / quality",
+      "days": 3,
+      "activities": [
+        {
+          "id": "brunch",
+          "frequency": "once"
+        },
+        {
+          "id": "aperitivo_tapas",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "budget_basis": "EUR per person excluding flights",
+        "quality": "prioritize sourced ratings"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "quality_rating_ranking",
+        "menu_prices",
+        "full_day_sightseeing",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 2,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "travel_budget_eur": 1000,
+      "expected_output_assertions": [
+        "Use quality evidence and concrete menu/ticket costs where available.",
+        "An expensive price category is not proof of superior quality."
+      ]
+    },
+    {
+      "id": "group",
+      "label": "Group of eight",
+      "days": 4,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "brunch",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "party": 8,
+        "booking": "tables may be required"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "party_costs",
+        "group_fit",
+        "table_availability",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 3,
+      "assumed_unique_place_details": 25,
+      "assumed_selected_route_edges": 16,
+      "expected_output_assertions": [
+        "Group cost totals multiply the appropriate per-person components by eight.",
+        "Treat table/ticket availability as provider-specific dated evidence."
+      ]
+    },
+    {
+      "id": "tickets",
+      "label": "Ticketed attractions",
+      "days": 3,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "must_include": [
+          "Sagrada Familia",
+          "Park Guell"
+        ],
+        "booking": "timed tickets"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "attraction_anchors",
+        "ticket_availability",
+        "full_day_sightseeing",
+        "route_fit",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 2,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "Sagrada Familia/Park Guell anchors use verified selected tickets or visible pending booking.",
+        "Do not schedule incompatible timed slots."
+      ]
+    },
+    {
+      "id": "montserrat",
+      "label": "Montserrat excursion",
+      "days": 4,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        }
+      ],
+      "profile": {
+        "excursion": "Montserrat one day"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "excursion_composition",
+        "intercity_routes",
+        "full_day_sightseeing",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 2,
+      "assumed_unique_place_details": 25,
+      "assumed_selected_route_edges": 16,
+      "expected_output_assertions": [
+        "Excursion includes outward/return intercity transfers and realistic time.",
+        "Do not combine incompatible city anchors with the excursion day."
+      ]
+    },
+    {
+      "id": "events",
+      "label": "Dated event / live music",
+      "days": 3,
+      "activities": [
+        {
+          "id": "live_music",
+          "frequency": "once"
+        },
+        {
+          "id": "aperitivo_tapas",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "event": "live music on selected evening"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "event_provider",
+        "dated_music",
+        "full_day_sightseeing",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 3,
+      "assumed_unique_place_details": 20,
+      "assumed_selected_route_edges": 12,
+      "expected_output_assertions": [
+        "Event occurs on the selected date with venue/time source.",
+        "Keep alternatives if actual dated supply is missing."
+      ]
+    },
+    {
+      "id": "detailed_guide",
+      "label": "Detailed guide / output parity",
+      "days": 5,
+      "activities": [
+        {
+          "id": "coffee_break",
+          "frequency": "daily"
+        },
+        {
+          "id": "sweet_break",
+          "frequency": "once"
+        },
+        {
+          "id": "local_market",
+          "frequency": "once"
+        }
+      ],
+      "profile": {
+        "output_language": "Greek",
+        "detail": "source dishes/tips/history + comparisons + map panels"
+      },
+      "requested_output": [
+        "day_by_day_itinerary",
+        "why_choices_fit",
+        "alternatives",
+        "map_layers",
+        "cost_table",
+        "sources_and_unknowns"
+      ],
+      "required_future_capabilities": [
+        "full_day_sightseeing",
+        "detail_synthesis",
+        "stay_comparison",
+        "media_attribution",
+        "rendered_ui",
+        "canonical_locations"
+      ],
+      "minimum_stops_per_day": 3,
+      "assumed_new_evidence_jobs": 2,
+      "assumed_unique_place_details": 30,
+      "assumed_selected_route_edges": 20,
+      "expected_output_assertions": [
+        "Greek guide includes specific dishes/tips/history, comparisons and useful alternatives.",
+        "Maps/panels/tables share the same stable decisions; media carries real source/attribution."
+      ]
+    }
+  ],
+  "quality_rubric": {
+    "scored_by_human_only": [
+      "relevance_to_party",
+      "geographical_sequence",
+      "source_tip_usefulness",
+      "alternatives_quality",
+      "complete_guide_vs_chat_md"
+    ],
+    "automatic_checks": [
+      "provenance_present",
+      "locks_and_exclusions",
+      "overlap_errors",
+      "unknowns_visible",
+      "activity_presence",
+      "self_as_alternative"
+    ],
+    "hard_failures": [
+      "wrong_place_or_branch",
+      "ignored_hard_constraint",
+      "invented_current_availability",
+      "lost_user_lock",
+      "fabricated_price_or_rating"
+    ],
+    "acceptance": "No hard failures; requested activities satisfied or explained; complete days, locations, route estimates, budget basis, useful source details and UI verified. A low latency or populated JSON is insufficient."
+  },
+  "product_targets": {
+    "typical_three_day_model_cost_estimate_ceiling_usd": "0.05",
+    "long_fourteen_day_model_cost_estimate_ceiling_usd": "0.15",
+    "targets_are_proposed_not_measured_connected_results": true,
+    "typical_three_day_end_to_end_target_seconds": 90,
+    "manual_quality_target_out_of_10": 8,
+    "hard_failures_allowed": 0,
+    "provider_and_infrastructure_budget_requires_actual_sku_rates": true
+  }
+}
