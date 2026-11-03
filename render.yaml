@@ -23,3 +23,18 @@ services:
         sync: false
       - key: TRIPPY_BRIDGE_TOKEN
         sync: false
+      # Required by the staged planner; set explicit values in Render Environment.
+      - key: TRIPPY_ALLOW_PAID_RESEARCH
+        sync: false
+      - key: TRIPPY_AI_BUDGET_AMOUNT
+        sync: false
+      - key: TRIPPY_AI_BUDGET_CURRENCY
+        sync: false
+      - key: TRIPPY_LUNA_INPUT_PER_MILLION
+        sync: false
+      - key: TRIPPY_LUNA_OUTPUT_PER_MILLION
+        sync: false
+      - key: TRIPPY_WEB_RESERVATION_PER_CALL
+        sync: false
+      - key: TRIPPY_SHARED_BUDGET_LEDGER
+        sync: false

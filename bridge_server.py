@@ -13,9 +13,10 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4, UUID
 
 from trippy_config import read_environment
+from trippy.sources.luna import BudgetError, ProviderConfigurationError
 from trippy.planner.planning_contract import normalized_brief
 from trippy.planner.pipeline import run as execute_plan, StageStore
-from trippy.planner.live_provider import AzureResearchProvider
+from trippy.planner.live_provider import AzureResearchProvider, ResearchConfigurationError, configuration_issues
 
 
 class ResearchState:
@@ -98,7 +99,13 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
     except Exception as exc:
         # Store a safe type, not raw provider errors that can contain request data.
         with state.lock:
-            state.jobs[job_id].update(step='error',error=type(exc).__name__,message='Η έρευνα χρειάζεται έλεγχο διαμόρφωσης ή του αποθηκευμένου σταδίου.')
+            code='research_configuration_required' if isinstance(exc,ResearchConfigurationError) else 'research_budget_unavailable' if isinstance(exc,BudgetError) else 'provider_configuration_required' if isinstance(exc,ProviderConfigurationError) else 'research_storage_unavailable' if isinstance(exc,OSError) else 'research_failed'
+            messages={'research_configuration_required':'Η υπηρεσία χρειάζεται ρύθμιση των ορίων και του παρόχου πριν ξεκινήσει έρευνα.',
+                'research_budget_unavailable':'Το διαθέσιμο όριο έρευνας δεν επέτρεψε την επόμενη ενέργεια. Χρειάζεται έλεγχος του ορίου και των κρατημένων χρεώσεων.',
+                'provider_configuration_required':'Χρειάζεται έλεγχος της σύνδεσης της υπηρεσίας με τον πάροχο έρευνας.',
+                'research_storage_unavailable':'Η υπηρεσία δεν μπόρεσε να αποθηκεύσει την έρευνα.',
+                'research_failed':'Η έρευνα σταμάτησε σε στάδιο που χρειάζεται έλεγχο.'}
+            state.jobs[job_id].update(step='error',error=type(exc).__name__,error_code=code,message=messages[code])
             state.current_step='error'; state.error_message=type(exc).__name__
             state.step_message=state.jobs[job_id]['message']
     finally:
@@ -137,7 +144,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         job_id=parse_qs(target.query).get('job_id',[None])[0]
         if job_id is None:
             # Preflight does not expose another run's brief, result or job capability.
-            self.send_json(200,{**capabilities,'is_running':state.is_running,'has_result':False}); return
+            try: issues=configuration_issues(read_environment(root()/'.env'))
+            except (ValueError,OSError): issues=['ENVIRONMENT_CONFIGURATION']
+            self.send_json(200,{**capabilities,'is_running':state.is_running,'has_result':False,
+                'research_ready':not issues,'configuration_issues':issues}); return
         try: job=read_job(job_id)
         except (ValueError,KeyError): job=None
         if job is None: self.send_json(404,{'error':'job_not_found'}); return

@@ -6,12 +6,35 @@ from trippy.sources.luna import BudgetError, make_provider, positive, reserve_co
 from trippy_config import configured, valid_url
 
 
+class ResearchConfigurationError(BudgetError):
+    """Missing configuration, distinct from an exhausted spend allowance."""
+
+
+def configuration_issues(values):
+    """Return setting names only; no clients, network calls or credential values."""
+    issues=[]
+    if values.get('TRIPPY_ALLOW_PAID_RESEARCH','').lower()!='true':
+        issues.append('TRIPPY_ALLOW_PAID_RESEARCH')
+    for name in ('TRIPPY_AI_BUDGET_AMOUNT','TRIPPY_WEB_RESERVATION_PER_CALL',
+                 'TRIPPY_LUNA_INPUT_PER_MILLION','TRIPPY_LUNA_OUTPUT_PER_MILLION'):
+        try: positive(values.get(name),name)
+        except BudgetError: issues.append(name)
+    if values.get('TRIPPY_AI_BUDGET_CURRENCY') not in {'USD','EUR'}:
+        issues.append('TRIPPY_AI_BUDGET_CURRENCY')
+    for name in ('AZURE_AGENT_ENDPOINT','AZURE_OPENAI_ENDPOINT'):
+        if not valid_url(values.get(name,''),{'https'}): issues.append(name)
+    for name in ('AZURE_OPENAI_API_KEY','AZURE_DEPLOYMENT_LUNA'):
+        if not configured(values.get(name)): issues.append(name)
+    return sorted(issues)
+
+
 class AzureResearchProvider:
     def __init__(self, values, ledger, *, agent_factory=None, model_factory=None):
         # The normalizer uses the existing durable global ledger/rate contract.
         # It reserves before dispatch, keeps unknown spend held and never retries
         # silently. No stronger-model fallback is permitted.
-        if values.get('TRIPPY_ALLOW_PAID_RESEARCH','').lower()!='true': raise BudgetError('Paid research is disabled')
+        issues=configuration_issues(values)
+        if issues: raise ResearchConfigurationError('Research configuration required: '+', '.join(issues))
         self.cap=positive(values.get('TRIPPY_AI_BUDGET_AMOUNT'),'TRIPPY_AI_BUDGET_AMOUNT')
         self.currency=values.get('TRIPPY_AI_BUDGET_CURRENCY')
         self.web_reservation=positive(values.get('TRIPPY_WEB_RESERVATION_PER_CALL'),'TRIPPY_WEB_RESERVATION_PER_CALL')

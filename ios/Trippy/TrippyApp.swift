@@ -720,12 +720,101 @@ private struct ResearchOperation: Identifiable {
     }
 }
 
+private enum ResearchRequestStage: String {
+    case preflight, start, status
+}
+
+private enum ResearchRequestError: Error, Equatable {
+    case missingJob
+    case httpStatus(Int, ResearchRequestStage)
+    case invalidResponse(ResearchRequestStage)
+    case configurationUnavailable([String])
+
+    var requiresNewJob: Bool { self == .missingJob }
+    var message: String {
+        switch self {
+        case .missingJob:
+            return "Η υπηρεσία δεν βρίσκει πλέον αυτό το αίτημα, συνήθως μετά από επανεκκίνηση ή ενημέρωση. Μπορείς να ξεκινήσεις νέα έρευνα. Το πλάνο και οι επιλογές που έχεις αποθηκεύσει διατηρούνται."
+        case .configurationUnavailable:
+            return "Η υπηρεσία έρευνας δεν έχει ολοκληρώσει τη ρύθμισή της. Χρειάζεται έλεγχος των ρυθμίσεων πριν ξεκινήσει νέα έρευνα."
+        case .httpStatus(let status, _):
+            if [408, 429, 500, 502, 503, 504].contains(status) {
+                return "Η υπηρεσία έρευνας δεν είναι διαθέσιμη αυτή τη στιγμή. Το αποθηκευμένο αίτημα διατηρείται· έλεγξε ξανά την κατάστασή του σε λίγο."
+            }
+            if status == 401 || status == 403 { return "Η υπηρεσία δεν επέτρεψε την πρόσβαση. Χρειάζεται έλεγχος της σύνδεσης της εφαρμογής με την υπηρεσία." }
+            if status == 422 { return "Η υπηρεσία δεν δέχτηκε τα στοιχεία του ταξιδιού. Έλεγξε τον προορισμό και τις ημερομηνίες." }
+            return "Η υπηρεσία απάντησε με σφάλμα. Χρειάζεται έλεγχος της σύνδεσης ή της έκδοσής της."
+        case .invalidResponse:
+            return "Η υπηρεσία απάντησε χωρίς έγκυρα στοιχεία έρευνας. Χρειάζεται έλεγχος της έκδοσής της. Το αποθηκευμένο αίτημα διατηρείται."
+        }
+    }
+    var diagnostic: String {
+        switch self {
+        case .missingJob: "status: HTTP 404, job_not_found"
+        case .httpStatus(let status, let stage): "\(stage.rawValue): HTTP \(status)"
+        case .invalidResponse(let stage): "\(stage.rawValue): invalid_response"
+        case .configurationUnavailable(let fields): "preflight: configuration_required\n" + fields.joined(separator: "\n")
+        }
+    }
+}
+
+private enum ResearchTransport {
+    static func checkedJSON(_ data: Data, response: URLResponse, stage: ResearchRequestStage, checkResearchReadiness: Bool = true) throws -> [String: Any] {
+        guard let http = response as? HTTPURLResponse else { throw ResearchRequestError.invalidResponse(stage) }
+        if stage == .status && http.statusCode == 404 { throw ResearchRequestError.missingJob }
+        let accepted = stage == .start ? [200, 202] : [200]
+        guard accepted.contains(http.statusCode) else { throw ResearchRequestError.httpStatus(http.statusCode, stage) }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ResearchRequestError.invalidResponse(stage)
+        }
+        if stage == .preflight && checkResearchReadiness && object["research_ready"] as? Bool == false {
+            let fields = (object["configuration_issues"] as? [String] ?? []).filter {
+                !$0.isEmpty && $0.count <= 80 && $0.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
+            }
+            throw ResearchRequestError.configurationUnavailable(fields)
+        }
+        return object
+    }
+    static func shouldRetryStatus(_ error: Error) -> Bool {
+        if case ResearchRequestError.httpStatus(let code, .status) = error {
+            return [408, 429, 500, 502, 503, 504].contains(code)
+        }
+        guard let error = error as? URLError else { return false }
+        return [.timedOut, .networkConnectionLost, .cannotConnectToHost].contains(error.code)
+    }
+    // Only read-only polling is retried. A research POST is dispatched once.
+    static func status(url: URL,
+        transport: (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) },
+        pause: (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
+    ) async throws -> [String: Any] {
+        let delays: [Double] = [2, 4, 8]
+        for attempt in 0...delays.count {
+            try Task.checkCancellation()
+            var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+            request.timeoutInterval = 60
+            do {
+                let (data, response) = try await transport(request)
+                return try checkedJSON(data, response: response, stage: .status)
+            } catch {
+                guard shouldRetryStatus(error), attempt < delays.count else { throw error }
+                try await pause(delays[attempt])
+            }
+        }
+        throw ResearchRequestError.invalidResponse(.status)
+    }
+}
+
 private struct Trip: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var brief: TripBrief
     var research: String? = nil
     var researchJobID: String? = nil
     var researchBridgeURL: String? = nil
+    mutating func forgetResearchJob(matching id: String) {
+        guard researchJobID == id else { return }
+        researchJobID = nil
+        researchBridgeURL = nil
+    }
     var updatedAt = Date()
     var scheduleOrderByDate: [String: [String]]? = nil
     var reactionsByItemID: [String: String]? = nil
@@ -964,6 +1053,8 @@ private struct TripFlowView: View {
     @State private var researchResultTripID: UUID?
     @State private var liveResearchStep = 1
     @State private var liveResearchError: String? = nil
+    @State private var liveResearchDiagnostic: String? = nil
+    @State private var researchNeedsNewRequest = false
     @State private var liveResearchTask: Task<Void, Never>? = nil
     @State private var calendarDisplayedMonth = Date()
     @State private var destinationSuggestions: [DestinationSuggestion] = []
@@ -3675,6 +3766,8 @@ private struct TripFlowView: View {
         researchResultTripID = requestedTripID
         isResearching = true
         liveResearchError = nil
+        liveResearchDiagnostic = nil
+        researchNeedsNewRequest = false
         recoverableResearch = nil
         liveResearchStep = 1
         researchOperations = [ResearchOperation(step: 1, detail: "Συνδεόμαστε με την υπηρεσία έρευνας…")]
@@ -3709,6 +3802,8 @@ private struct TripFlowView: View {
         ]
 
         liveResearchTask = Task {
+            var requestStage = ResearchRequestStage.preflight
+            var activeJobID = resumableJobID
             do {
                 // Check compatibility before starting either paid AI request.
                 guard let preflightURL = URL(string: "\(researchBaseURL)/api/status") else { throw URLError(.badURL) }
@@ -3716,10 +3811,7 @@ private struct TripFlowView: View {
                 preflight.timeoutInterval = 60
                 let (statusData, preflightResponse) = try await URLSession.shared.data(for: preflight)
                 try Task.checkCancellation()
-                guard let http = preflightResponse as? HTTPURLResponse, http.statusCode == 200,
-                      let status = try JSONSerialization.jsonObject(with: statusData) as? [String: Any] else {
-                    throw URLError(.badServerResponse)
-                }
+                let status = try ResearchTransport.checkedJSON(statusData, response: preflightResponse, stage: .preflight, checkResearchReadiness: resumableJobID == nil)
                 guard (status["api_version"] as? Int ?? 0) >= 3,
                       (status["research_contract_version"] as? Int ?? 0) >= 4,
                       status["result_schema"] as? String == "trippy-research-v1" else {
@@ -3742,6 +3834,7 @@ private struct TripFlowView: View {
                     recordResearchOperation(2, detail: resumableJobID == nil ? "Αναζητούμε επιλογές για το ταξίδι σου…" : "Ανακτούμε την αποθηκευμένη έρευνα…")
                 }
                 let jobID: String
+                requestStage = .start
                 if let existingJobID = resumableJobID { jobID = existingJobID }
                 else {
                 guard let url = URL(string: "\(researchBaseURL)/api/research") else { throw URLError(.badURL) }
@@ -3751,26 +3844,22 @@ private struct TripFlowView: View {
                 request.httpBody = try? JSONSerialization.data(withJSONObject: briefContext)
 
                 let (startData, response) = try await URLSession.shared.data(for: request)
-                if let http = response as? HTTPURLResponse, http.statusCode != 202 && http.statusCode != 200 {
-                    if http.statusCode == 409 {
-                        await MainActor.run {
-                            liveResearchError = "Υπάρχει ήδη έρευνα σε εξέλιξη στην υπηρεσία. Περίμενε να ολοκληρωθεί και δοκίμασε ξανά."
-                            isResearching = false
-                        }
-                    } else {
-                        await MainActor.run {
-                            liveResearchError = "Η υπηρεσία δεν μπορεί να ξεκινήσει την έρευνα αυτή τη στιγμή. Δοκίμασε ξανά σε λίγο."
-                            isResearching = false
-                        }
+                if let http = response as? HTTPURLResponse, http.statusCode == 409 {
+                    await MainActor.run {
+                        liveResearchError = "Υπάρχει ήδη έρευνα σε εξέλιξη στην υπηρεσία. Περίμενε να ολοκληρωθεί και δοκίμασε ξανά."
+                        liveResearchDiagnostic = "start: HTTP 409, research_already_running"
+                        isResearching = false
                     }
                     return
                 }
 
-                guard let started = try JSONSerialization.jsonObject(with: startData) as? [String: Any],
+                let started = try ResearchTransport.checkedJSON(startData, response: response, stage: .start)
+                guard
                       let createdJobID = started["job_id"] as? String, UUID(uuidString: createdJobID) != nil else {
                     throw URLError(.cannotParseResponse)
                 }
                 jobID = createdJobID
+                activeJobID = createdJobID
                 await MainActor.run {
                     if let index = trips.firstIndex(where: { $0.id == requestedTripID }) {
                         trips[index].researchJobID = jobID; trips[index].researchBridgeURL = researchBaseURL
@@ -3778,15 +3867,12 @@ private struct TripFlowView: View {
                     }
                 }
                 }
+                requestStage = .status
                 while !Task.isCancelled {
                     try await Task.sleep(for: .seconds(1.5))
                     guard let statusURL = URL(string: "\(researchBaseURL)/api/status?job_id=\(jobID)") else { throw URLError(.badURL) }
-                    let (data, statusResponse) = try await URLSession.shared.data(from: statusURL)
+                    let json = try await ResearchTransport.status(url: statusURL)
                     try Task.checkCancellation()
-                    guard let http = statusResponse as? HTTPURLResponse, http.statusCode == 200,
-                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                        throw URLError(.badServerResponse)
-                    }
 
                     let isRunning = json["is_running"] as? Bool ?? false
                     let step = json["step"] as? String ?? ""
@@ -3794,6 +3880,7 @@ private struct TripFlowView: View {
                     let result = json["result"] as? [String: Any]
                     let currentTask = json["current_task"] as? String ?? ""
                     let completedPhases = json["completed_research_phases"] as? [Int] ?? []
+                    let serverErrorCode = json["error_code"] as? String ?? "research_failed"
 
                     await MainActor.run {
                         completedResearchSteps = ResearchOperation.completedPhases(completedPhases).union([1])
@@ -3810,7 +3897,15 @@ private struct TripFlowView: View {
                                 isResearching = false
                             }
                         } else if step == "error" || step == "interrupted" {
-                            liveResearchError = step == "interrupted" ? "Η έρευνα διακόπηκε. Τα ολοκληρωμένα στάδια έχουν διατηρηθεί." : "Η υπηρεσία δεν μπόρεσε να ολοκληρώσει την έρευνα. Τα διαθέσιμα στοιχεία έχουν διατηρηθεί."
+                            if let index = trips.firstIndex(where: { $0.id == requestedTripID }) {
+                                trips[index].forgetResearchJob(matching: jobID)
+                                TripStorage.save(trips)
+                            }
+                            researchNeedsNewRequest = true
+                            liveResearchError = step == "interrupted" ? "Η έρευνα διακόπηκε στην υπηρεσία. Μπορείς να ξεκινήσεις νέα έρευνα. Το αποθηκευμένο πλάνο και οι επιλογές σου διατηρούνται." : (msg.isEmpty ? "Η υπηρεσία δεν μπόρεσε να ολοκληρώσει την έρευνα. Μπορείς να ξεκινήσεις νέο αίτημα." : msg)
+                            if serverErrorCode.count < 100 && serverErrorCode.allSatisfy({ $0.isASCII && ($0.isLetter || $0 == "_") }) {
+                                liveResearchDiagnostic = "status: " + serverErrorCode
+                            }
                             isResearching = false
                         }
                     }
@@ -3821,7 +3916,24 @@ private struct TripFlowView: View {
             } catch {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    liveResearchError = "Δεν μπορέσαμε να συνδεθούμε με την υπηρεσία. Έλεγξε τη σύνδεσή σου και δοκίμασε ξανά. Η υπάρχουσα έρευνα διατηρείται."
+                    if let failure = error as? ResearchRequestError {
+                        liveResearchError = failure.message
+                        liveResearchDiagnostic = failure.diagnostic
+                        if failure.requiresNewJob, let activeJobID,
+                           let index = trips.firstIndex(where: { $0.id == requestedTripID }) {
+                            trips[index].forgetResearchJob(matching: activeJobID)
+                            TripStorage.save(trips)
+                            researchNeedsNewRequest = true
+                        }
+                    } else {
+                        let code = (error as? URLError)?.code.rawValue ?? (error as NSError).code
+                        liveResearchDiagnostic = "\(requestStage.rawValue): \(type(of: error)), code \(code)"
+                        if (error as? URLError)?.code == .notConnectedToInternet {
+                            liveResearchError = "Δεν υπάρχει σύνδεση στο διαδίκτυο. Η έρευνα που έχει ήδη ξεκινήσει διατηρείται στην υπηρεσία· δοκίμασε ξανά όταν συνδεθείς."
+                        } else {
+                            liveResearchError = "Η υπηρεσία δεν απάντησε εγκαίρως ή διακόπηκε η σύνδεση. Η έρευνα μπορεί να συνεχίζεται· έλεγξε ξανά την κατάστασή της."
+                        }
+                    }
                     isResearching = false
                 }
             }
@@ -3935,6 +4047,8 @@ private struct TripFlowView: View {
             needsServiceUpdate: researchNeedsServiceUpdate,
             canRecover: recoverableResearch != nil,
             resuming: trips.first(where: { $0.id == researchResultTripID })?.researchJobID != nil,
+            needsNewRequest: researchNeedsNewRequest,
+            diagnostic: liveResearchDiagnostic,
             onClose: { cancelLiveResearch() },
             onRetry: { startLiveResearch() },
             onSettings: { researchOpenSettingsAfterDismiss = true; cancelLiveResearch() },
@@ -6133,6 +6247,8 @@ private struct ResearchProgressScreen: View {
     let needsServiceUpdate: Bool
     let canRecover: Bool
     let resuming: Bool
+    var needsNewRequest: Bool = false
+    var diagnostic: String? = nil
     let onClose: () -> Void
     let onRetry: () -> Void
     let onSettings: () -> Void
@@ -6149,7 +6265,10 @@ private struct ResearchProgressScreen: View {
     }
     private var status: String {
         if saved { return partial ? "Αποθηκεύτηκε · υπάρχουν σημεία για έλεγχο" : "Αποθηκεύτηκε στο ταξίδι σου" }
-        if error != nil { return needsServiceUpdate ? "Αναμονή ενημέρωσης υπηρεσίας" : "Μπορείς να συνεχίσεις την έρευνα" }
+        if error != nil {
+            if needsNewRequest { return "Χρειάζεται νέο αίτημα έρευνας" }
+            return needsServiceUpdate ? "Αναμονή ενημέρωσης υπηρεσίας" : "Χρειάζεται έλεγχος κατάστασης"
+        }
         return "\(completedSteps.count) από 5 βήματα ολοκληρώθηκαν"
     }
     private var background: some View {
@@ -6216,6 +6335,12 @@ private struct ResearchProgressScreen: View {
                         Text(error).font(.custom("PlusJakartaSans-Regular", size: 16, relativeTo: .body))
                             .fixedSize(horizontal: false, vertical: true)
                             .foregroundStyle(AppPalette.secondaryInk)
+                        if let diagnostic {
+                            DisclosureGroup("Στοιχεία για υποστήριξη") {
+                                Text(diagnostic).font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled).padding(.top, 8)
+                            }.font(.custom("PlusJakartaSans-Regular", size: 13, relativeTo: .caption))
+                        }
                     }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                         .background(AppPalette.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
                 }
@@ -6279,7 +6404,7 @@ private struct ResearchProgressScreen: View {
             } else if needsServiceUpdate {
                 primaryAction("Ρυθμίσεις σύνδεσης", symbol: "network", action: onSettings)
             } else if error != nil {
-                primaryAction(resuming ? "Έλεγχος κατάστασης" : "Δοκίμασε ξανά", symbol: "arrow.clockwise", action: onRetry)
+                primaryAction(needsNewRequest ? "Ξεκίνα νέα έρευνα" : resuming ? "Έλεγχος κατάστασης" : "Δοκίμασε ξανά", symbol: "arrow.clockwise", action: onRetry)
             } else {
                 HStack(spacing: 12) {
                     ProgressView().tint(AppPalette.brand)
