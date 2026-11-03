@@ -45,7 +45,7 @@ BRIEF = {"destination": "Barcelona", "date_range": {"arrival": "2026-12-05", "de
 
 
 class ResearchPipelineTests(unittest.TestCase):
-    def test_bridge_reports_partial_results_without_automatic_paid_retries(self):
+    def test_bridge_reports_empty_results_as_failure_without_automatic_paid_retries(self):
         from tests.test_trip_pipeline import RecordedProvider
         from trippy.planner.planning_contract import empty_batch
         spec = importlib.util.spec_from_file_location("bridge_test", Path(__file__).resolve().parents[1] / "bridge_server.py")
@@ -58,9 +58,10 @@ class ResearchPipelineTests(unittest.TestCase):
         provider.normalize = normalize
         with tempfile.TemporaryDirectory() as temporary, patch.object(bridge, "__file__", str(Path(temporary) / "bridge_server.py")):
             job_id = bridge.run_pipeline(BRIEF, provider=provider)
-            self.assertEqual(bridge.read_job(job_id)["step"], "partial")
+            self.assertEqual(bridge.read_job(job_id)["step"], "error")
+            self.assertEqual(bridge.read_job(job_id)["error_code"], "no_candidates")
             self.assertFalse(bridge.read_job(job_id)["is_running"])
-        self.assertEqual(bridge.state.latest_result["quality_report"]["status"], "partial")
+        self.assertEqual(bridge.state.latest_result["quality_report"]["status"], "failed")
         self.assertEqual(len(provider.calls), len(set(provider.calls)), "No stage was automatically repeated")
 
     def test_every_populated_day_has_a_map_with_exact_stop_order(self):

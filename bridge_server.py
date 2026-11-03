@@ -4,6 +4,7 @@ No SDK client initializes at import. Paid providers require explicit configured
 budgets. Status/results require the unguessable run capability returned by POST.
 """
 import json
+import logging
 import os
 from pathlib import Path
 import threading
@@ -17,6 +18,7 @@ from trippy.sources.luna import BudgetError, ProviderConfigurationError
 from trippy.planner.planning_contract import normalized_brief
 from trippy.planner.pipeline import run as execute_plan, StageStore
 from trippy.planner.live_provider import AzureResearchProvider, ResearchConfigurationError, configuration_issues
+from trippy.planner.diagnostics import failure_details
 
 
 class ResearchState:
@@ -54,6 +56,18 @@ def progress(job_id, step, detail):
             'completed':'Το πλάνο πέρασε τους ελέγχους'}
     with state.lock:
         job=state.jobs[job_id]
+        diagnostics=job.setdefault('diagnostics',{'events':[]})
+        if step in {'pipeline_started','task_started','task_completed','task_failed','phase_skipped'}:
+            event={**detail,'event':step,'elapsed_seconds':round(time.time()-job.get('started_at',time.time()),1)}
+            diagnostics['events']=(diagnostics.get('events',[])+[event])[-100:]
+            diagnostics['elapsed_seconds']=event['elapsed_seconds']
+            if step=='pipeline_started': diagnostics['planned_discovery_tasks']=detail['planned_discovery_tasks']
+            if step=='task_started': diagnostics['active_task']=detail['task']; diagnostics['active_stage']=detail['stage']
+            if step=='task_completed': diagnostics['completed_provider_stages']=diagnostics.get('completed_provider_stages',0)+1
+            if step=='task_failed': diagnostics['last_failure']=detail
+            logging.getLogger('trippy.research').info(json.dumps({'support_id':job.get('support_id'),**event}))
+            save_job(job_id)
+            return
         if step=='phase_completed':
             phase={'discovery':2,'checks':3,'composition':4}[detail]
             job['completed_research_phases']=sorted(set(job.get('completed_research_phases',[])+[phase]))
@@ -74,6 +88,7 @@ def begin_job(brief):
         if state.is_running: raise RuntimeError('research_already_running')
         job_id=str(uuid4())
         state.jobs[job_id]={'job_id':job_id,'is_running':True,'step':'starting','step_index':0,'total_steps':3,
+            'support_id':uuid4().hex[:12],'started_at':time.time(),'diagnostics':{'events':[]},
             'message':'Ανάκτηση της διαθέσιμης έρευνας','request_context':brief,'result':None,'error':None}
         state.is_running=True; state.started_at=time.time(); state.job_id=job_id
         state.brief_context=brief; state.latest_result=None; state.error_message=None
@@ -91,14 +106,25 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
             provider=AzureResearchProvider(values,ledger)
         result=execute_plan(brief_data,provider=provider,directory=job_directory(job_id),root=root(),
             route_provider=route_provider,progress=lambda step,detail:progress(job_id,step,detail) if step not in {'completed','partial'} else None)
-        step='completed' if result['delivery_status']=='ready' else 'partial'
+        report=result.setdefault('pipeline_report',{})
+        report.update(support_id=state.jobs[job_id]['support_id'],build_commit=os.environ.get('RENDER_GIT_COMMIT','local'))
+        step='completed' if result['delivery_status']=='ready' else 'error' if result['delivery_status']=='failed' else 'partial'
         with state.lock:
+            diagnostics=state.jobs[job_id]['diagnostics']
+            diagnostics.update(place_count=len(result['places']),source_count=len(result['sources']),
+                scheduled_stops=report.get('scheduled_stops',0),phase_states=report.get('phase_states',{}))
+            result['pipeline_report']['diagnostics']=dict(diagnostics)
             state.jobs[job_id]['result']=result
             state.latest_result=result
             progress(job_id,step,'delivery')
+            if step=='error':
+                state.jobs[job_id].update(error_code=report.get('failure_code','research_failed'),
+                    message='Δεν δημιουργήθηκε πλάνο. Η έρευνα δεν επέστρεψε κανένα αξιοποιήσιμο μέρος. Δες τα στοιχεία υποστήριξης για την αιτία.')
     except Exception as exc:
         # Store a safe type, not raw provider errors that can contain request data.
         with state.lock:
+            job=state.jobs[job_id]
+            progress(job_id,'task_failed',failure_details(exc,task=job.get('current_task','pipeline'),stage='pipeline'))
             code='research_configuration_required' if isinstance(exc,ResearchConfigurationError) else 'research_budget_unavailable' if isinstance(exc,BudgetError) else 'provider_configuration_required' if isinstance(exc,ProviderConfigurationError) else 'research_storage_unavailable' if isinstance(exc,OSError) else 'research_failed'
             messages={'research_configuration_required':'Η υπηρεσία χρειάζεται ρύθμιση των ορίων και του παρόχου πριν ξεκινήσει έρευνα.',
                 'research_budget_unavailable':'Το διαθέσιμο όριο έρευνας δεν επέτρεψε την επόμενη ενέργεια. Χρειάζεται έλεγχος του ορίου και των κρατημένων χρεώσεων.',
@@ -175,4 +201,6 @@ def run_server(port=8080):
     except KeyboardInterrupt: pass
     finally: server.server_close()
 
-if __name__=='__main__': run_server(int(os.environ.get('PORT','8080')))
+if __name__=='__main__':
+    logging.basicConfig(level=logging.INFO,format='%(message)s')
+    run_server(int(os.environ.get('PORT','8080')))

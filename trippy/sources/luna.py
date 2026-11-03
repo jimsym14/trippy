@@ -21,13 +21,16 @@ class BudgetError(ValueError):
 
 
 class ProviderConfigurationError(ValueError):
-    pass
+    def __init__(self, message, http_status=None):
+        self.http_status=http_status
+        super().__init__(message)
 
 
 class TransientProviderError(ValueError):
     """Sanitized retry hint; only explicitly configured runners may retry."""
-    def __init__(self, kind='temporary_provider_error', retry_after_seconds=None):
+    def __init__(self, kind='temporary_provider_error', retry_after_seconds=None, http_status=None):
         self.kind = kind
+        self.http_status = http_status
         self.retry_after_seconds = retry_after_seconds
         super().__init__(f'Luna temporary failure ({kind}); reservation retained, credentials redacted')
 
@@ -148,10 +151,10 @@ def make_provider(values, ledger, *, client_factory=None, max_output_tokens=None
             status=getattr(exc,'status_code',None)
             if status in {400,401,403,404,422}:
                 raise ProviderConfigurationError(
-                    f'Azure rejected the Luna request (HTTP {status}); check deployment, API version and structured-output compatibility') from None
+                    f'Azure rejected the Luna request (HTTP {status}); check deployment, API version and structured-output compatibility',http_status=status) from None
             if status in {408,429,500,502,503,504} or type(exc).__name__ in {'APITimeoutError','APIConnectionError'}:
                 kind = 'rate_limit' if status == 429 else 'timeout' if status == 408 or type(exc).__name__ == 'APITimeoutError' else 'service_unavailable'
-                raise TransientProviderError(kind, retry_hint(exc)) from None
+                raise TransientProviderError(kind, retry_hint(exc),http_status=status) from None
             if type(exc) is ValueError:raise
             raise ValueError('Luna request failed ('+type(exc).__name__+'); reservation retained, credentials redacted') from None
     return provider

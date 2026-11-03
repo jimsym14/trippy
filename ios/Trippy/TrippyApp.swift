@@ -804,6 +804,60 @@ private enum ResearchTransport {
     }
 }
 
+private enum ResearchDiagnostics {
+    static func phaseStates(_ root: [String: Any]) -> [Int: String] {
+        let report = root["pipeline_report"] as? [String: Any] ?? [:]
+        let diagnostics = root["diagnostics"] as? [String: Any] ?? [:]
+        let raw = report["phase_states"] as? [String: String] ?? diagnostics["phase_states"] as? [String: String] ?? [:]
+        return Dictionary(uniqueKeysWithValues: raw.compactMap { key, value in
+            guard ["2", "3", "4"].contains(key), let phase = Int(key), ["completed", "failed", "skipped", "empty"].contains(value) else { return nil }
+            return (phase, value)
+        })
+    }
+    static func phaseDetail(_ state: String?) -> String? {
+        switch state {
+        case "failed": "Απέτυχε · δες τα στοιχεία υποστήριξης"
+        case "skipped": "Παραλείφθηκε · δες τα στοιχεία έρευνας"
+        case "empty": "Δεν προέκυψαν στάσεις για το πρόγραμμα"
+        default: nil
+        }
+    }
+    static func identifier(_ value: Any?) -> String? {
+        guard let text = value as? String, !text.isEmpty, text.count <= 120,
+              text.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_-.$[]".contains($0)) }) else { return nil }
+        return text
+    }
+    static func summary(_ root: [String: Any]) -> String? {
+        let report = root["pipeline_report"] as? [String: Any] ?? [:]
+        let diagnostics = root["diagnostics"] as? [String: Any] ?? report["diagnostics"] as? [String: Any] ?? [:]
+        guard !report.isEmpty || !diagnostics.isEmpty else { return nil }
+        var lines: [String] = []
+        if let support = identifier(root["support_id"] ?? report["support_id"]) { lines.append("Support ID: " + support) }
+        if let build = identifier(root["build_commit"] ?? report["build_commit"]) { lines.append("Build: " + build) }
+        if let count = diagnostics["completed_provider_stages"] as? Int { lines.append("Ολοκληρωμένες κλήσεις/στάδια: \(count)") }
+        if let count = diagnostics["place_count"] as? Int ?? report["places_researched"] as? Int { lines.append("Επιλογές: \(count)") }
+        if let count = diagnostics["scheduled_stops"] as? Int ?? report["scheduled_stops"] as? Int { lines.append("Στάσεις: \(count)") }
+        if let elapsed = diagnostics["elapsed_seconds"] as? Double, elapsed.isFinite, (0...86400).contains(elapsed) { lines.append("Διάρκεια: \(Int(elapsed)) δευτ.") }
+        for (phase, state) in phaseStates(root).sorted(by: { $0.key < $1.key }) { lines.append("Βήμα \(phase): \(state)") }
+        let failures = report["failed_stages"] as? [[String: Any]] ?? []
+        if let failure = diagnostics["last_failure"] as? [String: Any] ?? failures.first {
+            lines.append("Αποτυχία:")
+            for key in ["task", "stage", "code", "error_type", "field_path", "parameter", "reason"] {
+                if let value = identifier(failure[key]) { lines.append("\(key): \(value)") }
+            }
+            if let status = failure["http_status"] as? Int, (100...599).contains(status) { lines.append("HTTP: \(status)") }
+        }
+        for event in (diagnostics["events"] as? [[String: Any]] ?? []).suffix(12) {
+            let parts = ["event", "task", "stage", "reason"].compactMap { identifier(event[$0]) }
+            if !parts.isEmpty { lines.append(parts.joined(separator: " · ")) }
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+    static func hasPlaces(_ root: [String: Any]) -> Bool {
+        !(root["places"] as? [[String: Any]] ?? []).isEmpty
+    }
+}
+
 private struct Trip: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var brief: TripBrief
@@ -1055,6 +1109,7 @@ private struct TripFlowView: View {
     @State private var liveResearchError: String? = nil
     @State private var liveResearchDiagnostic: String? = nil
     @State private var researchNeedsNewRequest = false
+    @State private var researchPhaseStates: [Int: String] = [:]
     @State private var liveResearchTask: Task<Void, Never>? = nil
     @State private var calendarDisplayedMonth = Date()
     @State private var destinationSuggestions: [DestinationSuggestion] = []
@@ -2405,6 +2460,14 @@ private struct TripFlowView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(quality["gaps"] as? [String] ?? [], id: \.self) { Text($0).font(PlanType.body) }
                     }.padding(.top, 12)
+                }.font(PlanType.detail)
+            }
+            if let diagnostics = ResearchDiagnostics.summary(researchRoot) {
+                DisclosureGroup("Στοιχεία έρευνας και υποστήριξης") {
+                    Text(diagnostics).font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled).padding(.top, 12)
+                    Button("Αντιγραφή στοιχείων") { UIPasteboard.general.string = diagnostics }
+                        .font(PlanType.detail).padding(.top, 8)
                 }.font(PlanType.detail)
             }
             if dayRecords.isEmpty { Text("Δεν υπάρχει ακόμη ημερήσιο πρόγραμμα. Οι διαθέσιμες επιλογές βρίσκονται στα Μέρη.").font(PlanType.body) }
@@ -3768,6 +3831,7 @@ private struct TripFlowView: View {
         liveResearchError = nil
         liveResearchDiagnostic = nil
         researchNeedsNewRequest = false
+        researchPhaseStates = [:]
         recoverableResearch = nil
         liveResearchStep = 1
         researchOperations = [ResearchOperation(step: 1, detail: "Συνδεόμαστε με την υπηρεσία έρευνας…")]
@@ -3884,6 +3948,7 @@ private struct TripFlowView: View {
 
                     await MainActor.run {
                         completedResearchSteps = ResearchOperation.completedPhases(completedPhases).union([1])
+                        researchPhaseStates = ResearchDiagnostics.phaseStates(json)
                         if let phase = ResearchOperation.phase(serverStep: step, task: currentTask) {
                             recordResearchOperation(phase, detail: msg)
                         }
@@ -3904,7 +3969,7 @@ private struct TripFlowView: View {
                             researchNeedsNewRequest = true
                             liveResearchError = step == "interrupted" ? "Η έρευνα διακόπηκε στην υπηρεσία. Μπορείς να ξεκινήσεις νέα έρευνα. Το αποθηκευμένο πλάνο και οι επιλογές σου διατηρούνται." : (msg.isEmpty ? "Η υπηρεσία δεν μπόρεσε να ολοκληρώσει την έρευνα. Μπορείς να ξεκινήσεις νέο αίτημα." : msg)
                             if serverErrorCode.count < 100 && serverErrorCode.allSatisfy({ $0.isASCII && ($0.isLetter || $0 == "_") }) {
-                                liveResearchDiagnostic = "status: " + serverErrorCode
+                                liveResearchDiagnostic = "status: " + serverErrorCode + "\n" + (ResearchDiagnostics.summary(json) ?? "")
                             }
                             isResearching = false
                         }
@@ -3974,6 +4039,20 @@ private struct TripFlowView: View {
 
     private func finishLiveResearch(_ result: [String: Any], context: [String: Any], recover: Bool = false, targetTripID: UUID? = nil) {
         let document = recover ? Self.foundationFromLiveResult(result, context: context) : result
+        liveResearchDiagnostic = ResearchDiagnostics.summary(document)
+        researchPhaseStates = ResearchDiagnostics.phaseStates(document)
+        guard ResearchDiagnostics.hasPlaces(document) else {
+            completedResearchSteps.remove(4)
+            researchPhaseStates[4] = "empty"
+            liveResearchError = "Δεν δημιουργήθηκε πλάνο: η έρευνα δεν επέστρεψε επιλογές. Το προηγούμενο πλάνο και οι αλλαγές σου διατηρούνται."
+            isResearching = false
+            researchNeedsNewRequest = true
+            if let index = trips.firstIndex(where: { $0.id == (targetTripID ?? activeTripID) }) {
+                trips[index].researchJobID = nil; trips[index].researchBridgeURL = nil
+                TripStorage.save(trips)
+            }
+            return
+        }
         completedResearchSteps = ResearchOperation.completedPhases((document["pipeline_report"] as? [String: Any])?["completed_research_phases"] as? [Int] ?? []).union(recover ? [] : [1])
         guard let data = try? JSONSerialization.data(withJSONObject: document),
               let text = String(data: data, encoding: .utf8) else {
@@ -4049,6 +4128,7 @@ private struct TripFlowView: View {
             resuming: trips.first(where: { $0.id == researchResultTripID })?.researchJobID != nil,
             needsNewRequest: researchNeedsNewRequest,
             diagnostic: liveResearchDiagnostic,
+            phaseStates: researchPhaseStates,
             onClose: { cancelLiveResearch() },
             onRetry: { startLiveResearch() },
             onSettings: { researchOpenSettingsAfterDismiss = true; cancelLiveResearch() },
@@ -6249,6 +6329,7 @@ private struct ResearchProgressScreen: View {
     let resuming: Bool
     var needsNewRequest: Bool = false
     var diagnostic: String? = nil
+    var phaseStates: [Int: String] = [:]
     let onClose: () -> Void
     let onRetry: () -> Void
     let onSettings: () -> Void
@@ -6344,6 +6425,13 @@ private struct ResearchProgressScreen: View {
                     }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                         .background(AppPalette.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
                 }
+                if saved, let diagnostic {
+                    DisclosureGroup("Στοιχεία έρευνας και υποστήριξης") {
+                        Text(diagnostic).font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled).padding(.top, 8)
+                        Button("Αντιγραφή στοιχείων") { UIPasteboard.general.string = diagnostic }
+                    }.font(.custom("PlusJakartaSans-Regular", size: 13, relativeTo: .caption))
+                }
             }.padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 24)
                 .frame(maxWidth: 620).frame(maxWidth: .infinity)
         }
@@ -6359,7 +6447,8 @@ private struct ResearchProgressScreen: View {
     private func stepRow(_ operation: ResearchOperation) -> some View {
         let done = completedSteps.contains(operation.step)
         let active = operation.step == currentStep && running && error == nil
-        let stopped = operation.step == currentStep && error != nil
+        let phaseState = phaseStates[operation.step]
+        let stopped = phaseState == "failed" || (phaseState == nil && operation.step == currentStep && error != nil)
         let reached = done || active || stopped
         return HStack(alignment: .top, spacing: 16) {
             VStack(spacing: 0) {
@@ -6374,7 +6463,7 @@ private struct ResearchProgressScreen: View {
                     Text(operation.title).font(.custom("PlusJakartaSans-SemiBold", size: 16, relativeTo: .body))
                     if done { Image(systemName: "checkmark").font(.system(size: 13, weight: .semibold)).foregroundStyle(AppPalette.secondaryInk) }
                 }
-                Text(stopped ? "Περιμένει συνέχεια" : done ? "Ολοκληρώθηκε" : saved ? "Δεν ολοκληρώθηκε" : operation.detail)
+                Text(done ? "Ολοκληρώθηκε" : ResearchDiagnostics.phaseDetail(phaseState) ?? (stopped ? "Περιμένει συνέχεια" : saved ? "Δεν ολοκληρώθηκε" : operation.detail))
                     .font(.custom("PlusJakartaSans-Regular", size: 13, relativeTo: .caption))
                     .foregroundStyle(AppPalette.secondaryInk)
                     .fixedSize(horizontal: false, vertical: true)

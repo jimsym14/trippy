@@ -13,6 +13,7 @@ from research_pipeline import build_scout_prompt, trip_dates
 from .planning_contract import BATCH_SCHEMA, categories, normalized_brief, validate_batch
 from .plan_engine import compose_plan, digest, merge_batches
 from .research_context import selected_dataset, task_context, inventory_context
+from .diagnostics import failure_details
 
 VERSION = 'trip-pipeline-v1'
 SYSTEM = '''You normalize supplied Trippy research into the exact ResearchBatch schema.
@@ -61,6 +62,7 @@ class StageStore:
         text=json.dumps(value,ensure_ascii=False,indent=2,allow_nan=False)
         temporary=path.with_suffix('.tmp'); temporary.write_text(text); os.chmod(temporary,0o600); temporary.replace(path)
     def run(self, stage_id, payload, action):
+        self.active_stage=stage_id
         fingerprint=digest({'pipeline':VERSION,'stage':stage_id,'payload':payload})
         with closing(sqlite3.connect(self.database)) as db, db:
             db.execute('BEGIN IMMEDIATE')
@@ -94,9 +96,13 @@ identity/location, fit, duration, prices and date checks. Missing fields need ta
 '''+json.dumps(context,ensure_ascii=False)
     if len(prompt.encode())>180000: raise ValueError('Research context exceeds the bounded input allowance; narrow the task')
     progress('searching_web',task['id'])
+    progress('task_started',{'task':task['id'],'stage':'web_research'})
     research=store.run(task['id']+'-research',payload,lambda:provider.research(prompt,task['id']))
     if not isinstance(research,dict) or not isinstance(research.get('text'),str) or not research['text'].strip(): raise ValueError('Empty web research output')
+    progress('task_completed',{'task':task['id'],'stage':'web_research',
+        'text_characters':len(research['text']),'citation_count':len(research.get('citation_urls',[]))})
     progress('synthesizing_patch',task['id'])
+    progress('task_started',{'task':task['id'],'stage':'luna_normalization'})
     payload={**payload,'research':research}
     def normalize():
         candidate=validate_batch(provider.normalize(SYSTEM,payload,BATCH_SCHEMA,task['id']))
@@ -112,7 +118,10 @@ identity/location, fit, duration, prices and date checks. Missing fields need ta
         for source in candidate['sources']:
             if source['url'] not in supplied: raise ValueError('Normalizer invented a source URL')
         return candidate
-    return store.run(task['id']+'-normalize',payload,normalize)
+    result=store.run(task['id']+'-normalize',payload,normalize)
+    progress('task_completed',{'task':task['id'],'stage':'luna_normalization',
+        'place_count':len(result['places']),'source_count':len(result['sources'])})
+    return result
 
 
 def run(brief, *, provider, directory, root, progress=None, dataset=None, route_provider=None):
@@ -128,6 +137,13 @@ def run(brief, *, provider, directory, root, progress=None, dataset=None, route_
     if marker.exists() and json.loads(marker.read_text())!=inputs: raise ValueError('Resume requires identical brief, evidence edition and research date')
     store.write('run-input',inputs)
     tasks=task_matrix(brief); batches=[]; failures=[]; completed_tasks=[]; completed_phases=[]
+    progress('pipeline_started',{'planned_discovery_tasks':len(tasks)})
+    def record_failure(task, exc):
+        active=getattr(store,'active_stage','')
+        stage='luna_normalization' if active==task['id']+'-normalize' else 'web_research' if active==task['id']+'-research' else 'research_context'
+        failure=failure_details(exc,task=task['id'],stage=stage)
+        failures.append(failure)
+        progress('task_failed',failure)
     for task in tasks:
         context=task_context(dataset,task,brief)
         context['local_inventory']=inventory_context(root,brief['destination'],task)
@@ -138,12 +154,14 @@ def run(brief, *, provider, directory, root, progress=None, dataset=None, route_
             batches.append(grounded_batch(provider,task,brief,context,store,progress))
             completed_tasks.append(task["id"])
         except Exception as exc:
-            failures.append({'task':task['id'],'error_type':type(exc).__name__})
+            record_failure(task,exc)
             # Retain completed evidence and stop new paid dispatch after a failure.
             break
     if not failures:
         completed_phases.append(2)
         progress('phase_completed','discovery')
+    else:
+        progress('phase_skipped',{'phase':3,'reason':'discovery_failed'})
     document=merge_batches(batches,brief)
     progress('composing','source_based_draft')
     draft=compose_plan(document,brief,route_provider=route_provider)
@@ -165,19 +183,27 @@ def run(brief, *, provider, directory, root, progress=None, dataset=None, route_
             batches.append(grounded_batch(provider,task,brief,context,store,progress))
             completed_tasks.append(task["id"])
         except Exception as exc:
-            failures.append({'task':task['id'],'error_type':type(exc).__name__}); break
+            record_failure(task,exc); break
     if not failures and shortlist:
         completed_phases.append(3)
         progress('phase_completed','checks')
     progress('composing','constraints_routes_costs')
     result=compose_plan(merge_batches(batches,brief),brief,route_provider=route_provider)
-    completed_phases.append(4)
-    progress('phase_completed','composition')
+    stop_count=sum(len(day['stops']) for day in result['itinerary']['days'])
+    if stop_count:
+        completed_phases.append(4)
+        progress('phase_completed','composition')
+    else:
+        progress('phase_skipped',{'phase':4,'reason':'no_scheduled_stops'})
     result['pipeline_report']={'completed_research_phases':completed_phases,
         'completed_task_ids':completed_tasks, 'version':VERSION,'dataset_version':dataset['version'],
         'dataset_state':dataset['state'],'tasks':len(tasks)+(len(shortlist[:48])+3)//4,
         'source_occurrences_available':len(dataset['candidates']),
         'places_researched':len(result['places']),'scheduling_owned_by':'deterministic_engine',
+        'scheduled_stops':stop_count,
+        'phase_states':{'2':'completed' if 2 in completed_phases else 'failed',
+            '3':'completed' if 3 in completed_phases else 'failed' if any(f['task'].startswith('selected-checks-') for f in failures) else 'skipped',
+            '4':'completed' if 4 in completed_phases else 'empty'},
         'checks_owned_by':'source_research_with_explicit_pending_states',
         'unresolved_preferences':[x for x in brief['interests']+brief['preference_tags'] if canonical_unknown(x)],
         'unchecked_shortlist_count':max(0,len(shortlist)-48), 'failed_stages':failures,
@@ -194,6 +220,11 @@ def run(brief, *, provider, directory, root, progress=None, dataset=None, route_
     if brief.get('custom_instructions'):
         result['plan_validation']['pending'].append({'code':'custom_instructions_need_review','details':brief['custom_instructions']})
         result['plan_validation']['status']='needs_checks'; result['delivery_status']='partial'
+    if not result['places']:
+        result['delivery_status']='failed'
+        result['quality_report']['status']='failed'
+        result['pipeline_report']['failure_code']=failures[0]['code'] if failures else 'no_candidates'
+        result['quality_report']['gaps'].insert(0,'Δεν δημιουργήθηκε πλάνο: η έρευνα δεν επέστρεψε κανένα αξιοποιήσιμο μέρος.')
     store.write('trippy-research',result)
     progress('completed' if result['delivery_status']=='ready' else 'partial','delivery')
     return result

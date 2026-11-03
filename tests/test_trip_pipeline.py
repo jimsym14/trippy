@@ -177,7 +177,7 @@ class TripPipelineTests(unittest.TestCase):
         provider.research=lambda *_:{'text':'No URLs supplied','citation_urls':[]}
         with tempfile.TemporaryDirectory() as folder:
             result=run(BRIEF,provider=provider,directory=folder,root=folder,dataset=EMPTY_DATASET)
-            self.assertFalse(result['places']); self.assertEqual(result['delivery_status'],'partial')
+            self.assertFalse(result['places']); self.assertEqual(result['delivery_status'],'failed')
 
     def test_real_selected_edition_is_read_only_research_context(self):
         root=Path(__file__).resolve().parents[1]

@@ -71,6 +71,16 @@ checks = r'''
         precondition(trip == expected, "recovery preserves research and every user field")
         let restored = try JSONDecoder().decode(Trip.self, from: JSONEncoder().encode(trip))
         precondition(restored == expected)
+        precondition(!ResearchDiagnostics.hasPlaces(["places": []]))
+        precondition(ResearchDiagnostics.hasPlaces(["places": [["id": "p1"]]]))
+        let diagnostic = ResearchDiagnostics.summary(["pipeline_report": ["places_researched": 0,
+            "failed_stages": [["task": "discovery-food-1", "stage": "web_response", "http_status": 400,
+                "code": "provider_request_rejected", "error_type": "secret=https://private.test"]]]])!
+        precondition(diagnostic.contains("HTTP: 400") && diagnostic.contains("web_response"))
+        precondition(!diagnostic.contains("secret") && !diagnostic.contains("private.test"))
+        let phases = ResearchDiagnostics.phaseStates(["pipeline_report": ["phase_states": ["2": "failed", "3": "skipped", "4": "empty", "5": "completed"]]])
+        precondition(phases == [2: "failed", 3: "skipped", 4: "empty"])
+        precondition(ResearchDiagnostics.phaseDetail(phases[3])!.contains("Παραλείφθηκε"))
         print("PASS: missing job, readiness, sanitized diagnostics, bounded GET retries, no POST retries, storage recovery")
     }
 }

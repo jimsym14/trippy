@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 from trippy.sources.luna import BudgetError, make_provider, positive, reserve_cost
 from trippy_config import configured, valid_url
+from .diagnostics import ResearchProviderError
 
 
 class ResearchConfigurationError(BudgetError):
@@ -54,14 +55,19 @@ class AzureResearchProvider:
         request_id=reserve_cost(self.ledger,self.web_reservation,self.cap,self.currency,
             group='trip-web',chunk_id=task_id)
         folder=self.ledger.parent/'trip-web-receipts'; folder.mkdir(exist_ok=True,mode=0o700)
+        stage='web_conversation'
         try:
             conversation=self.agent.conversations.create()
+            stage='web_response'
             response=self.agent.responses.create(conversation=conversation.id,
                 input=[{'role':'user','content':prompt}],max_output_tokens=6000,max_tool_calls=4)
             raw=response.model_dump()
             (folder/f'{request_id}.json').write_text(json.dumps(raw,ensure_ascii=False))
-            if getattr(response,'status',None)!='completed' or not response.output_text:
-                raise ValueError('Web research did not complete; receipt retained')
+            if getattr(response,'status',None)!='completed':
+                raise ResearchProviderError(stage,'web_response_incomplete',
+                    reason=getattr(getattr(response,'incomplete_details',None),'reason',None))
+            if not response.output_text:
+                raise ResearchProviderError(stage,'web_response_empty')
             citations=[]
             for output in raw.get('output',[]):
                 for content in output.get('content',[]):
@@ -72,6 +78,12 @@ class AzureResearchProvider:
         except Exception as exc:
             (folder/f'{request_id}-failure.json').write_text(json.dumps({'status':'uncertain','type':type(exc).__name__,
                 'reservation_retained':True,'task':task_id}))
-            raise ValueError('Web request failed; inspect the retained receipt before retrying') from None
+            if isinstance(exc,ResearchProviderError): raise
+            status=getattr(exc,'status_code',None)
+            body=getattr(exc,'body',None)
+            error=body.get('error',body) if isinstance(body,dict) else {}
+            parameter=error.get('param') if isinstance(error,dict) else None
+            kind='provider_request_rejected' if status in {400,401,403,404,422} else 'provider_temporarily_unavailable' if status in {408,429,500,502,503,504} else 'sdk_incompatible' if isinstance(exc,(AttributeError,TypeError)) else 'web_request_failed'
+            raise ResearchProviderError(stage,kind,http_status=status,parameter=parameter) from None
     def normalize(self, system, payload, schema, task_id):
         return self.normalize_call({'id':task_id,'system_prompt':system,'payload':payload,'response_schema':schema})
