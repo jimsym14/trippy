@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import threading
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -76,6 +76,36 @@ def google_places_json(path, api_key, *, body=None, field_mask=None):
     with urlopen(request,timeout=12) as response:
         payload=response.read(2_000_000)
     return json.loads(payload)
+
+
+_catalog_engine = None
+_catalog_lock = threading.Lock()
+
+def retain_google_references(records):
+    """Persist IDs/source tags only. Never store Google photos, ratings or reviews.
+
+    This catalog has no delete path and is independent of personal library items.
+    DATABASE_URL is server-only; no database credential goes to the iOS client.
+    """
+    global _catalog_engine
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.engine import make_url
+    with _catalog_lock:
+        if _catalog_engine is None:
+            url = read_environment(root()/'.env').get('DATABASE_URL', '').strip()
+            if not url:
+                raise RuntimeError('place_catalog_not_configured')
+            _catalog_engine = create_engine(make_url(url).set(drivername="postgresql+psycopg"), hide_parameters=True, pool_pre_ping=True, pool_size=2, max_overflow=2,
+                connect_args={'connect_timeout': 4})
+    with _catalog_engine.begin() as connection:
+        connection.execute(text("SET LOCAL statement_timeout = '4000ms'"))
+        for record in records:
+            connection.execute(text("""
+                INSERT INTO trippy_catalog.google_place_references(place_id, sources)
+                VALUES (:id, ARRAY[CAST(:source AS text)])
+                ON CONFLICT (place_id) DO UPDATE SET sources = ARRAY(
+                    SELECT DISTINCT unnest(trippy_catalog.google_place_references.sources || excluded.sources))
+            """), {'id': record['placeID'], 'source': record['source']})
 
 
 def root(): return Path(__file__).resolve().parent
@@ -196,18 +226,24 @@ def read_job(job_id):
 
 class RequestHandler(BaseHTTPRequestHandler):
     def send_json(self,status,payload):
+        path = urlsplit(self.path).path
+        if path.startswith('/api/places/'):
+            logging.info('Places response route=%s status=%s code=%s', path, status,
+                payload.get('errorCode') or payload.get('error') or 'ok')
         self.send_response(status)
         self.send_header('Content-Type','application/json; charset=utf-8')
         self.send_header('Cache-Control','no-store')
         self.end_headers()
-        self.wfile.write(json.dumps(payload,ensure_ascii=False,allow_nan=False).encode())
+        try: self.wfile.write(json.dumps(payload,ensure_ascii=False,allow_nan=False).encode())
+        except (BrokenPipeError, ConnectionResetError): pass
     def send_image(self,status,content_type,payload):
         self.send_response(status)
         self.send_header('Content-Type',content_type)
         self.send_header('Cache-Control','no-store, max-age=0')
         self.send_header('X-Content-Type-Options','nosniff')
         self.end_headers()
-        self.wfile.write(payload)
+        try: self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError): pass
     def google_places(self,target):
         if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return True
         api_key=places_key()
@@ -268,11 +304,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 place_id=query.get('place_id',[''])[0].strip()
                 if not place_id or len(place_id)>180 or any(char not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for char in place_id):
                     self.send_json(422,{'error':'invalid_place_id'}); return True
+                # Request documented top-level collections. Nested repeated-field
+                # masks vary across API revisions and must not break the whole card.
                 fields=','.join(['id','displayName','formattedAddress','location','primaryTypeDisplayName','rating','userRatingCount',
-                    'regularOpeningHours.weekdayDescriptions','currentOpeningHours.openNow','currentOpeningHours.weekdayDescriptions',
-                    'internationalPhoneNumber','websiteUri','googleMapsUri','editorialSummary','photos.name','photos.authorAttributions',
-                    'reviews.rating','reviews.text','reviews.publishTime','reviews.relativePublishTimeDescription','reviews.visitDate','reviews.authorAttribution','reviews.googleMapsUri',
-                    'photos.googleMapsUri'])
+                    'regularOpeningHours','currentOpeningHours','internationalPhoneNumber','websiteUri','googleMapsUri',
+                    'editorialSummary','photos','reviews'])
                 place=google_places_json('places/'+quote(place_id,safe=''),api_key,field_mask=fields)
                 photos=[]
                 for photo in place.get('photos',[])[:8]:
@@ -298,7 +334,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return True
             if target.path=='/api/places/photo':
                 name=query.get('name',[''])[0]
-                if not name.startswith('places/') or '/photos/' not in name or len(name)>500:
+                if not name.startswith('places/') or '/photos/' not in name or len(name)>4096:
                     self.send_json(422,{'error':'invalid_photo_reference'}); return True
                 try: width=max(160,min(1600,int(query.get('max_width',['960'])[0])))
                 except ValueError: width=960
@@ -348,6 +384,25 @@ class RequestHandler(BaseHTTPRequestHandler):
         if job is None: self.send_json(404,{'error':'job_not_found'}); return
         self.send_json(200,{**capabilities,**job,'has_result':job['result'] is not None})
     def do_POST(self):
+        if urlsplit(self.path).path == '/api/places/retain':
+            if not places_access_allowed(self): self.send_json(401, {'error': 'access_token_required'}); return
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length <= 50000: raise ValueError('invalid_length')
+                records = json.loads(self.rfile.read(length)).get('places')
+                if not isinstance(records, list) or not 0 < len(records) <= 100: raise ValueError('invalid_records')
+                for record in records:
+                    identifier = record.get('placeID', '')
+                    if not isinstance(identifier, str) or not 0 < len(identifier) <= 180 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in identifier): raise ValueError('invalid_id')
+                    if record.get('source') not in ('pins', 'saves', 'trips', 'videos', 'viewed'): raise ValueError('invalid_source')
+            except (ValueError, TypeError, AttributeError):
+                self.send_json(422, {'error': 'invalid_place_references'}); return
+            try:
+                retain_google_references(records)
+            except Exception:
+                logging.warning('Place reference catalog write failed; provider content was not stored.')
+                self.send_json(503, {'error': 'place_catalog_unavailable'}); return
+            self.send_json(200, {'retained': len(records)}); return
         if urlsplit(self.path).path!='/api/research': self.send_json(404,{'error':'not_found'}); return
         try:
             length=int(self.headers.get('Content-Length','0'))
@@ -364,7 +419,8 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 
 def run_server(port=8080):
-    server=HTTPServer(('0.0.0.0',port),RequestHandler)
+    logging.basicConfig(level=logging.INFO)
+    server=ThreadingHTTPServer(('0.0.0.0',port),RequestHandler)
     print(f'Trippy planning bridge listening on port {port}')
     try: server.serve_forever()
     except KeyboardInterrupt: pass
