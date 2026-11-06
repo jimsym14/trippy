@@ -1607,6 +1607,9 @@ private struct TripFlowView: View {
     @State private var selectedTravelNoteID: UUID?
     @State private var processingShares = false
     @State private var runningSocialExtractions = false
+    @State private var shareSummary: ShareSummary?
+    @AppStorage("trippy.shareSummary.lastSeen") private var shareSummaryLastSeen: Double = 0
+    @AppStorage("trippy.shareSummary.enabled") private var shareSummaryEnabled = true
     @State private var importSourceURL = ""
     @State private var showImportLink = false
     @State private var showAddSocialPlace = false
@@ -1656,6 +1659,7 @@ private struct TripFlowView: View {
     @State private var liveResearchDiagnostic: String? = nil
     @State private var researchNeedsNewRequest = false
     @State private var researchPhaseStates: [Int: String] = [:]
+    @State private var planningLive = PlanningLive()
     @State private var liveResearchTask: Task<Void, Never>? = nil
     @State private var calendarDisplayedMonth = Date()
     @State private var destinationSuggestions: [DestinationSuggestion] = []
@@ -1722,6 +1726,11 @@ private struct TripFlowView: View {
         ZStack {
             if didBootstrap {
                 appContent
+                    .sheet(item: $shareSummary, onDismiss: { shareSummaryLastSeen = Date.now.timeIntervalSince1970 }) { summary in
+                        ShareSummarySheet(summary: summary, onDone: { shareSummary = nil },
+                                          onOpenStudio: { shareSummary = nil; librarySection = "Videos"; rootTab = "library" },
+                                          onStopShowing: { shareSummaryEnabled = false; shareSummary = nil })
+                    }
             }
             // Preserve the SVG web view while stored data and MapKit become ready.
         }
@@ -1737,6 +1746,11 @@ private struct TripFlowView: View {
             socialSources = stored.socialLibrary.sources
             socialPlaces = stored.socialLibrary.places
             travelNotes = stored.socialLibrary.notes
+            if let demo = StudioDemo.load() {
+                socialSources = demo.sources; socialPlaces = demo.places
+                rootTab = "library"; librarySection = "Videos"
+                if StudioDemo.opensDetail { Task { try? await Task.sleep(for: .seconds(1.5)); selectedSocialSource = demo.sources.first } }
+            }
             cachedGeneralTripPins = makeGeneralTripPins()
             TrippyPerformance.mark("pins.prepared")
             withAnimation(.easeOut(duration: 0.22)) { didBootstrap = true }
@@ -1749,8 +1763,14 @@ private struct TripFlowView: View {
             case "composer": openComposer(for: nil)
             case "been": rootTab = "library"; libraryHasMounted = true; librarySection = "World"
             case "pins": rootTab = "library"; libraryHasMounted = true; librarySection = "Pins"
-            case "research": brief.destination = "Barcelona"; liveResearchStep = 2; isResearching = true
-                researchOperations = [ResearchOperation(step: 1, detail: "Connected")]; showLiveResearchSheet = true
+            case "research": brief.destination = PlanningLive.demo == nil ? "Barcelona" : "Rome"; liveResearchStep = 2; isResearching = true
+                researchOperations = [ResearchOperation(step: 1, detail: "Connected")]
+                if let demo = PlanningLive.demo {
+                    planningLive = demo; researchDestination = "Rome"
+                    if demo.finished { isResearching = false; researchSaved = true }
+                    if demo.notesStatus == "failed" { researchPartial = true }
+                }
+                showLiveResearchSheet = true
             default: break
             }
             #endif
@@ -4607,6 +4627,8 @@ private struct TripFlowView: View {
         recoverableResearch = nil
         liveResearchStep = 1
         researchOperations = [ResearchOperation(step: 1, detail: "Connecting to the planning service…")]
+        planningLive = PlanningLive(startedAt: .now, libraryItems: planningLibraryNodes.filter(\.include).count,
+                                    tripDays: max(brief.duration, 1), travelers: brief.travelers)
         showLiveResearchSheet = true
 
         let briefContext: [String: Any] = [
@@ -4728,6 +4750,7 @@ private struct TripFlowView: View {
                     await MainActor.run {
                         completedResearchSteps = ResearchOperation.completedPhases(completedPhases).union([1])
                         researchPhaseStates = ResearchDiagnostics.phaseStates(json)
+                        planningLive.absorb(status: json)
                         if let phase = ResearchOperation.phase(serverStep: step, task: currentTask) {
                             recordResearchOperation(phase, detail: msg)
                         }
@@ -4908,6 +4931,7 @@ private struct TripFlowView: View {
             needsNewRequest: researchNeedsNewRequest,
             diagnostic: liveResearchDiagnostic,
             phaseStates: researchPhaseStates,
+            live: planningLive,
             onClose: { cancelLiveResearch() },
             onRetry: { startLiveResearch() },
             onSettings: { researchOpenSettingsAfterDismiss = true; cancelLiveResearch() },
@@ -6666,7 +6690,7 @@ private extension TripFlowView {
     private var libraryCollectionTitle: String {
         switch librarySection {
         case "Pins": "Pins and saves"
-        case "Videos": "Saved videos"
+        case "Videos": "Video studio"
         case "World": "Been to"
         case "Notes": "Notes"
         default: "Your trips"
@@ -11061,6 +11085,135 @@ private struct TrippyMapCanvas<Header: View>: View {
 }
 
 // A full-screen journey, with the supplied brand artwork as its signature detail.
+// MARK: - Planning workshop (live planning screen)
+/// What the planner is doing, read from the service's status JSON (diagnostics events + result).
+struct PlanningLive: Equatable {
+    struct Search: Equatable { let category: String; var count: Int?; var failed = false }
+    struct DayPreview: Equatable, Identifiable { let id: Int; let date: String; let title: String; let summary: String; let stops: Int }
+    var connected = false
+    var startedAt: Date? = nil
+    var libraryItems = 0
+    var tripDays = 0
+    var travelers = 0
+    var plannedSearches: Int? = nil
+    var searches: [Search] = []
+    var composing = false
+    var guideStarted = false
+    var guideListings: Int? = nil
+    var guideMatched: Int? = nil
+    var notesStarted = false
+    var notesStatus: String? = nil
+    var notesModel: String? = nil
+    var notesWritten: Int? = nil
+    var elapsed: Double? = nil
+    var places: Int? = nil
+    var stops: Int? = nil
+    var days: [DayPreview] = []
+    var finished = false
+
+    var placesFound: Int { searches.compactMap(\.count).reduce(0, +) }
+
+    mutating func absorb(status json: [String: Any]) {
+        connected = true
+        let diagnostics = json["diagnostics"] as? [String: Any] ?? [:]
+        if let value = diagnostics["elapsed_seconds"] as? Double { elapsed = value }
+        if let value = diagnostics["planned_discovery_tasks"] as? Int { plannedSearches = value }
+        for event in diagnostics["events"] as? [[String: Any]] ?? [] {
+            let name = event["event"] as? String ?? ""
+            let task = event["task"] as? String ?? ""
+            switch name {
+            case "pipeline_started": plannedSearches = event["planned_discovery_tasks"] as? Int ?? plannedSearches
+            case "task_started" where task.hasPrefix("places-"):
+                let category = String(task.dropFirst(7))
+                if !searches.contains(where: { $0.category == category }) { searches.append(Search(category: category)) }
+            case "task_completed" where task.hasPrefix("places-"):
+                if let index = searches.firstIndex(where: { $0.category == String(task.dropFirst(7)) }) { searches[index].count = event["place_count"] as? Int ?? 0 }
+            case "task_failed" where task.hasPrefix("places-"):
+                if let index = searches.firstIndex(where: { $0.category == String(task.dropFirst(7)) }) { searches[index].failed = true }
+            case "guide_started": composing = true; guideStarted = true
+            case "guide_completed": guideListings = event["listings"] as? Int; guideMatched = event["matched"] as? Int
+            case "notes_started": notesStarted = true
+            case "notes_completed":
+                notesStatus = event["status"] as? String; notesModel = event["model"] as? String; notesWritten = event["stops_written"] as? Int
+            default: break
+            }
+        }
+        if (json["step"] as? String) == "composing" { composing = true }
+        if let result = json["result"] as? [String: Any] { absorb(result: result) }
+    }
+
+    mutating func absorb(result: [String: Any]) {
+        finished = true; composing = true
+        places = (result["places"] as? [Any])?.count
+        let report = result["pipeline_report"] as? [String: Any] ?? [:]
+        if let notes = report["notes"] as? [String: Any] {
+            notesStatus = notesStatus ?? notes["status"] as? String
+            notesModel = notesModel ?? notes["model"] as? String
+            notesWritten = notesWritten ?? notes["stops_written"] as? Int
+        }
+        let rawDays = (result["itinerary"] as? [String: Any])?["days"] as? [[String: Any]] ?? []
+        days = rawDays.enumerated().map { index, day in
+            let stops = day["stops"] as? [[String: Any]] ?? []
+            let theme = (day["theme"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+            // Without notes the engine's placeholder theme says nothing; name the day by its first stops.
+            let named = stops.prefix(2).compactMap { $0["activity"] as? String }.joined(separator: " · ")
+            let title = theme.isEmpty || theme == "Η ημέρα σου" ? (named.isEmpty ? "Day \(index + 1)" : named) : theme
+            return DayPreview(id: index, date: day["date"] as? String ?? "", title: title,
+                              summary: day["summary"] as? String ?? "", stops: stops.count)
+        }
+        stops = days.map(\.stops).reduce(0, +)
+    }
+
+    static func categoryTitle(_ category: String) -> String {
+        switch category {
+        case "attraction": "Sights"; case "food": "Food"; case "coffee": "Coffee"; case "museum": "Museums"
+        case "nature": "Nature"; case "shopping": "Shops"; case "bar": "Bars"; case "club": "Clubs"; case "excursion": "Day trips"
+        default: category.capitalized
+        }
+    }
+
+    #if DEBUG
+    /// `-TrippyPlanningDemo search|notes|done|quota` for screenshots.
+    static var demo: PlanningLive? {
+        guard let stage = UserDefaults.standard.string(forKey: "TrippyPlanningDemo") else { return nil }
+        var live = PlanningLive(connected: true, startedAt: .now.addingTimeInterval(-38), libraryItems: 4, tripDays: 3, travelers: 2, plannedSearches: 3)
+        live.searches = [Search(category: "attraction", count: 12), Search(category: "food", count: stage == "search" ? nil : 10)]
+        if stage == "search" { return live }
+        live.searches.append(Search(category: "coffee", count: 6))
+        live.composing = true; live.guideStarted = true; live.guideListings = 99; live.guideMatched = 4; live.notesStarted = true
+        if stage == "notes" { return live }
+        live.notesStatus = stage == "quota" ? "failed" : "written"; live.notesModel = stage == "quota" ? nil : "gemini-3.6-flash"; live.notesWritten = 12
+        live.finished = true; live.places = 28; live.stops = 12; live.elapsed = 64
+        let titles = stage == "quota" ? ["Piazza Navona · Cantina e Cucina", "Pantheon · Tonnarello", "Colosseum · Trattoria Vecchia Roma"] : ["Piazzas and pasta", "Ancient Rome on foot", "Fountains and views"]
+        let summaries = stage == "quota" ? ["", "", ""] : ["Morning in the old squares, carbonara for lunch, Campo de' Fiori at golden hour.",
+                                                             "The Pantheon first, then the Forum while the light is soft.",
+                                                             "Colosseum at opening, Trevi before the crowds, dinner in Monti."]
+        live.days = (0..<3).map { DayPreview(id: $0, date: "2026-12-1\($0)", title: titles[$0], summary: summaries[$0], stops: 4) }
+        return live
+    }
+    #endif
+}
+
+/// The seven real steps of the personal-places pipeline.
+private enum PlanningStage: Int, CaseIterable, Identifiable {
+    case connect, library, search, guide, compose, notes, save
+    var id: Int { rawValue }
+    var title: String {
+        switch self {
+        case .connect: "Connect"; case .library: "Your saved places"; case .search: "Google Maps"
+        case .guide: "Local guide"; case .compose: "Build the days"; case .notes: "Write the notes"; case .save: "Save to your trip"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .connect: "network"; case .library: "heart.text.square"; case .search: "map"
+        case .guide: "book.pages"; case .compose: "calendar.day.timeline.left"; case .notes: "sparkles"; case .save: "tray.and.arrow.down"
+        }
+    }
+}
+
+private enum PlanningStepState: Equatable { case waiting, active, done, skipped, stopped }
+
 private struct ResearchProgressScreen: View {
     let destination: String
     let operations: [ResearchOperation]
@@ -11076,99 +11229,120 @@ private struct ResearchProgressScreen: View {
     var needsNewRequest: Bool = false
     var diagnostic: String? = nil
     var phaseStates: [Int: String] = [:]
+    var live = PlanningLive()
     let onClose: () -> Void
     let onRetry: () -> Void
     let onSettings: () -> Void
     let onRecover: () -> Void
     let onOpenPlan: () -> Void
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
 
-    private var title: String {
+    private var doodle: Doodle { Doodle.suggested(title: "", city: destination) }
+    private var city: String { destination.isEmpty ? "Your next trip" : destination }
+
+    // MARK: state of each step
+    private func state(_ stage: PlanningStage) -> PlanningStepState {
+        let halted = error != nil
+        let current = currentStage
+        switch stage {
+        case .save: return saved ? .done : (halted && current == .save ? .stopped : current == .save ? .active : .waiting)
+        case .notes:
+            if live.notesStatus == "written" { return .done }
+            if live.notesStatus != nil || (live.finished && !live.notesStarted) { return .skipped }
+            break
+        case .guide:
+            if live.guideListings != nil { return .done }
+            if live.finished && !live.guideStarted { return .skipped }
+        default: break
+        }
+        if stage.rawValue < current.rawValue { return .done }
+        if stage == current { return halted ? .stopped : (running ? .active : .waiting) }
+        return .waiting
+    }
+    private var currentStage: PlanningStage {
+        if saved { return .save }
+        if live.finished { return .save }
+        if live.notesStarted { return .notes }
+        if live.guideStarted { return live.guideListings == nil ? .guide : .notes }
+        if live.composing { return .compose }
+        if !live.searches.isEmpty { return live.searches.allSatisfy({ $0.count != nil }) && live.searches.count >= (live.plannedSearches ?? 0) ? .compose : .search }
+        if live.connected || currentStep >= 2 { return .library }
+        return .connect
+    }
+
+    private func detail(_ stage: PlanningStage) -> String {
+        switch stage {
+        case .connect: return live.connected || currentStep >= 2 ? "Planning service is on it" : "Reaching the planning service…"
+        case .library: return live.libraryItems > 0 ? "\(live.libraryItems) saved \(live.libraryItems == 1 ? "place goes" : "places go") in first" : "Starting fresh: no saved places for here yet"
+        case .search:
+            if live.placesFound > 0 { return "\(live.placesFound) places to choose from" }
+            return "Looking for what fits your interests…"
+        case .guide:
+            if let listings = live.guideListings {
+                if listings == 0 { return "No Wikivoyage article for this place" }
+                return "\(listings) Wikivoyage tips · \(live.guideMatched ?? 0) about your stops"
+            }
+            return state(.guide) == .skipped ? "Not used for this plan" : "Reading Wikivoyage for local knowledge…"
+        case .compose:
+            if let stops = live.stops, !live.days.isEmpty { return "\(stops) stops over \(live.days.count) \(live.days.count == 1 ? "day" : "days")" }
+            return "Grouping nearby places, meals at meal times"
+        case .notes:
+            switch live.notesStatus {
+            case "written": return "Day titles and a reason for each stop" + (live.notesModel.map { " · \(modelName($0))" } ?? "")
+            case "failed": return "Free Gemini quota is busy; saved without notes"
+            case .some: return "Skipped for this plan"
+            case nil: return live.finished ? "Notes are off on this service" : "Gemini writes every day in one go…"
+            }
+        case .save: return saved ? (partial ? "Saved · a few things to check" : "Saved to your trip") : "Keeping your edits and the new plan"
+        }
+    }
+    private func modelName(_ id: String) -> String {
+        id.replacingOccurrences(of: "gemini-", with: "Gemini ").replacingOccurrences(of: "-", with: " ").capitalized
+    }
+
+    private var headline: String {
         if saved { return partial ? "Your plan is here" : "Your trip is ready" }
         if needsServiceUpdate { return "Before we start" }
-        if error != nil { return "The plan needs to continue" }
-        return "Preparing your trip"
-    }
-    private var status: String {
-        if saved { return partial ? "Saved · some items need checking" : "Saved to your trip" }
-        if error != nil {
-            if needsNewRequest { return "Needs a new request" }
-            return needsServiceUpdate ? "Waiting for a service update" : "Status needs a check"
+        if error != nil { return "Planning paused" }
+        switch currentStage {
+        case .connect: return "Packing the request"
+        case .library: return "Starting from your places"
+        case .search: return "Scouting \(city)"
+        case .guide: return "Asking the locals"
+        case .compose: return "Drawing your days"
+        case .notes: return "Writing your days"
+        case .save: return "Almost there"
         }
-        return "\(completedSteps.count) of 5 steps done"
     }
-    private var doodle: Doodle { Doodle.suggested(title: "", city: destination) }
+    private var eyebrow: String {
+        var parts = ["PLANNING"]
+        if live.tripDays > 0 { parts.append("\(live.tripDays) \(live.tripDays == 1 ? "DAY" : "DAYS")") }
+        if live.travelers > 0 { parts.append("\(live.travelers) \(live.travelers == 1 ? "TRAVELLER" : "TRAVELLERS")") }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                HStack(spacing: 10) {
-                    TrippyIconView(icon: .suitcase, size: 20, weight: 2, animated: true).foregroundStyle(Sketch.clay)
-                    Text("trippy").font(Sketch.display(.headline, weight: .bold))
-                    Spacer()
-                    Button(action: onClose) {
-                        Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Sketch.ink)
-                            .frame(width: 44, height: 44).raisedCircle()
-                    }
-                    .buttonStyle(QuietPressStyle()).accessibilityLabel("Close")
-                }
+            VStack(alignment: .leading, spacing: 20) {
+                topBar
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(title).font(Sketch.display(.largeTitle, weight: .bold))
-                        .fixedSize(horizontal: false, vertical: true).contentTransition(.opacity)
-                    HStack(spacing: 6) {
-                        TrippyIconView(icon: .pin, size: 15, weight: 2.2).foregroundStyle(Sketch.coral)
-                        Text(destination.isEmpty ? "Your next trip" : destination)
-                            .font(Sketch.text(16, "SemiBold", relativeTo: .body)).foregroundStyle(Sketch.inkSoft)
-                    }
+                    Text(eyebrow).font(Sketch.eyebrow).tracking(1.2).foregroundStyle(Sketch.inkSoft)
+                    Text(city).font(Sketch.display(.largeTitle, weight: .bold)).fixedSize(horizontal: false, vertical: true)
                 }.accessibilityElement(children: .combine)
-                emblem
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(saved ? "Your plan" : "Step by step").font(Sketch.display(.title3, weight: .semibold))
-                        Spacer()
-                        Text(status).font(Sketch.text(12, "SemiBold", relativeTo: .caption))
-                            .foregroundStyle(Sketch.inkSoft).contentTransition(.numericText())
-                    }
-                    HStack(spacing: 6) {
-                        ForEach(1...5, id: \.self) { step in
-                            Capsule().fill(completedSteps.contains(step) ? Sketch.sage : step == currentStep && running ? Sketch.clay : Sketch.ink.opacity(0.08))
-                                .frame(height: 5)
-                        }
-                    }.accessibilityHidden(true)
-                    VStack(spacing: 0) {
-                        ForEach(ResearchOperation.planned) { planned in
-                            stepRow(operations.first { $0.step == planned.step } ?? planned)
-                        }
-                    }
-                    .padding(.top, 4)
-                }
-                .sketchCard(padding: 16)
-                if let error {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label(needsServiceUpdate ? "Needs an update" : "Planning didn't finish",
-                              systemImage: needsServiceUpdate ? "arrow.triangle.2.circlepath" : "exclamationmark.circle")
-                            .font(.custom("PlusJakartaSans-SemiBold", size: 16, relativeTo: .body))
-                        Text(error).font(.custom("PlusJakartaSans-Regular", size: 16, relativeTo: .body))
-                            .fixedSize(horizontal: false, vertical: true)
-                            .foregroundStyle(AppPalette.secondaryInk)
-                        if let diagnostic {
-                            DisclosureGroup("Support details") {
-                                Text(diagnostic).font(.system(.caption, design: .monospaced))
-                                    .textSelection(.enabled).padding(.top, 8)
-                            }.font(.custom("PlusJakartaSans-Regular", size: 13, relativeTo: .caption))
-                        }
-                    }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Sketch.ochre.opacity(0.12), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                }
+                ticket
+                if !live.days.isEmpty && (saved || live.finished) { daysPreview }
+                timeline
+                if let error { errorCard(error) }
                 if saved, let diagnostic {
                     DisclosureGroup("Plan and support details") {
-                        Text(diagnostic).font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled).padding(.top, 8)
+                        Text(diagnostic).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(.top, 8)
                         Button("Copy details") { UIPasteboard.general.string = diagnostic }
-                    }.font(.custom("PlusJakartaSans-Regular", size: 13, relativeTo: .caption))
+                    }.font(Sketch.text(13, relativeTo: .caption)).tint(Sketch.ink)
                 }
-            }.padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 24)
-                .frame(maxWidth: 620).frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 24)
+            .frame(maxWidth: 620).frame(maxWidth: .infinity)
         }
         .scrollIndicators(.hidden)
         .foregroundStyle(Sketch.ink)
@@ -11176,81 +11350,221 @@ private struct ResearchProgressScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { actions }
         .interactiveDismissDisabled(running)
         .environment(\.layoutDirection, .leftToRight)
-        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: currentStep)
-        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: completedSteps)
-    }
-    /// The animated emblem on a paper disc, with a dotted orbit and the city's drawing as a sticker.
-    private var emblem: some View {
-        let active = running && error == nil
-        return ZStack {
-            Circle().fill(Sketch.card)
-                .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.1), radius: 18, y: 10)
-                .overlay(Circle().strokeBorder(Sketch.ink.opacity(0.06), lineWidth: 1))
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !active || reduceMotion)) { context in
-                let angle = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 24) / 24 * 360
-                ZStack {
-                    Circle().stroke(Sketch.clay.opacity(0.45), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, dash: [0.5, 7]))
-                        .padding(10)
-                    Image(systemName: "airplane").font(.system(size: 14, weight: .semibold)).foregroundStyle(Sketch.clay)
-                        .rotationEffect(.degrees(90))
-                        .offset(y: -1).frame(maxHeight: .infinity, alignment: .top).padding(.top, 2)
-                        .rotationEffect(.degrees(angle))
-                        .opacity(active ? 1 : 0)
-                }
-            }
-            TrippyLoadingEmblem(active: active).clipShape(Circle()).padding(30).accessibilityHidden(true)
-            DoodleView(doodle: doodle, tint: Sketch.coral, lineWidth: 2)
-                .padding(12).frame(width: 74, height: 74)
-                .background(Circle().fill(Sketch.paper))
-                .overlay(Circle().strokeBorder(Sketch.ink.opacity(0.08)))
-                .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
-                .rotationEffect(.degrees(-8))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-            if saved {
-                Image(systemName: "checkmark").font(.system(size: 18, weight: .bold)).foregroundStyle(Sketch.paper)
-                    .frame(width: 44, height: 44).background(Circle().fill(Sketch.sage))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .transition(.scale.combined(with: .opacity))
-            }
-        }
-        .aspectRatio(1, contentMode: .fit)
-        .containerRelativeFrame(.vertical) { length, _ in min(320, max(240, length * 0.34)) }
-        .frame(maxWidth: .infinity)
-        .accessibilityHidden(true)
-        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: saved)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: live)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: saved)
     }
 
-    private func stepRow(_ operation: ResearchOperation) -> some View {
-        let done = completedSteps.contains(operation.step)
-        let active = operation.step == currentStep && running && error == nil
-        let phaseState = phaseStates[operation.step]
-        let stopped = phaseState == "failed" || (phaseState == nil && operation.step == currentStep && error != nil)
-        let reached = done || active || stopped
-        return HStack(alignment: .top, spacing: 16) {
+    private var topBar: some View {
+        HStack(spacing: 10) {
+            TrippyIconView(icon: .suitcase, size: 20, weight: 2, animated: running).foregroundStyle(Sketch.clay)
+            Text("trippy").font(Sketch.display(.headline, weight: .bold))
+            Spacer()
+            Button(action: onClose) {
+                Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Sketch.ink)
+                    .frame(width: 44, height: 44).raisedCircle()
+            }
+            .buttonStyle(QuietPressStyle()).accessibilityLabel("Close")
+        }
+    }
+
+    // MARK: ticket — the live card
+    private var ticket: some View {
+        VStack(spacing: 0) {
+            (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(alignment: .center, spacing: 14))) {
+                ZStack {
+                    Circle().fill(Sketch.coral.opacity(0.14))
+                    if running && error == nil && !reduceMotion {
+                        TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                            let angle = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 6) / 6 * 360
+                            Circle().trim(from: 0, to: 0.22).stroke(Sketch.coral, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                                .rotationEffect(.degrees(angle)).padding(2)
+                        }
+                    }
+                    DoodleView(doodle: doodle, tint: Sketch.coral, lineWidth: 2).padding(14)
+                    if saved {
+                        Image(systemName: "checkmark").font(.system(size: 12, weight: .heavy)).foregroundStyle(Sketch.paper)
+                            .frame(width: 24, height: 24).background(Circle().fill(Sketch.sage))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .frame(width: 72, height: 72).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 5) {
+                    if typeSize.isAccessibilitySize { clock }
+                    Text(headline).font(Sketch.display(.title2, weight: .bold)).fixedSize(horizontal: false, vertical: true)
+                        .contentTransition(.opacity)
+                        .padding(.trailing, typeSize.isAccessibilitySize ? 0 : 40)
+                    Text(detail(currentStage)).lineLimit(3)
+                        .font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(16)
+            .overlay(alignment: .topTrailing) { if !typeSize.isAccessibilitySize { clock.padding(12) } }
+            perforation
+            let stats = Group {
+                StudioStat(value: live.placesFound > 0 ? "\(live.places ?? live.placesFound)" : "–", label: "places found")
+                StudioStat(value: live.guideListings.map(String.init) ?? "–", label: "local tips")
+                StudioStat(value: live.stops.map(String.init) ?? "–", label: "stops planned")
+            }
+            (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(spacing: 0))) { stats }
+            .padding(.horizontal, 16).padding(.vertical, 14)
+            segments.padding(.horizontal, 16).padding(.bottom, 16)
+        }
+        .background(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Sketch.card))
+        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.06), radius: 14, y: 8)
+        .accessibilityElement(children: .combine)
+    }
+    /// Ticket tear line.
+    private var perforation: some View {
+        TearLine().stroke(Sketch.rule, style: StrokeStyle(lineWidth: 1.4, lineCap: .round, dash: [1, 6]))
+            .frame(height: 2).padding(.horizontal, 16).accessibilityHidden(true)
+    }
+    /// Running time, top-right of the ticket.
+    @ViewBuilder private var clock: some View {
+        Group {
+            if running, error == nil, let started = live.startedAt {
+                Text(started, style: .timer).monospacedDigit()
+            } else if saved, let elapsed = live.elapsed {
+                Text("\(Int(elapsed.rounded()))s")
+            }
+        }
+        .font(Sketch.text(11, "Bold", relativeTo: .caption2)).foregroundStyle(Sketch.inkSoft)
+        .padding(.horizontal, 8).padding(.vertical, 3).background(Sketch.paperDeep, in: Capsule())
+    }
+    /// One capsule per pipeline step.
+    private var segments: some View {
+        HStack(spacing: 4) {
+            ForEach(PlanningStage.allCases) { stage in
+                let value = state(stage)
+                Capsule().fill(value == .done ? Sketch.ink : value == .active ? Sketch.coral : value == .stopped ? Sketch.ochre
+                               : value == .skipped ? Sketch.rule.opacity(0.6) : Sketch.rule)
+                    .frame(height: 5)
+                    .phaseAnimator(value == .active && !reduceMotion ? [1.0, 0.4] : [1.0]) { view, opacity in view.opacity(opacity) }
+                        animation: { _ in .easeInOut(duration: 0.8) }
+            }
+        }.accessibilityHidden(true)
+    }
+
+    // MARK: timeline — how it's made
+    private var timeline: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            StudioHeading(title: "How it's made")
             VStack(spacing: 0) {
-                ResearchStepSymbol(symbol: operation.symbol, active: active, completed: done, stopped: stopped)
-                if operation.step < 5 {
-                    Line().stroke(done ? Sketch.sage.opacity(0.7) : Sketch.ink.opacity(0.15), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [0.5, 5]))
+                ForEach(PlanningStage.allCases) { stage in row(stage, last: stage == .save) }
+            }
+            .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 2)
+            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Sketch.card))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+        }
+    }
+    private func row(_ stage: PlanningStage, last: Bool) -> some View {
+        let value = state(stage)
+        return HStack(alignment: .top, spacing: 14) {
+            VStack(spacing: 0) {
+                ResearchStepSymbol(symbol: stage.symbol, active: value == .active, completed: value == .done, stopped: value == .stopped)
+                if !last {
+                    Line().stroke(value == .done ? Sketch.ink.opacity(0.45) : Sketch.ink.opacity(0.14), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [0.5, 5]))
                         .frame(width: 2).frame(maxHeight: .infinity).padding(.vertical, 4)
                 }
             }.frame(width: 40)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Text(operation.title).font(Sketch.text(16, "SemiBold", relativeTo: .body))
-                    if done { TrippyIconView(icon: .check, size: 14, weight: 2.6, animated: true).foregroundStyle(Sketch.sage) }
+                    Text(stage.title).font(Sketch.text(15, "SemiBold", relativeTo: .subheadline))
+                    if value == .skipped {
+                        Text("skipped").font(Sketch.text(11, "SemiBold", relativeTo: .caption2)).foregroundStyle(Sketch.inkSoft)
+                            .padding(.horizontal, 7).padding(.vertical, 2).background(Sketch.paperDeep, in: Capsule())
+                    }
                 }
-                Text(done ? "Done" : ResearchDiagnostics.phaseDetail(phaseState) ?? (stopped ? "Waiting to continue" : saved ? "Not finished" : operation.detail))
-                    .font(Sketch.text(13, relativeTo: .caption))
-                    .foregroundStyle(Sketch.inkSoft)
+                Text(detail(stage)).font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
                     .fixedSize(horizontal: false, vertical: true)
-                    .lineSpacing(2)
-            }.padding(.top, 4).padding(.bottom, 18).frame(maxWidth: .infinity, alignment: .leading)
+                if stage == .search && !live.searches.isEmpty { searchChips }
+            }
+            .padding(.top, 3).padding(.bottom, 16).frame(maxWidth: .infinity, alignment: .leading)
         }
-        .foregroundStyle(reached ? Sketch.ink : Sketch.inkFaint)
+        .foregroundStyle(value == .waiting ? Sketch.inkFaint : Sketch.ink)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(done ? "Done" : active ? "In progress" : stopped ? "Stopped" : "Not started")
+        .accessibilityValue(value == .done ? "Done" : value == .active ? "In progress" : value == .stopped ? "Stopped" : value == .skipped ? "Skipped" : "Not started")
     }
+    private var searchChips: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { chips }
+            VStack(alignment: .leading, spacing: 6) { chips }
+        }
+    }
+    @ViewBuilder private var chips: some View {
+        ForEach(live.searches, id: \.category) { search in
+            HStack(spacing: 5) {
+                if search.count == nil && !search.failed { ProgressView().controlSize(.mini).tint(Sketch.coral) }
+                Text(PlanningLive.categoryTitle(search.category)).font(Sketch.text(12, "SemiBold", relativeTo: .caption))
+                if let count = search.count { Text("\(count)").font(Sketch.text(12, "Bold", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft) }
+                if search.failed { Image(systemName: "exclamationmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Sketch.ochre) }
+            }
+            .padding(.horizontal, 10).frame(minHeight: 28)
+            .background(Sketch.paperDeep, in: Capsule())
+            .fixedSize()
+        }
+    }
+
+    // MARK: ready — the days at a glance
+    private var daysPreview: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            StudioHeading(title: "Your days", count: live.days.count)
+            VStack(spacing: 10) {
+                ForEach(live.days) { day in
+                    HStack(alignment: .top, spacing: 14) {
+                        VStack(spacing: 0) {
+                            Text("DAY").font(Sketch.text(9, "Bold", relativeTo: .caption2)).tracking(1)
+                            Text("\(day.id + 1)").font(Sketch.display(.title2, weight: .bold))
+                        }
+                        .foregroundStyle(Sketch.coral).frame(width: 44, height: 52)
+                        .background(Sketch.coral.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(day.title).font(Sketch.text(16, "Bold", relativeTo: .headline)).fixedSize(horizontal: false, vertical: true)
+                            if !day.summary.isEmpty {
+                                Text(day.summary).font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Text("\(day.stops) \(day.stops == 1 ? "stop" : "stops")\(dayLabel(day.date).map { " · \($0)" } ?? "")")
+                                .font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(14)
+                    .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
+                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+    private func dayLabel(_ iso: String) -> String? {
+        let parser = DateFormatter(); parser.calendar = Calendar(identifier: .gregorian); parser.locale = Locale(identifier: "en_US_POSIX"); parser.dateFormat = "yyyy-MM-dd"
+        guard let date = parser.date(from: iso) else { return nil }
+        return date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+    }
+
+    private func errorCard(_ error: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(needsServiceUpdate ? "Needs an update" : "Planning didn't finish",
+                  systemImage: needsServiceUpdate ? "arrow.triangle.2.circlepath" : "exclamationmark.circle")
+                .font(Sketch.text(16, "SemiBold", relativeTo: .body))
+            Text(error).font(Sketch.text(15, relativeTo: .body)).fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(AppPalette.secondaryInk)
+            if let diagnostic {
+                DisclosureGroup("Support details") {
+                    Text(diagnostic).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(.top, 8)
+                }.font(Sketch.text(13, relativeTo: .caption)).tint(Sketch.ink)
+            }
+        }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Sketch.ochre.opacity(0.12), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
     private func primaryAction(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
         SketchPrimaryButton(title: title, symbol: symbol, enabled: true, action: action)
     }
@@ -11265,17 +11579,18 @@ private struct ResearchProgressScreen: View {
             } else if error != nil {
                 primaryAction(needsNewRequest ? "Plan again" : resuming ? "Check status" : "Try again", symbol: "arrow.clockwise", action: onRetry)
             } else {
-                HStack(spacing: 12) {
-                    ProgressView().tint(Sketch.clay)
-                    Text(resuming ? "You can close this page. Planning keeps running." : "This takes a minute or two. You can close this page.")
-                        .font(Sketch.text(13, relativeTo: .caption))
-                        .foregroundStyle(Sketch.inkSoft)
-                }.frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                Text(resuming ? "You can close this. Planning keeps running on the service." : "Usually about a minute. You can close this; it keeps going.")
+                    .font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             }
-        }.padding(.horizontal, 24).padding(.vertical, 12)
+        }.padding(.horizontal, 20).padding(.vertical, 12)
             .frame(maxWidth: 620).frame(maxWidth: .infinity)
             .background(Sketch.paper.ignoresSafeArea().shadow(color: .black.opacity(0.06), radius: 8, y: -4))
     }
+}
+
+private struct TearLine: Shape {
+    func path(in rect: CGRect) -> Path { Path { p in p.move(to: CGPoint(x: rect.minX, y: rect.midY)); p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY)) } }
 }
 
 private struct Line: Shape {
@@ -11387,6 +11702,7 @@ private struct SVGLoadingAnimation: UIViewRepresentable {
 // MARK: - Personal social-source library
 private extension TripFlowView {
     func persistSocialLibrary() {
+        guard !StudioDemo.enabled else { return } // sample data never reaches the real library
         do { try SocialLibraryStore.save(SocialLibraryDocument(sources: socialSources, places: socialPlaces, notes: travelNotes)) }
         catch { showToast("Changes could not be saved. Check available storage.") }
     }
@@ -11406,6 +11722,7 @@ private extension TripFlowView {
             persistSocialLibrary()
         }
         Task { await runSocialExtractions() }
+        presentShareSummaryIfNeeded()
     }
     /// Sends shared TikToks to the bridge's Gemini queue and pins what comes back. Polls while the app is open;
     /// unfinished jobs resume on the next launch or foreground.
@@ -11439,8 +11756,28 @@ private extension TripFlowView {
                 }
             }
             persistSocialLibrary()
+            presentShareSummaryIfNeeded()
             try? await Task.sleep(for: .seconds(4))
         }
+    }
+    /// "You're back" recap: everything read since the summary was last dismissed.
+    @MainActor func presentShareSummaryIfNeeded() {
+        if let demo = ShareSummary.demo { shareSummary = demo; return }
+        guard shareSummaryEnabled, shareSummary == nil, appScenePhase == .active else { return }
+        let since = Date(timeIntervalSince1970: shareSummaryLastSeen)
+        let fresh = socialSources.filter { $0.extractionStatus == "ready" && ($0.extractedAt ?? .distantPast) > since }
+        // Wait until everything shared in this batch has finished, so the recap appears once.
+        guard !fresh.isEmpty, !socialSources.contains(where: { SocialExtractionClient.wantsExtraction($0) && $0.extractionStatus != nil }) else { return }
+        let ids = Set(fresh.map(\.id))
+        let places = socialPlaces.filter { ids.contains($0.sourceID) }
+        let covers = fresh.compactMap { source -> URL? in
+            let attachment = source.envelope.attachments.first { $0.kind == "cover" } ?? source.envelope.attachments.first { $0.kind == "image" }
+            return attachment.flatMap { SharedInbox.attachmentURL(sourceID: source.id, attachment: $0) }
+        }
+        let cities = Array(Set(places.compactMap { $0.city?.nonEmpty } + fresh.compactMap { $0.city?.nonEmpty })).sorted()
+        let countries = Array(Set(places.compactMap { $0.countryCode?.nonEmpty?.uppercased() } + fresh.compactMap { $0.countryCode?.nonEmpty?.uppercased() })).sorted()
+        shareSummary = ShareSummary(videos: fresh.count, places: places.count, cities: cities, countries: countries,
+                                    covers: Array(covers.prefix(3)), sharedSince: since)
     }
     @MainActor private func applySocialExtraction(_ result: SocialExtractionJob.Result, sourceIndex: Int) {
         let source = socialSources[sourceIndex]
@@ -11530,26 +11867,125 @@ private extension TripFlowView {
         socialSources.filter { sourceMatchesLibrary($0) && (videoStatusFilter == .all || LibrarySourceStatus.classify($0.state) == videoStatusFilter) }.sorted { $0.envelope.capturedAt > $1.envelope.capturedAt }
     }
     var videoLibrary: some View {
-        let groups = LibraryGrouping.cities(filteredLibraryVideos, city: cityForSource)
-        return LazyVStack(alignment: .leading, spacing: 18) {
-            videoStatusFilters
-            if processingShares {
-                HStack(spacing: 12) {
-                    ProgressView().tint(LibraryTone.videos.color(libraryScheme))
-                    Text("Processing imports…").font(.subheadline).foregroundStyle(libraryInk)
-                }.padding(18).frame(maxWidth: .infinity, alignment: .leading).librarySurface()
+        let sources = socialSources.filter(sourceMatchesLibrary).sorted { $0.envelope.capturedAt > $1.envelope.capturedAt }
+        let working = sources.filter { SocialExtractionClient.wantsExtraction($0) || $0.extractionStatus == "failed" }
+        let workingIDs = Set(working.map(\.id))
+        let groups = LibraryGrouping.cities(sources.filter { !workingIDs.contains($0.id) }, city: cityForSource)
+        return LazyVStack(alignment: .leading, spacing: 22) {
+            studioHeader(sources)
+            if !working.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    StudioHeading(title: "In the works", count: working.count)
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 10) {
+                            ForEach(working) { source in
+                                Button { selectedSocialSource = source } label: {
+                                    StudioWorkCard(title: studioTitle(source), author: source.envelope.tiktok?.authorHandle, cover: studioCover(source),
+                                                   stage: StudioStage.of(source), status: studioStatus(source),
+                                                   failed: source.extractionStatus == "failed") { retryExtraction(source.id) }
+                                }.buttonStyle(QuietPressStyle())
+                            }
+                        }.padding(.horizontal, 20)
+                    }.scrollIndicators(.hidden).padding(.horizontal, -20)
+                }
             }
-            if groups.isEmpty {
-                LibraryEmptyState(title: videoStatusFilter == .all ? "Your video collection starts here" : "No videos in this status",
-                    message: videoStatusFilter == .all ? "" : "", tone: .videos,
-                    actionTitle: videoStatusFilter == .all ? "Add video" : "All videos",
-                    action: { if videoStatusFilter == .all { showImportLink = true } else { videoStatusFilter = .all } })
+            if sources.isEmpty {
+                LibraryEmptyState(title: "Your video studio is empty", message: "Share a TikTok to trippy and it lands here, read and pinned.",
+                                  tone: .videos, actionTitle: "Add a link", action: { showImportLink = true })
             }
             ForEach(groups) { group in
-                LibrarySectionHeading(title: group.title, count: group.items.count, tone: .videos)
-                ForEach(group.items) { source in libraryVideoRow(source) }
+                VStack(alignment: .leading, spacing: 10) {
+                    StudioHeading(title: group.title, count: group.items.count, flag: libraryCountryCode(group.title).map(MarkGlyphCatalog.flag))
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                        ForEach(group.items) { source in
+                            Button { selectedSocialSource = source } label: {
+                                StudioPosterCard(title: studioTitle(source), author: source.envelope.tiktok?.authorHandle, cover: studioCover(source),
+                                                 placeCount: socialPlaces.filter { $0.sourceID == source.id }.count,
+                                                 evidence: StudioEvidence.of(source), isSlideshow: source.envelope.tiktok?.isSlideshow ?? (source.envelope.mediaKind == "slides"))
+                            }
+                            .buttonStyle(SketchPressStyle())
+                            .contextMenu {
+                                Button("Open", systemImage: "arrow.up.right") { selectedSocialSource = source }
+                                if let link = source.envelope.sourceURL.flatMap(URL.init(string:)) { Link(destination: link) { Label("Open on TikTok", systemImage: "music.note") } }
+                                Button("Read again", systemImage: "arrow.clockwise") { retryExtraction(source.id) }
+                                Button("Delete", systemImage: "trash", role: .destructive) { deleteLibraryVideo(source.id) }
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
+    private func studioHeader(_ sources: [ImportedSocialSource]) -> some View {
+        let ids = Set(sources.map(\.id))
+        let places = socialPlaces.filter { ids.contains($0.sourceID) }
+        let cities = Set(places.compactMap { $0.city?.nonEmpty } + sources.compactMap { $0.city?.nonEmpty })
+        let countries = Set(places.compactMap { $0.countryCode?.nonEmpty?.uppercased() })
+        let flags = countries.sorted().prefix(3).map(MarkGlyphCatalog.flag).joined()
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                HStack(alignment: .top, spacing: 12) {
+                    ZStack {
+                        Image(systemName: "music.note").foregroundStyle(Color(hex: "25F4EE")).offset(x: -1.5, y: -1.5)
+                        Image(systemName: "music.note").foregroundStyle(Color(hex: "FE2C55")).offset(x: 1.5, y: 1.5)
+                        Image(systemName: "music.note").foregroundStyle(.white)
+                    }
+                    .font(.system(size: 17, weight: .black)).frame(width: 40, height: 40)
+                    .background(Color(hex: "161616"), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .accessibilityHidden(true)
+                    Text("Share a TikTok to trippy: we read it and pin every spot.").font(Sketch.text(13, relativeTo: .footnote))
+                        .foregroundStyle(AppPalette.secondaryInk).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Menu {
+                    Button("Add a link", systemImage: "link") { showImportLink = true }
+                    Toggle(isOn: $shareSummaryEnabled) { Label("Recap when I'm back", systemImage: "sparkles.rectangle.stack") }
+                } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 15, weight: .bold)).foregroundStyle(AppPalette.ink)
+                        .frame(width: 40, height: 40).background(Sketch.paperDeep, in: Circle()).frame(width: 44, height: 44)
+                }.accessibilityLabel("Studio options")
+            }
+            HStack(spacing: 8) {
+                StudioStat(value: "\(sources.count)", label: sources.count == 1 ? "Video" : "Videos")
+                StudioStat(value: "\(places.count)", label: places.count == 1 ? "Place" : "Places")
+                StudioStat(value: "\(cities.count)", label: cities.count == 1 ? "City" : "Cities")
+                StudioStat(value: flags.isEmpty ? "–" : flags, label: countries.count == 1 ? "Country" : "Countries")
+            }
+        }
+        .padding(16)
+        .background {
+            RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Sketch.card)
+        }
+        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+    }
+    private func studioTitle(_ source: ImportedSocialSource) -> String {
+        source.displayTitle?.nonEmpty
+            ?? source.envelope.tiktok?.slideshowTitle?.nonEmpty
+            ?? source.envelope.tiktok?.caption.split(separator: "\n").first.map { String($0).trimmingCharacters(in: .whitespaces) }?.nonEmpty
+            ?? source.evidence.first?.text.split(separator: "\n").first.map(String.init)
+            ?? "Saved video"
+    }
+    private func studioCover(_ source: ImportedSocialSource) -> URL? {
+        let attachment = source.envelope.attachments.first { $0.kind == "cover" } ?? source.envelope.attachments.first { $0.kind == "image" }
+        return attachment.flatMap { SharedSourceImageURL.resolve(source.id, $0) }
+    }
+    private func studioStatus(_ source: ImportedSocialSource) -> String {
+        if source.extractionStatus == "failed" { return source.extractionError ?? "Couldn't read this one." }
+        if bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Connect the bridge in Settings to read it." }
+        switch source.extractionStatus {
+        case "queued": return (source.extractionError ?? "").localizedCaseInsensitiveContains("quota") ? "Waiting for free Gemini quota" : "In line for Gemini"
+        case "running": return "Gemini is reading it…"
+        default:
+            if let error = source.extractionError { return error }
+            return source.envelope.tiktok == nil ? "Reading the post…" : "Sending to Gemini…"
+        }
+    }
+    private func retryExtraction(_ id: UUID) {
+        guard let index = socialSources.firstIndex(where: { $0.id == id }) else { return }
+        socialSources[index].extractionStatus = nil
+        socialSources[index].extractionError = nil
+        persistSocialLibrary()
+        Task { await runSocialExtractions() }
     }
     private var videoStatusFilters: some View {
         let sources = socialSources.filter(sourceMatchesLibrary)
@@ -11843,63 +12279,191 @@ private extension TripFlowView {
     }
     func socialSourceDetail(_ initial: ImportedSocialSource) -> some View {
         let source = socialSources.first { $0.id == initial.id } ?? initial
+        let post = source.envelope.tiktok
+        let places = socialPlaces.filter { $0.sourceID == source.id }
+        let stage = StudioStage.of(source)
+        let evidence = StudioEvidence.of(source)
         return NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("Video memory", systemImage: "music.note").font(.caption.weight(.bold)).foregroundStyle(AppPalette.brand)
-                        TextField("Video title", text: sourceTextBinding(source.id, field: "title"))
-                            .font(.custom("PlusJakartaSans-Bold", size: 21))
-                        HStack(spacing: 10) {
-                            TextField("City", text: sourceTextBinding(source.id, field: "city"))
-                            TextField("List title", text: sourceTextBinding(source.id, field: "list"))
-                        }.font(.subheadline)
-                    }.padding(18).background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    Text(sourceStatus(source)).font(.subheadline).foregroundStyle(.secondary)
-                    if let link = source.envelope.sourceURL, let url = URL(string: link) { TikTokLinkPill(url: url) }
-                    if let trip = trips.first(where: { $0.id == source.envelope.destination.tripID }) { Label(trip.title, systemImage: "suitcase.rolling").font(.subheadline) }
-                    if let video = source.envelope.attachments.first(where: { $0.kind == "video" }),
-                       let url = SharedInbox.attachmentURL(sourceID: source.id, attachment: video) {
-                        SharedSourceVideoThumbnail(url: url)
-                    }
-                    ForEach(source.evidence.sorted { $0.order < $1.order }) { block in
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(block.origin == "slide_ocr" ? "Slide \(block.order + 1) · OCR" : "Shared text").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            if let attachmentID = block.attachmentID,
-                               let attachment = source.envelope.attachments.first(where: { $0.id == attachmentID }),
-                               let url = SharedInbox.attachmentURL(sourceID: source.id, attachment: attachment) {
-                                SharedSourceImage(url: url)
+                VStack(alignment: .leading, spacing: 22) {
+                    HStack(alignment: .top, spacing: 16) {
+                        StudioCover(url: studioCover(source)).frame(width: 104, height: 160)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .shadow(color: .black.opacity(0.14), radius: 8, y: 4)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(studioTitle(source)).font(Sketch.text(20, "ExtraBold", relativeTo: .title3)).tracking(-0.3)
+                                .foregroundStyle(AppPalette.ink).fixedSize(horizontal: false, vertical: true)
+                            if let handle = post?.authorHandle {
+                                Text("@\(handle)").font(Sketch.text(13, "SemiBold", relativeTo: .subheadline)).foregroundStyle(AppPalette.secondaryInk)
                             }
-                            Text(block.text).font(.body).textSelection(.enabled)
+                            if let summary = source.summary { Text(summary).font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(AppPalette.secondaryInk).lineLimit(4) }
+                            HStack(spacing: 6) {
+                                if let city = source.city?.nonEmpty {
+                                    Text((source.countryCode.map(MarkGlyphCatalog.flag).map { $0 + " " } ?? "") + city)
+                                        .font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(AppPalette.ink)
+                                        .padding(.horizontal, 10).padding(.vertical, 5).background(Sketch.paperDeep, in: Capsule())
+                                }
+                                if let link = source.envelope.sourceURL.flatMap(URL.init(string:)) {
+                                    Link(destination: link) {
+                                        Label("TikTok", systemImage: "arrow.up.right").font(Sketch.text(12, "Bold", relativeTo: .caption)).foregroundStyle(.white)
+                                            .padding(.horizontal, 10).padding(.vertical, 5).background(Color(hex: "161616"), in: Capsule())
+                                    }.accessibilityLabel("Open on TikTok")
+                                }
+                            }
                         }
                     }
-                    ForEach(source.issues, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
-                    if source.evidence.isEmpty { Text("Post retrieval pending. Your link is saved.").font(.subheadline) }
-                    Menu {
-                        Button("New note", systemImage: "square.and.pencil") { attachSourceToNote(source, noteID: nil) }
-                        ForEach(travelNotes) { note in
-                            Button(note.title) { attachSourceToNote(source, noteID: note.id) }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text(stage == .pinned ? "Done" : source.extractionStatus == "failed" ? "Stopped" : "In the works")
+                                .font(Sketch.text(15, "Bold", relativeTo: .headline)).foregroundStyle(AppPalette.ink)
+                            Spacer()
+                            if stage == .pinned, let model = source.extractionModel {
+                                Text(model).font(Sketch.text(11, "Medium", relativeTo: .caption2)).foregroundStyle(AppPalette.secondaryInk)
+                            }
                         }
-                    } label: { Label("Save to a note", systemImage: "note.text.badge.plus") }.frame(minHeight: 44)
-                    Button {
-                        socialPlaceSourceID = source.id; socialPlaceName = ""; socialPlaceSummary = ""
-                        socialPlaceCity = cityForSource(source)
-                        socialEvidenceID = source.evidence.first?.id ?? ""; showAddSocialPlace = true
-                    } label: { Label("Link a place", systemImage: "mappin.and.ellipse") }.frame(minHeight: 44)
-                    ForEach(socialPlaces.filter { $0.sourceID == source.id }) { place in
-                        Button { if let noteID = place.noteID { selectedTravelNoteID = noteID } } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Label(place.name, systemImage: "mappin.and.ellipse").font(.headline)
-                                Text(place.summary.nonEmpty ?? cityForMention(place)).font(.subheadline).foregroundStyle(.secondary)
-                                if place.noteID != nil { Label("Open place note", systemImage: "note.text").font(.caption.weight(.semibold)).foregroundStyle(AppPalette.brand) }
-                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        StudioPipeline(stage: stage, failed: source.extractionStatus == "failed")
+                        HStack {
+                            ForEach(StudioStage.allCases, id: \.rawValue) { step in
+                                Text(step.title).font(Sketch.text(10, "SemiBold", relativeTo: .caption2))
+                                    .foregroundStyle(step.rawValue <= stage.rawValue ? AppPalette.ink : AppPalette.secondaryInk)
+                                    .frame(maxWidth: .infinity, alignment: step == .saved ? .leading : step == .pinned ? .trailing : .center)
+                            }
+                        }
+                        if stage != .pinned {
+                            HStack {
+                                Text(studioStatus(source)).font(Sketch.text(13, relativeTo: .footnote))
+                                    .foregroundStyle(source.extractionStatus == "failed" ? Sketch.coral : AppPalette.secondaryInk)
+                                Spacer()
+                                if source.extractionStatus == "failed" || source.extractionError != nil {
+                                    Button("Retry") { retryExtraction(source.id) }.font(Sketch.text(13, "Bold", relativeTo: .footnote))
+                                        .foregroundStyle(AppPalette.ink).padding(.horizontal, 14).frame(minHeight: 36).background(Sketch.paperDeep, in: Capsule())
+                                }
+                            }
+                        } else if let date = source.extractedAt {
+                            Text("Read \(date.formatted(.relative(presentation: .named)))").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(AppPalette.secondaryInk)
+                        }
+                    }
+                    .padding(16).background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
+                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+
+                    if !evidence.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            StudioHeading(title: "How we read it")
+                            VStack(spacing: 0) {
+                                ForEach(Array(evidence.enumerated()), id: \.element.id) { index, item in
+                                    HStack(spacing: 12) {
+                                        Image(systemName: item.symbol).font(.system(size: 15, weight: .semibold)).foregroundStyle(AppPalette.ink).frame(width: 24)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(item.title).font(Sketch.text(14, "SemiBold", relativeTo: .subheadline)).foregroundStyle(AppPalette.ink)
+                                            Text(item.detail).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(AppPalette.secondaryInk)
+                                        }
+                                        Spacer()
+                                        Image(systemName: stage == .pinned ? "checkmark" : "circle.dotted").font(.system(size: 12, weight: .bold)).foregroundStyle(AppPalette.secondaryInk)
+                                    }
+                                    .padding(.horizontal, 14).padding(.vertical, 11)
+                                    if index < evidence.count - 1 { Rectangle().fill(Sketch.rule.opacity(0.8)).frame(height: 0.7).padding(.leading, 50) }
+                                }
+                            }
+                            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
+                            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        StudioHeading(title: "Pinned from this post", count: places.count)
+                        ForEach(places) { place in
+                            let category = place.category.flatMap(MapPlaceCategory.init(rawValue:)) ?? .other
+                            Button {
+                                if let noteID = place.noteID { selectedTravelNoteID = noteID }
+                                else if place.latitude != nil { selectedSocialSource = nil; rootTab = "map" }
+                            } label: {
+                                HStack(alignment: .top, spacing: 12) {
+                                    Image(systemName: category.symbol).font(.system(size: 14, weight: .semibold)).foregroundStyle(category.tint)
+                                        .frame(width: 36, height: 36).background(category.tint.opacity(0.12), in: Circle())
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(place.name).font(Sketch.text(15, "Bold", relativeTo: .headline)).foregroundStyle(AppPalette.ink)
+                                        Text([place.neighborhood, place.city].compactMap { $0?.nonEmpty }.joined(separator: " · "))
+                                            .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(AppPalette.secondaryInk)
+                                        if let tldr = place.summary.nonEmpty {
+                                            Text(tldr).font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(AppPalette.ink)
+                                                .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                                        }
+                                        if place.latitude == nil {
+                                            Label("Not found on Google Maps yet", systemImage: "mappin.slash").font(Sketch.text(11, "SemiBold", relativeTo: .caption2)).foregroundStyle(Sketch.coral)
+                                        }
+                                    }
+                                    Spacer(minLength: 4)
+                                    Image(systemName: place.latitude == nil ? "pencil" : "map").font(.system(size: 12, weight: .semibold)).foregroundStyle(AppPalette.secondaryInk)
+                                }
+                                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Sketch.card))
+                            }.buttonStyle(QuietPressStyle())
+                        }
+                        Button {
+                            socialPlaceSourceID = source.id; socialPlaceName = ""; socialPlaceSummary = ""
+                            socialPlaceCity = cityForSource(source)
+                            socialEvidenceID = source.evidence.first?.id ?? ""; showAddSocialPlace = true
+                        } label: {
+                            Label("Add a place it missed", systemImage: "plus").font(Sketch.text(14, "SemiBold", relativeTo: .subheadline))
+                                .foregroundStyle(AppPalette.ink).frame(maxWidth: .infinity, minHeight: 46)
+                                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Sketch.rule, style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
                         }.buttonStyle(QuietPressStyle())
                     }
-                }.padding(24)
-            }.background(AppPalette.canvas)
-                .navigationTitle("Your source").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { selectedSocialSource = nil } } }
-                .sheet(isPresented: $showAddSocialPlace) { socialPlaceReviewSheet(source) }
+
+                    DisclosureGroup {
+                        VStack(alignment: .leading, spacing: 14) {
+                            if let post {
+                                ForEach(Array(post.evidenceText.enumerated()), id: \.offset) { _, block in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(["post_caption": "Caption", "on_screen_text": "On-screen text", "auto_caption": "TikTok captions"][block.origin] ?? block.origin)
+                                            .font(Sketch.text(11, "Bold", relativeTo: .caption2)).foregroundStyle(AppPalette.secondaryInk)
+                                        Text(block.text).font(Sketch.text(13, relativeTo: .footnote)).textSelection(.enabled)
+                                    }
+                                }
+                            }
+                            ForEach(source.evidence.filter { $0.origin == "slide_ocr" || post == nil }.sorted { $0.order < $1.order }) { block in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(block.origin == "slide_ocr" ? "Slide \(block.order + 1) · OCR" : "Shared text").font(Sketch.text(11, "Bold", relativeTo: .caption2)).foregroundStyle(AppPalette.secondaryInk)
+                                    Text(block.text).font(Sketch.text(13, relativeTo: .footnote)).textSelection(.enabled)
+                                }
+                            }
+                            ForEach(source.issues, id: \.self) { Text($0).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(AppPalette.secondaryInk) }
+                        }.padding(.top, 10)
+                    } label: {
+                        Text("What it said").font(Sketch.text(15, "Bold", relativeTo: .headline)).foregroundStyle(AppPalette.ink)
+                    }
+                    .tint(AppPalette.ink)
+                    .padding(16).background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        StudioHeading(title: "Details")
+                        TextField("Title", text: sourceTextBinding(source.id, field: "title")).font(Sketch.text(15, "SemiBold", relativeTo: .body))
+                        Divider()
+                        TextField("City", text: sourceTextBinding(source.id, field: "city")).font(Sketch.text(15, relativeTo: .body))
+                        Divider()
+                        Menu {
+                            Button("New note", systemImage: "square.and.pencil") { attachSourceToNote(source, noteID: nil) }
+                            ForEach(travelNotes) { note in Button(note.title) { attachSourceToNote(source, noteID: note.id) } }
+                        } label: { Label("Save to a note", systemImage: "note.text.badge.plus").font(Sketch.text(15, "SemiBold", relativeTo: .body)) }
+                            .frame(minHeight: 44).tint(AppPalette.ink)
+                    }
+                    .padding(16).background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
+                }
+                .padding(20)
+            }
+            .background(Sketch.paper.ignoresSafeArea())
+            .navigationTitle("Post").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { selectedSocialSource = nil } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        Button("Read again", systemImage: "arrow.clockwise") { retryExtraction(source.id) }
+                        Button("Delete", systemImage: "trash", role: .destructive) { selectedSocialSource = nil; deleteLibraryVideo(source.id) }
+                    } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("Post options")
+                }
+            }
+            .sheet(isPresented: $showAddSocialPlace) { socialPlaceReviewSheet(source) }
         }
     }
     func socialPlaceReviewSheet(_ source: ImportedSocialSource) -> some View {
@@ -12702,7 +13266,70 @@ private struct PlaceVideoPoster: View {
     }
 }
 
-private struct SharedSourcePosterImage: View {
+enum SharedSourceImageURL {
+    static var overrides: [UUID: URL] = [:]
+    static func resolve(_ sourceID: UUID, _ attachment: SharedAttachment) -> URL? {
+        overrides[sourceID] ?? SharedInbox.attachmentURL(sourceID: sourceID, attachment: attachment)
+    }
+}
+
+/// DEBUG `-TrippyStudioDemo [-TrippyStudioDetail]`: sample posts in every pipeline state, never persisted.
+enum StudioDemo {
+    static var enabled: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("-TrippyStudioDemo")
+        #else
+        false
+        #endif
+    }
+    static var opensDetail: Bool { enabled && ProcessInfo.processInfo.arguments.contains("-TrippyStudioDetail") }
+    static func load() -> (sources: [ImportedSocialSource], places: [SocialPlaceMention])? {
+        guard enabled else { return nil }
+        func post(_ id: String, _ handle: String, _ caption: String, slides: Int = 0, stickers: [String] = [], duration: Int = 0, title: String? = nil) -> TikTokPostSnapshot {
+            TikTokPostSnapshot(postID: id, canonicalURL: "https://www.tiktok.com/@\(handle)/video/\(id)", isSlideshow: slides > 0, authorHandle: handle, authorName: handle,
+                               caption: caption, slideshowTitle: title, onScreenText: stickers, slideCount: slides, transcript: nil, transcriptLanguage: nil,
+                               durationSeconds: duration, region: "GR", topicLabels: [], mentions: [], hashtags: [], likes: nil, saves: nil, musicTitle: nil,
+                               coverURL: nil, fetchedAt: .now)
+        }
+        func source(_ image: String, _ snapshot: TikTokPostSnapshot?, status: String?, error: String? = nil, title: String? = nil, summary: String? = nil, ago: Double) -> ImportedSocialSource {
+            let id = UUID()
+            if let picture = UIImage(named: image), let data = picture.jpegData(compressionQuality: 0.8) {
+                let file = FileManager.default.temporaryDirectory.appendingPathComponent("studio-demo-\(image).jpg")
+                try? data.write(to: file); SharedSourceImageURL.overrides[id] = file
+            }
+            let envelope = SharedSourceEnvelope(id: id, capturedAt: .now.addingTimeInterval(-ago), sourceURL: snapshot?.canonicalURL, sharedText: "",
+                attachments: [SharedAttachment(id: UUID(), filename: "cover.jpg", kind: "cover", order: 0)] + (0..<(snapshot?.slideCount ?? 0)).map { SharedAttachment(id: UUID(), filename: "slide-\($0).jpg", kind: "image", order: $0 + 1) },
+                destination: ShareDestination(mode: "places", tripID: nil, noteID: nil), tiktok: snapshot)
+            var item = ImportedSocialSource(id: id, envelope: envelope, evidence: [], state: status == "ready" ? "ready" : "pending", issues: [])
+            item.extractionStatus = status; item.extractionError = error; item.displayTitle = title; item.summary = summary
+            item.city = "Athens"; item.countryCode = "GR"; item.extractionModel = status == "ready" ? "gemini-3.6-flash" : nil
+            item.extractedAt = status == "ready" ? .now.addingTimeInterval(-ago + 60) : nil
+            return item
+        }
+        let cozy = source("TripSantorini", post("7703109951702437142", "eleni__vasileiou", "#fypgr #athensspots", slides: 7, title: "Cozy Spots - Athens"), status: "ready",
+                          title: "Cozy Spots in Athens", summary: "Six cozy cafés and bars for cold days around Athens.", ago: 3600)
+        let voul = source("TripLisbon", post("7704754316732714262", "mario_sli", "Δοκιμάζουμε το Voulkanizater στο 📍Κουκάκι", stickers: ["Voulkanizater"], duration: 37), status: "ready",
+                          title: "Voulkanizater in Koukaki", summary: "A cozy first-date restaurant with creative shared plates.", ago: 7200)
+        let okupa = source("TripRome", post("7683909999734689046", "thefoodyfinds", "Το 📍@okupa.athens…", slides: 10, title: "Your go-to bar in Athens🍸"), status: "ready",
+                           title: "Okupa Kitchen & Listening Bar", summary: "All-day kitchen and listening bar.", ago: 86_400)
+        let anasa = source("TripKyoto", post("7690960467153407254", "thefoodyfinds", "Anasa Spritzeria ✨🍸 📍Exarcheia", stickers: ["Signature spritz", "Pinsa"], duration: 12),
+                           status: "queued", error: "Waiting for free Gemini quota", ago: 120)
+        let reading = source("TripBali", post("7704373081128652054", "thefoodyfinds", "We definitely love a good burger spot! 👀✨", duration: 42), status: "running", ago: 60)
+        let failed = source("TripNewYork", nil, status: "failed", error: "TikTok didn't return this post. It may be private.", ago: 30)
+        func place(_ name: String, _ source: ImportedSocialSource, _ category: String, _ hood: String, _ tldr: String, found: Bool = true) -> SocialPlaceMention {
+            SocialPlaceMention(id: UUID(), name: name, summary: tldr, sourceID: source.id, evidenceIDs: [], tripID: nil,
+                               latitude: found ? 37.97 : nil, longitude: found ? 23.73 : nil, city: "Athens", category: category, neighborhood: hood, countryCode: "GR")
+        }
+        let places = [place("Acapus", cozy, "Bars", "Exarcheia", "Board-game bar with warm, dim corners."), place("Minu", cozy, "Coffee", "Psyrri", "Plant-filled design café."),
+                      place("Bel Ray", cozy, "Coffee", "Koukaki", "Retro neighbourhood café-bar."), place("Trigono", cozy, "Coffee", "Pangrati", "Old-school kafeneio for slow afternoons."),
+                      place("Easy Peasy", cozy, "Coffee", "Peristeri", "Cozy café with a summer rooftop vibe."), place("Usurum", cozy, "Bars", "Psyrri", "Lively brunch and cocktails spot."),
+                      place("Voulkanizater", voul, "Food", "Koukaki", "Warm, dimly lit spot for a first date."),
+                      place("Okupa", okupa, "Bars", "Kerameikos", "Greek–Eastern Med plates and vinyl.", found: false)]
+        return ([anasa, reading, failed, cozy, voul, okupa], places)
+    }
+}
+
+struct SharedSourcePosterImage: View {
     let url: URL
     @State private var image: UIImage?
     var body: some View {
@@ -12775,6 +13402,291 @@ private enum PlacePanelDemo {
                            "Friday: 8:00 AM – 2:00 AM", "Saturday: 9:00 AM – 2:00 AM", "Sunday: 9:00 AM – 12:00 AM"],
             phoneNumber: "+30 21 0574 2689", websiteURL: "https://www.example.com", googleMapsURL: "https://maps.google.com",
             summary: "Cozy cafe with a summer rooftop vibe — coffee by day, drinks and snacks by night.", photos: photos, reviews: reviews)
+    }
+}
+
+/// "You're back" recap of shares that finished processing while the user was away.
+struct ShareSummary: Identifiable {
+    let id = UUID()
+    let videos: Int
+    let places: Int
+    let cities: [String]
+    let countries: [String]
+    let covers: [URL]
+    let sharedSince: Date
+    var coverImages: [UIImage] { covers.compactMap { UIImage(contentsOfFile: $0.path) } }
+    var demoImages: [UIImage] = []
+
+    /// DEBUG `-TrippySummaryDemo`: sample numbers and bundled photos for screenshots.
+    static var demo: ShareSummary? {
+        #if DEBUG
+        guard ProcessInfo.processInfo.arguments.contains("-TrippySummaryDemo") else { return nil }
+        var sample = ShareSummary(videos: 4, places: 9, cities: ["Athens"], countries: ["GR"], covers: [], sharedSince: .now.addingTimeInterval(-86_400 * 2))
+        sample.demoImages = ["TripLisbon", "TripSantorini", "TripRome"].compactMap { UIImage(named: $0) }
+        return sample
+        #else
+        return nil
+        #endif
+    }
+}
+
+/// A short, skippable recap. The same numbers live permanently at the top of Library › Videos.
+private struct ShareSummarySheet: View {
+    let summary: ShareSummary
+    let onDone: () -> Void
+    let onOpenStudio: () -> Void
+    let onStopShowing: () -> Void
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let images = summary.demoImages.isEmpty ? summary.coverImages : summary.demoImages
+        let flags = summary.countries.prefix(3).map(MarkGlyphCatalog.flag).joined()
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center, spacing: 16) {
+                ZStack {
+                    ForEach(Array(images.prefix(3).enumerated()), id: \.offset) { index, image in
+                        Image(uiImage: image).resizable().scaledToFill()
+                            .frame(width: 46, height: 66).clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .padding(2.5).background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Sketch.card))
+                            .shadow(color: .black.opacity(0.14), radius: 5, y: 3)
+                            .rotationEffect(.degrees(appeared ? [-9.0, 3.0, 12.0][index] : 0))
+                            .offset(x: appeared ? [-14.0, 2.0, 18.0][index] : 0)
+                    }
+                    if images.isEmpty { Image(systemName: "music.note").font(.title).foregroundStyle(AppPalette.ink) }
+                }
+                .frame(width: 96, height: 80).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("You're back").font(Sketch.text(22, "ExtraBold", relativeTo: .title2)).tracking(-0.4).foregroundStyle(AppPalette.ink)
+                    Text("Since your last visit we read your shares.").font(Sketch.text(13, relativeTo: .footnote))
+                        .foregroundStyle(AppPalette.secondaryInk).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            HStack(spacing: 8) {
+                StudioStat(value: "\(summary.videos)", label: summary.videos == 1 ? "Video" : "Videos")
+                StudioStat(value: "\(summary.places)", label: summary.places == 1 ? "Place" : "Places")
+                StudioStat(value: "\(summary.cities.count)", label: summary.cities.count == 1 ? summary.cities[0] : "Cities")
+                StudioStat(value: flags.isEmpty ? "–" : flags, label: summary.countries.count == 1 ? "Country" : "Countries")
+            }
+            .padding(14).background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+            HStack(spacing: 10) {
+                Button("Open studio", action: onOpenStudio)
+                    .font(Sketch.text(15, "Bold", relativeTo: .headline)).foregroundStyle(AppPalette.ink)
+                    .frame(maxWidth: .infinity, minHeight: 50).background(Sketch.paperDeep, in: Capsule())
+                Button("Done", action: onDone)
+                    .font(Sketch.text(15, "Bold", relativeTo: .headline)).foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, minHeight: 50).background(AppPalette.brand, in: Capsule())
+            }.buttonStyle(QuietPressStyle())
+            Button("Don't show recaps", action: onStopShowing)
+                .font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).foregroundStyle(AppPalette.secondaryInk)
+                .frame(maxWidth: .infinity, minHeight: 36)
+                .accessibilityHint("You can turn recaps back on from the Studio menu in Library › Videos.")
+        }
+        .padding(.horizontal, 20).padding(.top, 26).padding(.bottom, 8)
+        .background(Sketch.paper.ignoresSafeArea())
+        .presentationDetents([.height(372)])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(30)
+        .onAppear { withAnimation(reduceMotion ? nil : .spring(response: 0.5, dampingFraction: 0.7)) { appeared = true } }
+    }
+}
+
+// MARK: - Video studio (Library › Videos)
+/// Where a shared post is in the share → read → Gemini → pins pipeline.
+enum StudioStage: Int, CaseIterable {
+    case saved, read, thinking, pinned
+    var title: String {
+        switch self { case .saved: "Saved"; case .read: "Read"; case .thinking: "Gemini"; case .pinned: "Pinned" }
+    }
+    static func of(_ source: ImportedSocialSource) -> StudioStage {
+        if source.extractionStatus == "ready" { return .pinned }
+        if source.extractionStatus == "queued" || source.extractionStatus == "running" { return .thinking }
+        return source.envelope.tiktok != nil ? .read : .saved
+    }
+}
+
+/// The evidence a post gave us, shown as small marks on posters and in "How we read it".
+struct StudioEvidence: Identifiable {
+    let id: String
+    let symbol: String
+    let title: String
+    let detail: String
+    static func of(_ source: ImportedSocialSource) -> [StudioEvidence] {
+        var items: [StudioEvidence] = []
+        let post = source.envelope.tiktok
+        if let caption = post?.caption, !caption.isEmpty {
+            items.append(.init(id: "caption", symbol: "text.quote", title: "Caption", detail: "\(caption.count) characters"))
+        } else if !source.envelope.sharedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.append(.init(id: "caption", symbol: "text.quote", title: "Shared text", detail: "From the share sheet"))
+        }
+        if let lines = post?.onScreenText, !lines.isEmpty {
+            items.append(.init(id: "stickers", symbol: "textformat", title: "On-screen text", detail: "\(lines.count) text \(lines.count == 1 ? "sticker" : "stickers")"))
+        }
+        let slides = source.envelope.attachments.filter { $0.kind == "image" }.count
+        if slides > 0 {
+            let ocr = source.evidence.filter { $0.origin == "slide_ocr" }.count
+            items.append(.init(id: "slides", symbol: "photo.stack", title: "Slides", detail: "\(slides) images, seen by Gemini" + (ocr > 0 ? " · \(ocr) with OCR text" : "")))
+        }
+        if let transcript = post?.transcript, !transcript.isEmpty {
+            items.append(.init(id: "captions", symbol: "captions.bubble", title: "TikTok captions", detail: post?.transcriptLanguage ?? "Auto-generated"))
+        } else if let post, !post.isSlideshow, (post.durationSeconds ?? 0) > 0 {
+            items.append(.init(id: "audio", symbol: "waveform", title: "Audio", detail: "\(post.durationSeconds ?? 0)s, transcribed by Gemini"))
+        }
+        return items
+    }
+}
+
+struct StudioStat: View {
+    let value: String
+    let label: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value).font(Sketch.text(22, "ExtraBold", relativeTo: .title2)).foregroundStyle(AppPalette.ink)
+                .lineLimit(1).minimumScaleFactor(0.6).contentTransition(.numericText())
+            Text(label).font(Sketch.text(11, "SemiBold", relativeTo: .caption2)).foregroundStyle(AppPalette.secondaryInk).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Small cover for a post: TikTok cover, first slide, or a two-tone TikTok wash.
+struct StudioCover: View {
+    let url: URL?
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [Color(hex: "1D1B1A"), Color(hex: "2C2826")], startPoint: .top, endPoint: .bottom)
+            if let url { SharedSourcePosterImage(url: url) }
+            else {
+                Image(systemName: "music.note").font(.system(size: 22, weight: .black)).foregroundStyle(.white.opacity(0.85))
+                    .shadow(color: Color(hex: "25F4EE"), radius: 0, x: -1.5, y: -1.5)
+                    .shadow(color: Color(hex: "FE2C55"), radius: 0, x: 1.5, y: 1.5)
+            }
+        }.clipped()
+    }
+}
+
+/// Step dots: Saved → Read → Gemini → Pinned, the current one pulsing.
+struct StudioPipeline: View {
+    let stage: StudioStage
+    var failed = false
+    var dark = false
+    @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(StudioStage.allCases, id: \.rawValue) { step in
+                let done = step.rawValue < stage.rawValue || stage == .pinned
+                let current = step == stage && stage != .pinned
+                Capsule()
+                    .fill(failed && current ? Sketch.coral : done ? (dark ? Color.white : AppPalette.ink) : (dark ? Color.white.opacity(0.25) : Sketch.rule))
+                    .frame(height: 4)
+                    .opacity(current && !failed && pulse ? 0.45 : 1)
+            }
+        }
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { pulse = true }
+        }
+        .accessibilityElement()
+        .accessibilityLabel(failed ? "Stopped at \(stage.title)" : stage == .pinned ? "Done" : "Step \(stage.rawValue + 1) of 4, \(stage.title)")
+    }
+}
+
+/// Card in the "In the works" lane.
+struct StudioWorkCard: View {
+    let title: String
+    let author: String?
+    let cover: URL?
+    let stage: StudioStage
+    let status: String
+    let failed: Bool
+    let onRetry: () -> Void
+    var body: some View {
+        HStack(spacing: 12) {
+            StudioCover(url: cover).frame(width: 54, height: 78)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 7) {
+                Text(title).font(Sketch.text(14, "Bold", relativeTo: .subheadline)).foregroundStyle(AppPalette.ink).lineLimit(2)
+                if let author { Text("@\(author)").font(Sketch.text(12, "Medium", relativeTo: .caption)).foregroundStyle(AppPalette.secondaryInk).lineLimit(1) }
+                StudioPipeline(stage: stage, failed: failed)
+                HStack(spacing: 6) {
+                    Text(status).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(failed ? Sketch.coral : AppPalette.secondaryInk).lineLimit(2)
+                    Spacer(minLength: 4)
+                    if failed {
+                        Button("Retry", action: onRetry).font(Sketch.text(12, "Bold", relativeTo: .caption)).foregroundStyle(AppPalette.ink)
+                            .padding(.horizontal, 12).frame(minHeight: 32).background(Sketch.paperDeep, in: Capsule())
+                    }
+                }
+            }
+        }
+        .padding(12).frame(width: 300, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+    }
+}
+
+/// TikTok-style poster for a finished post.
+struct StudioPosterCard: View {
+    let title: String
+    let author: String?
+    let cover: URL?
+    let placeCount: Int
+    let evidence: [StudioEvidence]
+    let isSlideshow: Bool
+    var body: some View {
+        Color.clear
+            .aspectRatio(9 / 14, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .overlay { StudioCover(url: cover) }
+            .clipped()
+            .overlay {
+                LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0), .init(color: .clear, location: 0.25),
+                                       .init(color: .clear, location: 0.5), .init(color: .black.opacity(0.82), location: 1)],
+                               startPoint: .top, endPoint: .bottom)
+            }
+            .overlay(alignment: .topLeading) {
+                HStack(spacing: 5) {
+                    Image(systemName: isSlideshow ? "photo.stack.fill" : "play.fill").font(.system(size: 9, weight: .bold))
+                    if placeCount > 0 { Text("\(placeCount)").font(Sketch.text(11, "Bold", relativeTo: .caption2)) + Text(placeCount == 1 ? " place" : " places").font(Sketch.text(11, "Medium", relativeTo: .caption2)) }
+                }
+                .foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 5)
+                .background(.black.opacity(0.45), in: Capsule()).padding(8)
+            }
+            .overlay(alignment: .bottomLeading) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title).font(Sketch.text(13, "Bold", relativeTo: .footnote)).lineLimit(2).multilineTextAlignment(.leading)
+                    HStack(spacing: 6) {
+                        if let author { Text("@\(author)").font(Sketch.text(11, "Medium", relativeTo: .caption2)).opacity(0.85).lineLimit(1) }
+                        Spacer(minLength: 2)
+                        HStack(spacing: 4) {
+                            ForEach(evidence.prefix(4)) { item in Image(systemName: item.symbol).font(.system(size: 9, weight: .semibold)) }
+                        }.opacity(0.85).accessibilityHidden(true)
+                    }
+                }
+                .foregroundStyle(.white).padding(10)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(title)\(author.map { ", by \($0)" } ?? ""), \(placeCount) places")
+    }
+}
+
+/// Section title in the studio: small caps with a count.
+struct StudioHeading: View {
+    let title: String
+    var count: Int? = nil
+    var flag: String? = nil
+    var body: some View {
+        HStack(spacing: 6) {
+            if let flag { Text(flag).font(.system(size: 13)) }
+            Text(title.uppercased()).font(Sketch.eyebrow).tracking(1.1).foregroundStyle(AppPalette.secondaryInk)
+            if let count { Text("\(count)").font(Sketch.text(11, "Bold", relativeTo: .caption2)).foregroundStyle(AppPalette.secondaryInk)
+                .padding(.horizontal, 7).padding(.vertical, 2).background(Sketch.paperDeep, in: Capsule()) }
+            Spacer()
+        }.accessibilityAddTraits(.isHeader)
     }
 }
 

@@ -319,10 +319,15 @@ class GoogleTravelProvider:
             field_mask='places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,places.websiteUri,places.businessStatus')
         if not isinstance(response, dict) or not isinstance(response.get('places', []), list):
             raise ValueError('Invalid places response')
-        batch = empty_batch()
+        batch = empty_batch(); brands = []
         for row in response.get('places', [])[:task['target']]:
             if row.get('businessStatus') in {'CLOSED_PERMANENTLY','CLOSED_TEMPORARILY'}: continue
             identifier = row.get('id'); name = row.get('displayName', {}).get('text')
+            # One branch per chain: "Tonnarello", "Tonnarello Pantheon" and
+            # "Tonnarello San Pietro" are the same choice for a trip.
+            brand = ' '.join((name or '').casefold().split())
+            if brand and any(brand == b or brand.startswith(b + ' ') or b.startswith(brand + ' ') for b in brands): continue
+            brands.append(brand)
             location = row.get('location') or {}
             if not identifier or not name or location.get('latitude') is None or location.get('longitude') is None: continue
             sid = 'google-'+identifier

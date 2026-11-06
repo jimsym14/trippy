@@ -128,14 +128,32 @@ def social_place_details(place_id):
 _social_queue=None
 _social_lock=threading.Lock()
 
+_gemini_pool=None
+_gemini_lock=threading.Lock()
+
+
+def gemini_pool():
+    """One pool per process, shared by TikTok reading and plan notes, so a model
+    parked for quota by one is skipped by the other. None without a key."""
+    global _gemini_pool
+    with _gemini_lock:
+        if _gemini_pool is None:
+            values=read_environment(root()/'.env')
+            key=values.get('GEMINI_API_KEY','').strip()
+            if not key: return None
+            models=[m for m in values.get('GEMINI_MODELS','').split(',') if m.strip()]
+            _gemini_pool=GeminiPool(key,models or None)
+        return _gemini_pool
+
+
 def social_queue():
     global _social_queue
     with _social_lock:
         if _social_queue is None:
             def pool():
-                values=read_environment(root()/'.env')
-                models=[m for m in values.get('GEMINI_MODELS','').split(',') if m.strip()]
-                return GeminiPool(values.get('GEMINI_API_KEY','').strip(),models or None)
+                shared=gemini_pool()
+                if shared is None: raise ValueError('GEMINI_API_KEY is not configured')
+                return shared
             _social_queue=ExtractionQueue(pool,search=social_place_search,details=social_place_details,directory=root()/'.local/social-jobs')
         return _social_queue
 
@@ -188,7 +206,8 @@ def progress(job_id, step, detail):
     with state.lock:
         job=state.jobs[job_id]
         diagnostics=job.setdefault('diagnostics',{'events':[]})
-        if step in {'pipeline_started','task_started','task_completed','task_failed','phase_skipped'}:
+        if step in {'pipeline_started','task_started','task_completed','task_failed','phase_skipped',
+                    'guide_started','guide_completed','notes_started','notes_completed'}:
             event={**detail,'event':step,'elapsed_seconds':round(time.time()-job.get('started_at',time.time()),1)}
             diagnostics['events']=(diagnostics.get('events',[])+[event])[-100:]
             diagnostics['elapsed_seconds']=event['elapsed_seconds']
@@ -251,7 +270,7 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
                 provider=AzureResearchProvider(values,ledger)
             ai_adapter=AzureIntentAdapter(provider) if provider is not None else None
             result=execute_personal_plan(brief_data,place_provider=place_provider,intelligence=provider,
-                ai_adapter=ai_adapter,
+                ai_adapter=ai_adapter,notes_pool=gemini_pool(),
                 directory=job_directory(job_id),root=root(),route_provider=route_provider,progress=report_progress)
         else:
             result=execute_plan(brief_data,provider=provider,directory=job_directory(job_id),root=root(),

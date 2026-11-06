@@ -50,7 +50,7 @@ def missing_tasks(brief, graph, intent=None):
 
 
 def run(brief, *, directory, root, place_provider=None, intelligence=None, route_provider=None,
-        ai_adapter=None, judge_enabled=False, progress=None, community_nodes=()):
+        ai_adapter=None, judge_enabled=False, progress=None, community_nodes=(), notes_pool=None):
     """Run the personal_places planning pipeline.
 
     ai_adapter  – optional AIAdapter used to extract SearchIntent from the
@@ -207,6 +207,19 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
     if area_shortfalls:
         pending.append({'code':'area_inventory_shortfall','details':area_shortfalls})
     stops=sum(len(d['stops']) for d in result['itinerary']['days'])
+    # One bounded Gemini call writes day titles and per-stop reasons; the
+    # schedule above is final and never changes here.
+    notes_report={'status':'off'}
+    if notes_pool is not None and stops:
+        from . import plan_notes
+        progress('guide_started', {'destination':brief['destination']})
+        listings=plan_notes.guide_listings(root, brief['destination'])
+        scheduled={s['place_id'] for d in result['itinerary']['days'] for s in d['stops']}
+        guide=plan_notes.match_guide([p for p in result['places'] if p['id'] in scheduled], listings)
+        progress('guide_completed', {'listings':len(listings),'matched':len(guide)})
+        progress('notes_started', {'stops':stops})
+        notes_report=plan_notes.annotate(notes_pool, result, planning_brief, guide, cache_dir=Path(root)/'.local/plan-notes')
+        progress('notes_completed', {k:v for k,v in notes_report.items() if k!='retry_at'})
     if pending or failures: result['plan_validation']['status']='needs_checks'; result['delivery_status']='partial'
     if not result['places']: result['delivery_status']='failed'
     result['pipeline_report']={'version':VERSION,'scheduling_owned_by':'deterministic_engine','scheduled_stops':stops,
@@ -221,6 +234,7 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
         'intent_extraction_model':intent.extraction_model,
         'intent_inferred_categories':intent.inferred_categories,
         'area_shortfalls':area_shortfalls,
+        'notes':notes_report,
         'judge_invoked':judge_ambiguity_detected and judge_status != 'skipped',
         'judge_status':judge_status,
         'judge_ambiguity_detected':judge_ambiguity_detected,

@@ -81,13 +81,16 @@ class GeminiPool:
         return [{"model": m, "parked_for_seconds": max(0, int(self._parked.get(m, 0) - now))} for m in self.models()]
 
     # -- generation ------------------------------------------------------
-    def generate(self, parts, *, schema=None, system=None, temperature=0.2):
+    def generate(self, parts, *, schema=None, system=None, temperature=0.2, thinking_budget=None):
         body = {"contents": [{"role": "user", "parts": parts}],
                 "generationConfig": {"temperature": temperature, "responseMimeType": "application/json"}}
         if schema:
             body["generationConfig"]["responseSchema"] = schema
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
+        if thinking_budget is not None:
+            # Writing tasks need no reasoning; 0 saves the thought tokens that count against free TPM.
+            body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": thinking_budget}
         errors, soonest = [], None
         for model in self.models():
             with self._lock:
@@ -107,6 +110,12 @@ class GeminiPool:
                     errors.append(f"{model}: rate limited")
                     continue
                 message = detail.get("message", "").lower()
+                if error.code == 400 and "thinking" in message and "thinkingConfig" in body["generationConfig"]:
+                    body["generationConfig"].pop("thinkingConfig")  # model without the knob: retry plainly
+                    try:
+                        return self._call(model, body), model
+                    except HTTPError:
+                        pass
                 if error.code == 404 or (error.code == 400 and ("not found" in message or "no longer available" in message)):
                     self._rest(model, 24 * 3600)  # retired or not enabled for this key
                     errors.append(f"{model}: unavailable")
@@ -117,7 +126,7 @@ class GeminiPool:
                     continue
                 raise GeminiUnavailable(f"{model}: {detail.get('message', 'request rejected')}"[:400])
             except (URLError, TimeoutError, OSError) as error:
-                self._rest(model, 300)
+                self._rest(model, 1800)  # a model that times out tends to keep doing so; skip it for 30 min
                 errors.append(f"{model}: {type(error).__name__}")
                 continue
         raise GeminiUnavailable("; ".join(errors) or "no Gemini model available", soonest)

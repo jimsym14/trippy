@@ -219,7 +219,13 @@ def compose_plan(document, brief, *, route_provider=None):
                 or not math.isfinite(result['minutes']) or result['minutes']<0 or not result.get('method')):
                 raise ValueError('Invalid route provider result')
         if result is None:
-            result = {'minutes': math.ceil(distance(a,b)/1000/4*60)+10, 'method':'distance_estimate', 'verified':False}
+            metres = distance(a,b)
+            if metres > 2500:
+                # Nobody walks 6 km between villages or across a capital: past
+                # 2.5 km assume a ride (car, taxi or transit) at ~25 km/h door to door.
+                result = {'minutes': math.ceil(metres/1000/25*60)+12, 'method':'ride_estimate', 'verified':False}
+            else:
+                result = {'minutes': math.ceil(metres/1000/4*60)+10, 'method':'distance_estimate', 'verified':False}
         result = {**result,'from_place_id':a['id'],'to_place_id':b['id'],'date':local_date}
         route_cache[cache_key]=result; routes.append(result)
         return result
@@ -276,6 +282,8 @@ def compose_plan(document, brief, *, route_provider=None):
                     if not viable: continue
                     candidate_start = min(viable)[0]
                 candidate_start = max(candidate_start, earliest)
+                # Meals stay at meal times: lunch by 15:30, dinner by 22:00.
+                if p['category']=='food' and start in (780,1140) and candidate_start > start+150: continue
                 if candidate_start+duration>min(1380, latest) or any(candidate_start<clock_minutes(s['time'])+s['duration_minutes'] and candidate_start+duration>clock_minutes(s['time']) for s in day['stops']): continue
                 price = money(p)
                 day['stops'].append({'place_id':p['id'],'activity':p['name'],'time':f'{candidate_start//60:02d}:{candidate_start%60:02d}',
