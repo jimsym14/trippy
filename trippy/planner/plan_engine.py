@@ -166,6 +166,35 @@ def money(place):
     return Decimal(str(p['min'])), Decimal(str(p['max']))
 
 
+# Walking legs longer than this are only used when nothing closer fits.
+MAX_PREFERRED_LEG_METERS = 2200
+# Each kilometre from the previous stop costs this many quality points, so a
+# slightly weaker nearby place beats a stronger one across the city.
+DISTANCE_PENALTY_PER_KM = 8
+
+
+def quality(place):
+    """Inventory suitability from a provider ``quality:NN`` tag (not a rating)."""
+    for tag in place.get('tags', []):
+        if tag.startswith('quality:'):
+            try: return int(tag.split(':', 1)[1])
+            except ValueError: return 0
+    return 0
+
+
+def slot_rank(p, previous, brief):
+    """Deterministic order for one slot.
+
+    Saved pins and explicit preference tags stay authoritative. Without a
+    previous stop the strongest candidate anchors the day; afterwards nearby
+    candidates are preferred so a day stays in one part of the city.
+    """
+    meters = distance(previous, p) if previous else 0
+    return (-p.get('personal_priority', 0), -len(set(p['tags']) & set(brief['preference_tags'])),
+            -p.get('judge_score', 0.0), meters > MAX_PREFERRED_LEG_METERS,
+            -(quality(p) - DISTANCE_PENALTY_PER_KM * meters / 1000), p['id'])
+
+
 def compose_plan(document, brief, *, route_provider=None):
     doc = deepcopy(document)
     days, used, pending, routes = [], set(), [], []
@@ -204,6 +233,12 @@ def compose_plan(document, brief, *, route_provider=None):
     slots = [(600, 'morning', {'attraction','museum','nature','shopping','excursion'}), (780,'afternoon',{'food','coffee'}),
              (900,'afternoon',{'attraction','museum','nature','shopping'}), (1140,'evening',{'food'}), (1260,'night',{'bar','club'})]
     if brief.get('pace') in {'χαλαρός','relaxed'}: slots = [slots[0],slots[1],slots[3]]
+    # Speedrun: only a short visit per highlight, starting early, every slot used.
+    speedrun = brief.get('pace') == 'speedrun'
+    if speedrun:
+        sights = {'attraction','museum','nature'}
+        slots = [(540,'morning',sights), slots[0], (720,'afternoon',sights|{'shopping'}), slots[1], slots[2],
+                 (1050,'afternoon',sights), slots[3], slots[4]]
     for day_number, local_date in enumerate(dates,1):
         day = {'day':day_number,'date':local_date,'theme':'Η ημέρα σου','stops':[], 'alternative':'',
                'flex_time':'Οι ώρες είναι προτάσεις· κράτησε χρόνο για διαλείμματα.',
@@ -218,13 +253,19 @@ def compose_plan(document, brief, *, route_provider=None):
                 'travel_time_minutes':None})
             used.add(p['id'])
         previous = None
+        # Arrival/departure times: free after landing (+90 min to the stay),
+        # and stop 3 h before a departure.
+        times = brief.get('date_range') or {}
+        earliest = clock_minutes(times['arrival_time'])+90 if times.get('arrival_time') and day_number==1 else 0
+        latest = clock_minutes(times['departure_time'])-180 if times.get('departure_time') and day_number==len(dates) else 1380
         for start, period, slot_categories in slots:
             if categories and not categories & slot_categories: continue
+            if start < earliest - 60 or start >= latest: continue
             options = [p for p in places if p['id'] not in used and p['category'] in slot_categories and available(p,local_date)]
-            options.sort(key=lambda p:(-len(set(p['tags']) & set(brief['preference_tags'])),
-                distance(previous,p) if previous else 0, p['id']))
+            options.sort(key=lambda p:slot_rank(p, previous, brief))
             for p in options:
                 duration = p['average_visit_minutes'] or {'attraction':75,'museum':90,'nature':90,'excursion':300}.get(p['category'],60)
+                if speedrun: duration = min(duration, 45)
                 leg = travel(previous,p,local_date) if previous else None
                 prior_stops = [s for s in day['stops'] if clock_minutes(s['time'])<=start]
                 candidate_start = max(start, max((clock_minutes(s['time'])+s['duration_minutes'] for s in prior_stops),default=start)+(math.ceil(leg['minutes']) if leg and leg['minutes'] is not None else 0))
@@ -234,7 +275,8 @@ def compose_plan(document, brief, *, route_provider=None):
                     viable = [(max(candidate_start,a),b) for a,b in windows if max(candidate_start,a)+duration<=b]
                     if not viable: continue
                     candidate_start = min(viable)[0]
-                if candidate_start+duration>1380 or any(candidate_start<clock_minutes(s['time'])+s['duration_minutes'] and candidate_start+duration>clock_minutes(s['time']) for s in day['stops']): continue
+                candidate_start = max(candidate_start, earliest)
+                if candidate_start+duration>min(1380, latest) or any(candidate_start<clock_minutes(s['time'])+s['duration_minutes'] and candidate_start+duration>clock_minutes(s['time']) for s in day['stops']): continue
                 price = money(p)
                 day['stops'].append({'place_id':p['id'],'activity':p['name'],'time':f'{candidate_start//60:02d}:{candidate_start%60:02d}',
                     'duration_minutes':duration,'duration_basis':p['duration_basis'] if p['average_visit_minutes'] else 'estimate',

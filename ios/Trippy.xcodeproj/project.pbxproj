@@ -6,28 +6,22 @@
 	objectVersion = 56;
 	objects = {
 
-
-        910000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedInbox.swift; sourceTree = "<group>"; };
-        910000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
-        910000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocialLibrary.swift; sourceTree = "<group>"; };
-        910000000000000000000004 = {isa = PBXFileReference; explicitFileType = wrapper.app-extension; includeInIndex = 0; path = TrippyShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-        920000000000000000000001 = {isa = PBXBuildFile; fileRef = 910000000000000000000001; };
-        920000000000000000000002 = {isa = PBXBuildFile; fileRef = 910000000000000000000001; };
-        920000000000000000000003 = {isa = PBXBuildFile; fileRef = 910000000000000000000002; };
-        920000000000000000000004 = {isa = PBXBuildFile; fileRef = 910000000000000000000003; };
-        920000000000000000000005 = {isa = PBXBuildFile; fileRef = 910000000000000000000004; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-        930000000000000000000001 = {isa = PBXGroup; children = (910000000000000000000001, ); path = Shared; sourceTree = "<group>"; };
-        930000000000000000000002 = {isa = PBXGroup; children = (910000000000000000000002, ); path = TrippyShare; sourceTree = "<group>"; };
-        940000000000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (920000000000000000000002, 920000000000000000000003, ); runOnlyForDeploymentPostprocessing = 0; };
-        940000000000000000000002 = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (920000000000000000000005, ); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
-        950000000000000000000001 = {isa = PBXNativeTarget; buildConfigurationList = 960000000000000000000001; buildPhases = (940000000000000000000001, ); buildRules = (); dependencies = (); name = TrippyShare; productName = TrippyShare; productReference = 910000000000000000000004; productType = "com.apple.product-type.app-extension"; };
-        960000000000000000000001 = {isa = XCConfigurationList; buildConfigurations = (960000000000000000000002, 960000000000000000000003, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-        960000000000000000000002 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TrippyShare/TrippyShare.entitlements; DEVELOPMENT_TEAM = AFC34U72DV; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = TrippyShare/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.dimitrisymeonidis.trippy.share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
-        960000000000000000000003 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TrippyShare/TrippyShare.entitlements; DEVELOPMENT_TEAM = AFC34U72DV; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = TrippyShare/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.dimitrisymeonidis.trippy.share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
-        970000000000000000000001 = {isa = PBXContainerItemProxy; containerPortal = E10000000000000000000002; proxyType = 1; remoteGlobalIDString = 950000000000000000000001; remoteInfo = TrippyShare; };
-        970000000000000000000002 = {isa = PBXTargetDependency; target = 950000000000000000000001; targetProxy = 970000000000000000000001; };
-
 /* Begin PBXBuildFile section */
+		C70000000000000000000017 /* stay-grid-barcelona.json in Resources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000017 /* stay-grid-barcelona.json */; };
+		C70000000000000000000016 /* ComposerPieces.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000016 /* ComposerPieces.swift */; };
+		C70000000000000000000015 /* CityFacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000015 /* CityFacts.swift */; };
+		C70000000000000000000014 /* StayHeatmap.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000014 /* StayHeatmap.swift */; };
+        A30000000000000000000001 /* statlas-city-snapshot.json in Resources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000001; };
+		A20000000000000000000001 /* WorldExplorer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* WorldExplorer.swift */; };
+		A20000000000000000000002 /* Statlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Statlas.swift */; };
+		A20000000000000000000005 /* BeenGlobeMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* BeenGlobeMap.swift */; };
+		A20000000000000000000004 /* BeenLibraryDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* BeenLibraryDesign.swift */; };
+		A20000000000000000000003 /* BeenMapPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* BeenMapPresentation.swift */; };
+		920000000000000000000001 /* SharedInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 910000000000000000000001 /* SharedInbox.swift */; };
+		920000000000000000000002 /* SharedInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 910000000000000000000001 /* SharedInbox.swift */; };
+		920000000000000000000003 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 910000000000000000000002 /* ShareViewController.swift */; };
+		920000000000000000000004 /* SocialLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 910000000000000000000003 /* SocialLibrary.swift */; };
+		920000000000000000000005 /* TrippyShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 910000000000000000000004 /* TrippyShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A10000000000000000000001 /* TrippyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* TrippyApp.swift */; };
 		A10000000000000000000004 /* Brand in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* Brand */; };
 		A10000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* Assets.xcassets */; };
@@ -38,9 +32,61 @@
 		A10000000000000000000011 /* PlusJakartaSans-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* PlusJakartaSans-Bold.ttf */; };
 		A10000000000000000000012 /* PlusJakartaSans-ExtraBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* PlusJakartaSans-ExtraBold.ttf */; };
 		A10000000000000000000013 /* PlusJakartaSans-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* PlusJakartaSans-OFL.txt */; };
+		C70000000000000000000000 /* SketchKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000000 /* SketchKit.swift */; };
+		C70000000000000000000001 /* TripGuideModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000001 /* TripGuideModel.swift */; };
+		C70000000000000000000002 /* TripGuideContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000002 /* TripGuideContext.swift */; };
+		C70000000000000000000003 /* TripGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000003 /* TripGuideView.swift */; };
+		C70000000000000000000004 /* TripShelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000004 /* TripShelf.swift */; };
+		C70000000000000000000005 /* TripComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000005 /* TripComposer.swift */; };
+		C70000000000000000000006 /* ComposerParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000006 /* ComposerParser.swift */; };
+		C70000000000000000000007 /* TrippyIcons.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000007 /* TrippyIcons.swift */; };
+		C70000000000000000000008 /* TrippyTabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000008 /* TrippyTabBar.swift */; };
+		C70000000000000000000009 /* LegacyText.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000009 /* LegacyText.swift */; };
+		C70000000000000000000010 /* CountryShapes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000010 /* CountryShapes.swift */; };
+		C70000000000000000000011 /* BeenGlobe3D.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000011 /* BeenGlobe3D.swift */; };
+		C70000000000000000000012 /* BeenToPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000012 /* BeenToPage.swift */; };
+		C70000000000000000000013 /* BeenShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000013 /* BeenShare.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		970000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E10000000000000000000002 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 950000000000000000000001;
+			remoteInfo = TrippyShare;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		940000000000000000000002 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				920000000000000000000005 /* TrippyShare.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		C80000000000000000000017 /* stay-grid-barcelona.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "stay-grid-barcelona.json"; sourceTree = "<group>"; };
+		C80000000000000000000016 /* ComposerPieces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ComposerPieces.swift"; sourceTree = "<group>"; };
+		C80000000000000000000015 /* CityFacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CityFacts.swift"; sourceTree = "<group>"; };
+		C80000000000000000000014 /* StayHeatmap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StayHeatmap.swift"; sourceTree = "<group>"; };
+        B30000000000000000000001 /* statlas-city-snapshot.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "statlas-city-snapshot.json"; sourceTree = "<group>"; };
+		B20000000000000000000001 /* WorldExplorer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldExplorer.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* Statlas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Statlas.swift; sourceTree = "<group>"; };
+		B20000000000000000000005 /* BeenGlobeMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeenGlobeMap.swift; sourceTree = "<group>"; };
+		B20000000000000000000004 /* BeenLibraryDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeenLibraryDesign.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* BeenMapPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeenMapPresentation.swift; sourceTree = "<group>"; };
+		910000000000000000000001 /* SharedInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedInbox.swift; sourceTree = "<group>"; };
+		910000000000000000000002 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		910000000000000000000003 /* SocialLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocialLibrary.swift; sourceTree = "<group>"; };
+		910000000000000000000004 /* TrippyShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TrippyShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000001 /* TrippyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrippyApp.swift; sourceTree = "<group>"; };
 		B10000000000000000000002 /* Trippy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Trippy.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -53,6 +99,20 @@
 		B10000000000000000000013 /* PlusJakartaSans-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "PlusJakartaSans-Bold.ttf"; sourceTree = "<group>"; };
 		B10000000000000000000014 /* PlusJakartaSans-ExtraBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "PlusJakartaSans-ExtraBold.ttf"; sourceTree = "<group>"; };
 		B10000000000000000000015 /* PlusJakartaSans-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "PlusJakartaSans-OFL.txt"; sourceTree = "<group>"; };
+		C80000000000000000000000 /* SketchKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SketchKit.swift; sourceTree = "<group>"; };
+		C80000000000000000000001 /* TripGuideModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripGuideModel.swift; sourceTree = "<group>"; };
+		C80000000000000000000002 /* TripGuideContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripGuideContext.swift; sourceTree = "<group>"; };
+		C80000000000000000000003 /* TripGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripGuideView.swift; sourceTree = "<group>"; };
+		C80000000000000000000004 /* TripShelf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripShelf.swift; sourceTree = "<group>"; };
+		C80000000000000000000005 /* TripComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripComposer.swift; sourceTree = "<group>"; };
+		C80000000000000000000006 /* ComposerParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerParser.swift; sourceTree = "<group>"; };
+		C80000000000000000000007 /* TrippyIcons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrippyIcons.swift; sourceTree = "<group>"; };
+		C80000000000000000000008 /* TrippyTabBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrippyTabBar.swift; sourceTree = "<group>"; };
+		C80000000000000000000009 /* LegacyText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LegacyText.swift; sourceTree = "<group>"; };
+		C80000000000000000000010 /* CountryShapes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CountryShapes.swift; sourceTree = "<group>"; };
+		C80000000000000000000011 /* BeenGlobe3D.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeenGlobe3D.swift; sourceTree = "<group>"; };
+		C80000000000000000000012 /* BeenToPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeenToPage.swift; sourceTree = "<group>"; };
+		C80000000000000000000013 /* BeenShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeenShare.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -66,12 +126,28 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		930000000000000000000001 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				910000000000000000000001 /* SharedInbox.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		930000000000000000000002 /* TrippyShare */ = {
+			isa = PBXGroup;
+			children = (
+				910000000000000000000002 /* ShareViewController.swift */,
+			);
+			path = TrippyShare;
+			sourceTree = "<group>";
+		};
 		D10000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
 				D10000000000000000000002 /* Trippy */,
-                930000000000000000000001,
-                930000000000000000000002,
+				930000000000000000000001 /* Shared */,
+				930000000000000000000002 /* TrippyShare */,
 				D10000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -80,7 +156,29 @@
 			isa = PBXGroup;
 			children = (
 				B10000000000000000000001 /* TrippyApp.swift */,
-                910000000000000000000003,
+				B20000000000000000000001 /* WorldExplorer.swift */,
+				B20000000000000000000002 /* Statlas.swift */,
+				B20000000000000000000003 /* BeenMapPresentation.swift */,
+				B20000000000000000000004 /* BeenLibraryDesign.swift */,
+				C80000000000000000000013 /* BeenShare.swift */,
+				C80000000000000000000012 /* BeenToPage.swift */,
+				C80000000000000000000011 /* BeenGlobe3D.swift */,
+				C80000000000000000000010 /* CountryShapes.swift */,
+				C80000000000000000000009 /* LegacyText.swift */,
+				C80000000000000000000016 /* ComposerPieces.swift */,
+				C80000000000000000000015 /* CityFacts.swift */,
+				C80000000000000000000014 /* StayHeatmap.swift */,
+				C80000000000000000000008 /* TrippyTabBar.swift */,
+				C80000000000000000000007 /* TrippyIcons.swift */,
+				C80000000000000000000006 /* ComposerParser.swift */,
+				C80000000000000000000005 /* TripComposer.swift */,
+				C80000000000000000000004 /* TripShelf.swift */,
+				C80000000000000000000003 /* TripGuideView.swift */,
+				C80000000000000000000002 /* TripGuideContext.swift */,
+				C80000000000000000000001 /* TripGuideModel.swift */,
+				C80000000000000000000000 /* SketchKit.swift */,
+				B20000000000000000000005 /* BeenGlobeMap.swift */,
+				910000000000000000000003 /* SocialLibrary.swift */,
 				B10000000000000000000005 /* Info.plist */,
 				B10000000000000000000006 /* Brand */,
 				B10000000000000000000007 /* Assets.xcassets */,
@@ -94,7 +192,7 @@
 			isa = PBXGroup;
 			children = (
 				B10000000000000000000002 /* Trippy.app */,
-                910000000000000000000004,
+				910000000000000000000004 /* TrippyShare.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -108,6 +206,8 @@
 				B10000000000000000000013 /* PlusJakartaSans-Bold.ttf */,
 				B10000000000000000000014 /* PlusJakartaSans-ExtraBold.ttf */,
 				B10000000000000000000015 /* PlusJakartaSans-OFL.txt */,
+                B30000000000000000000001 /* statlas-city-snapshot.json */,
+				C80000000000000000000017 /* stay-grid-barcelona.json */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -115,6 +215,21 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		950000000000000000000001 /* TrippyShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 960000000000000000000001 /* Build configuration list for PBXNativeTarget "TrippyShare" */;
+			buildPhases = (
+				940000000000000000000001 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TrippyShare;
+			productName = TrippyShare;
+			productReference = 910000000000000000000004 /* TrippyShare.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		E10000000000000000000001 /* Trippy */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = F10000000000000000000002 /* Build configuration list for PBXNativeTarget "Trippy" */;
@@ -122,12 +237,12 @@
 				C10000000000000000000001 /* Sources */,
 				C10000000000000000000002 /* Frameworks */,
 				C10000000000000000000003 /* Resources */,
-                940000000000000000000002,
+				940000000000000000000002 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-                970000000000000000000002,
+				970000000000000000000002 /* PBXTargetDependency */,
 			);
 			name = Trippy;
 			productName = Trippy;
@@ -141,7 +256,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastUpgradeCheck = 2710;
+				LastUpgradeCheck = 2720;
 			};
 			buildConfigurationList = F10000000000000000000001 /* Build configuration list for PBXProject "Trippy" */;
 			compatibilityVersion = "Xcode 14.0";
@@ -158,7 +273,7 @@
 			projectRoot = "";
 			targets = (
 				E10000000000000000000001 /* Trippy */,
-                950000000000000000000001,
+				950000000000000000000001 /* TrippyShare */,
 			);
 		};
 /* End PBXProject section */
@@ -177,36 +292,122 @@
 				A10000000000000000000011 /* PlusJakartaSans-Bold.ttf in Resources */,
 				A10000000000000000000012 /* PlusJakartaSans-ExtraBold.ttf in Resources */,
 				A10000000000000000000013 /* PlusJakartaSans-OFL.txt in Resources */,
+                A30000000000000000000001 /* statlas-city-snapshot.json in Resources */,
+				C70000000000000000000017 /* stay-grid-barcelona.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		940000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				920000000000000000000002 /* SharedInbox.swift in Sources */,
+				920000000000000000000003 /* ShareViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C10000000000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000001 /* TrippyApp.swift in Sources */,
-                920000000000000000000001,
-                920000000000000000000004,
+				A20000000000000000000001 /* WorldExplorer.swift in Sources */,
+				A20000000000000000000002 /* Statlas.swift in Sources */,
+				A20000000000000000000003 /* BeenMapPresentation.swift in Sources */,
+				A20000000000000000000004 /* BeenLibraryDesign.swift in Sources */,
+				C70000000000000000000013 /* BeenShare.swift in Sources */,
+				C70000000000000000000012 /* BeenToPage.swift in Sources */,
+				C70000000000000000000011 /* BeenGlobe3D.swift in Sources */,
+				C70000000000000000000010 /* CountryShapes.swift in Sources */,
+				C70000000000000000000009 /* LegacyText.swift in Sources */,
+				C70000000000000000000016 /* ComposerPieces.swift in Sources */,
+				C70000000000000000000015 /* CityFacts.swift in Sources */,
+				C70000000000000000000014 /* StayHeatmap.swift in Sources */,
+				C70000000000000000000008 /* TrippyTabBar.swift in Sources */,
+				C70000000000000000000007 /* TrippyIcons.swift in Sources */,
+				C70000000000000000000006 /* ComposerParser.swift in Sources */,
+				C70000000000000000000005 /* TripComposer.swift in Sources */,
+				C70000000000000000000004 /* TripShelf.swift in Sources */,
+				C70000000000000000000003 /* TripGuideView.swift in Sources */,
+				C70000000000000000000002 /* TripGuideContext.swift in Sources */,
+				C70000000000000000000001 /* TripGuideModel.swift in Sources */,
+				C70000000000000000000000 /* SketchKit.swift in Sources */,
+				A20000000000000000000005 /* BeenGlobeMap.swift in Sources */,
+				920000000000000000000001 /* SharedInbox.swift in Sources */,
+				920000000000000000000004 /* SocialLibrary.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		970000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 950000000000000000000001 /* TrippyShare */;
+			targetProxy = 970000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		960000000000000000000002 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = TrippyShare/TrippyShare.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				"ENABLE_DEBUG_DYLIB[sdk=iphoneos*]" = NO;
+				DEVELOPMENT_TEAM = AFC34U72DV;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TrippyShare/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dimitrisymeonidis.trippy.share;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		960000000000000000000003 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = TrippyShare/TrippyShare.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = AFC34U72DV;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TrippyShare/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dimitrisymeonidis.trippy.share;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		G10000000000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
 				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
 				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
 				CLANG_WARN_BOOL_CONVERSION = YES;
 				CLANG_WARN_COMMA = YES;
 				CLANG_WARN_CONSTANT_CONVERSION = YES;
 				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
 				CLANG_WARN_EMPTY_BODY = YES;
 				CLANG_WARN_ENUM_CONVERSION = YES;
 				CLANG_WARN_INFINITE_RECURSION = YES;
@@ -214,27 +415,42 @@
 				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
 				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
 				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
 				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
 				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
 				CLANG_WARN_STRICT_PROTOTYPES = YES;
 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = AFC34U72DV;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
 				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 			};
@@ -244,13 +460,21 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
 				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
 				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
 				CLANG_WARN_BOOL_CONVERSION = YES;
 				CLANG_WARN_COMMA = YES;
 				CLANG_WARN_CONSTANT_CONVERSION = YES;
 				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
 				CLANG_WARN_EMPTY_BODY = YES;
 				CLANG_WARN_ENUM_CONVERSION = YES;
 				CLANG_WARN_INFINITE_RECURSION = YES;
@@ -258,23 +482,32 @@
 				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
 				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
 				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
 				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
 				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
 				CLANG_WARN_STRICT_PROTOTYPES = YES;
 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = AFC34U72DV;
+				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
 				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -288,11 +521,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = Trippy/Trippy.entitlements;
 				CODE_SIGN_STYLE = Automatic;
+				"ENABLE_DEBUG_DYLIB[sdk=iphoneos*]" = NO;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Trippy/Info.plist;
-                CODE_SIGN_ENTITLEMENTS = Trippy/Trippy.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.dimitrisymeonidis.trippy;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -310,10 +544,10 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = Trippy/Trippy.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Trippy/Info.plist;
-                CODE_SIGN_ENTITLEMENTS = Trippy/Trippy.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.dimitrisymeonidis.trippy;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -329,6 +563,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		960000000000000000000001 /* Build configuration list for PBXNativeTarget "TrippyShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				960000000000000000000002 /* Debug */,
+				960000000000000000000003 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		F10000000000000000000001 /* Build configuration list for PBXProject "Trippy" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

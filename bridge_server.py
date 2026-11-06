@@ -22,6 +22,12 @@ from trippy.planner.planning_contract import normalized_brief
 from trippy.planner.pipeline import run as execute_plan, StageStore
 from trippy.planner.live_provider import AzureResearchProvider, ResearchConfigurationError, configuration_issues
 from trippy.planner.diagnostics import failure_details
+from trippy.planner.personal_pipeline import run as execute_personal_plan
+from trippy.planner.travel_provider import GoogleTravelProvider
+from trippy.planner.ai_adapter import AzureIntentAdapter
+import base64
+from trippy.social.extract import ExtractionQueue
+from trippy.social.gemini import GeminiPool
 
 
 class ResearchState:
@@ -42,6 +48,8 @@ class ResearchState:
 state=ResearchState()
 places_limit_lock=threading.Lock()
 places_request_times=[]
+photo_request_times=[]
+social_request_times=[]
 
 
 def places_key():
@@ -55,14 +63,19 @@ def places_access_allowed(handler):
     return bool(expected) and hmac.compare_digest(expected,supplied)
 
 
-def allow_places_request():
-    """Keep this optional, live-only proxy from becoming an unbounded API relay."""
+def allow_places_request(kind='places'):
+    """Keep this optional, live-only proxy from becoming an unbounded API relay.
+
+    Photos have their own budget: one place card asks for up to eight at once,
+    and sharing a 30/min bucket with typed search starved them into 429s.
+    """
     now=time.time()
+    times,limit={'photo':(photo_request_times,120),'social':(social_request_times,60)}.get(kind,(places_request_times,30))
     with places_limit_lock:
-        places_request_times[:]=[stamp for stamp in places_request_times if now-stamp < 60]
-        if len(places_request_times) >= 30:
+        times[:]=[stamp for stamp in times if now-stamp < 60]
+        if len(times) >= limit:
             return False
-        places_request_times.append(now)
+        times.append(now)
         return True
 
 
@@ -76,6 +89,55 @@ def google_places_json(path, api_key, *, body=None, field_mask=None):
     with urlopen(request,timeout=12) as response:
         payload=response.read(2_000_000)
     return json.loads(payload)
+
+
+def social_place_search(query):
+    """Google Places Text Search for one extracted venue (server-side pinning)."""
+    api_key=places_key()
+    if not api_key: return []
+    if not allow_places_request('social'): raise RuntimeError('places_rate_limit')
+    payload=google_places_json('places:searchText',api_key,body={'textQuery':query[:180],'pageSize':3,'languageCode':'en'},
+        field_mask='places.id,places.displayName,places.formattedAddress,places.location,places.primaryTypeDisplayName,places.addressComponents,places.rating,places.userRatingCount')
+    hits=[]
+    for place in payload.get('places',[]):
+        components=place.get('addressComponents',[])
+        city=next((c.get('longText','') for c in components if 'locality' in c.get('types',[]) or 'postal_town' in c.get('types',[])),'')
+        country=next((c.get('shortText','') for c in components if 'country' in c.get('types',[])),'')
+        location=place.get('location') or {}
+        hits.append({'placeID':place.get('id'),'name':(place.get('displayName') or {}).get('text',''),'address':place.get('formattedAddress',''),
+            'latitude':location.get('latitude'),'longitude':location.get('longitude'),
+            'primaryType':(place.get('primaryTypeDisplayName') or {}).get('text',''),'city':city,'countryCode':country,
+            'rating':place.get('rating'),'reviewCount':place.get('userRatingCount')})
+    return hits
+
+
+def social_place_details(place_id):
+    """Facts + recent reviews used to refine extracted cards (not stored beyond the job result)."""
+    api_key=places_key()
+    if not api_key: return {}
+    if not allow_places_request('social'): raise RuntimeError('places_rate_limit')
+    place=google_places_json('places/'+quote(place_id,safe=''),api_key,
+        field_mask='id,formattedAddress,primaryTypeDisplayName,rating,userRatingCount,regularOpeningHours,editorialSummary,reviews')
+    return {'address':place.get('formattedAddress',''),'primaryType':(place.get('primaryTypeDisplayName') or {}).get('text',''),
+        'rating':place.get('rating'),'reviewCount':place.get('userRatingCount'),
+        'openingHours':(place.get('regularOpeningHours') or {}).get('weekdayDescriptions',[]),
+        'summary':(place.get('editorialSummary') or {}).get('text',''),
+        'reviews':[{'rating':r.get('rating'),'text':(r.get('text') or {}).get('text','')} for r in place.get('reviews',[])[:5]]}
+
+
+_social_queue=None
+_social_lock=threading.Lock()
+
+def social_queue():
+    global _social_queue
+    with _social_lock:
+        if _social_queue is None:
+            def pool():
+                values=read_environment(root()/'.env')
+                models=[m for m in values.get('GEMINI_MODELS','').split(',') if m.strip()]
+                return GeminiPool(values.get('GEMINI_API_KEY','').strip(),models or None)
+            _social_queue=ExtractionQueue(pool,search=social_place_search,details=social_place_details,directory=root()/'.local/social-jobs')
+        return _social_queue
 
 
 _catalog_engine = None
@@ -169,12 +231,31 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
     if job_id is None: job_id,brief_data=begin_job(brief_data)
     try:
         values=read_environment(root()/'.env')
-        if provider is None:
+        personal = brief_data.get('planning_strategy') == 'personal_places'
+        if provider is None and not personal:
             ledger=Path(values.get('TRIPPY_SHARED_BUDGET_LEDGER',str(root()/'.local/stage3/extraction-budget.sqlite')))
             if not ledger.is_absolute(): ledger=root()/ledger
             provider=AzureResearchProvider(values,ledger)
-        result=execute_plan(brief_data,provider=provider,directory=job_directory(job_id),root=root(),
-            route_provider=route_provider,progress=lambda step,detail:progress(job_id,step,detail) if step not in {'completed','partial'} else None)
+        report_progress=lambda step,detail:progress(job_id,step,detail) if step not in {'completed','partial'} else None
+        if personal:
+            place_provider=None
+            if values.get('GOOGLE_PLACES_API_KEY') and values.get('TRIPPY_ALLOW_PAID_RESEARCH','').lower()=='true':
+                def request_places(path, **kwargs):
+                    if not allow_places_request(): raise RuntimeError('place_rate_limit')
+                    return google_places_json(path,values['GOOGLE_PLACES_API_KEY'],**kwargs)
+                place_provider=GoogleTravelProvider(request_places)
+            # Existing AI configuration remains optional; the library can draft offline.
+            if provider is None and not configuration_issues(values):
+                ledger=Path(values.get('TRIPPY_SHARED_BUDGET_LEDGER',str(root()/'.local/stage3/extraction-budget.sqlite')))
+                if not ledger.is_absolute(): ledger=root()/ledger
+                provider=AzureResearchProvider(values,ledger)
+            ai_adapter=AzureIntentAdapter(provider) if provider is not None else None
+            result=execute_personal_plan(brief_data,place_provider=place_provider,intelligence=provider,
+                ai_adapter=ai_adapter,
+                directory=job_directory(job_id),root=root(),route_provider=route_provider,progress=report_progress)
+        else:
+            result=execute_plan(brief_data,provider=provider,directory=job_directory(job_id),root=root(),
+                route_provider=route_provider,progress=report_progress)
         report=result.setdefault('pipeline_report',{})
         report.update(support_id=state.jobs[job_id]['support_id'],build_commit=os.environ.get('RENDER_GIT_COMMIT','local'))
         step='completed' if result['delivery_status']=='ready' else 'error' if result['delivery_status']=='failed' else 'partial'
@@ -250,7 +331,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not api_key:
             self.send_json(503,{'stage':'render','errorCode':'google_places_key_missing',
                 'message':'GOOGLE_PLACES_API_KEY is missing from the Render environment.'}); return True
-        if not allow_places_request(): self.send_json(429,{'error':'places_rate_limit'}); return True
+        if not allow_places_request('photo' if target.path=='/api/places/photo' else 'places'):
+            self.send_json(429,{'error':'places_rate_limit'}); return True
         query=parse_qs(target.query)
         try:
             if target.path=='/api/places/status':
@@ -330,7 +412,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                     'rating':place.get('rating'),'reviewCount':place.get('userRatingCount'),'openNow':opening.get('openNow'),
                     'openingHours':opening.get('weekdayDescriptions',[]),'phoneNumber':place.get('internationalPhoneNumber'),
                     'websiteURL':place.get('websiteUri'),'googleMapsURL':place.get('googleMapsUri'),
-                    'summary':(place.get('editorialSummary') or {}).get('text',''),'photos':photos,'reviews':reviews})
+                    'summary':(place.get('editorialSummary') or {}).get('text',''),'photos':photos,'reviews':reviews,
+                    # Diagnostic: which top-level fields Google actually returned (names only, no content).
+                    'returnedFields':sorted(place.keys())})
                 return True
             if target.path=='/api/places/photo':
                 name=query.get('name',[''])[0]
@@ -339,6 +423,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                 try: width=max(160,min(1600,int(query.get('max_width',['960'])[0])))
                 except ValueError: width=960
                 url='https://places.googleapis.com/v1/'+quote(name,safe='/')+'/media?maxWidthPx='+str(width)
+                if query.get('format',[''])[0]=='uri':
+                    # Short-lived googleusercontent URL: the app loads the bytes from Google's CDN
+                    # directly instead of streaming every image through this server.
+                    payload=google_places_json(quote(name,safe='/')+'/media?maxWidthPx='+str(width)+'&skipHttpRedirect=true',api_key)
+                    photo_uri=payload.get('photoUri') if isinstance(payload,dict) else None
+                    if not isinstance(photo_uri,str) or not photo_uri.startswith('https://'):
+                        self.send_json(502,{'error':'photo_unavailable'}); return True
+                    self.send_json(200,{'photoUri':photo_uri}); return True
                 request=Request(url,headers={'X-Goog-Api-Key':api_key,'Accept':'image/*'})
                 with urlopen(request,timeout=15) as response:
                     image=response.read(8_000_000)
@@ -369,21 +461,52 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         target=urlsplit(self.path)
         if target.path.startswith('/api/places/'): self.google_places(target); return
+        if target.path in ('/api/social/extract','/api/social/status'):
+            if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
+            if target.path=='/api/social/status':
+                try: self.send_json(200,{'models':social_queue()._pool_factory().status()})
+                except Exception as error: self.send_json(503,{'error':'gemini_unavailable','message':str(error)[:300]})
+                return
+            job=social_queue().get(parse_qs(target.query).get('job_id',[''])[0])
+            if job is None: self.send_json(404,{'error':'job_not_found'})
+            else: self.send_json(200,job)
+            return
         if target.path!='/api/status': self.send_json(404,{'error':'not_found'}); return
         capabilities={'api_version':3,'research_contract_version':4,'result_schema':'trippy-research-v1',
-            'pipeline_version':'trip-pipeline-v1','build_commit':os.environ.get('RENDER_GIT_COMMIT','local')}
+            'pipeline_version':'personal-places-v1','planning_strategies':['research','personal_places'],
+            'build_commit':os.environ.get('RENDER_GIT_COMMIT','local')}
         job_id=parse_qs(target.query).get('job_id',[None])[0]
         if job_id is None:
             # Preflight does not expose another run's brief, result or job capability.
             try: issues=configuration_issues(read_environment(root()/'.env'))
             except (ValueError,OSError): issues=['ENVIRONMENT_CONFIGURATION']
+            personal=parse_qs(target.query).get('strategy',[None])[0]=='personal_places'
             self.send_json(200,{**capabilities,'is_running':state.is_running,'has_result':False,
-                'research_ready':not issues,'configuration_issues':issues}); return
+                'research_ready':personal or not issues,'configuration_issues':[] if personal else issues}); return
         try: job=read_job(job_id)
         except (ValueError,KeyError): job=None
         if job is None: self.send_json(404,{'error':'job_not_found'}); return
         self.send_json(200,{**capabilities,**job,'has_result':job['result'] is not None})
     def do_POST(self):
+        if urlsplit(self.path).path == '/api/social/extract':
+            if not places_access_allowed(self): self.send_json(401, {'error': 'access_token_required'}); return
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length <= 24_000_000: raise ValueError('invalid_length')
+                body = json.loads(self.rfile.read(length))
+                source_id = str(UUID(str(body.get('source_id'))))
+                evidence = [{'origin': str(b.get('origin', ''))[:40], 'text': str(b.get('text', ''))[:40000]}
+                            for b in (body.get('evidence') or [])[:40] if isinstance(b, dict)]
+                images = [(str(i.get('mime', 'image/jpeg')), base64.b64decode(i['data']))
+                          for i in (body.get('images') or [])[:12] if isinstance(i, dict) and i.get('data')]
+                audio = body.get('audio') or None
+                audio = (str(audio.get('mime', 'audio/mp4')), base64.b64decode(audio['data'])) if isinstance(audio, dict) and audio.get('data') else None
+                if not evidence and not images and not audio: raise ValueError('no_evidence')
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError, base64.binascii.Error):
+                self.send_json(422, {'error': 'invalid_social_source'}); return
+            source = {'url': str(body.get('url') or '')[:500], 'author': str(body.get('author') or '')[:120],
+                      'evidence': evidence, 'images': images, 'audio': audio}
+            self.send_json(202, social_queue().submit(source_id, source)); return
         if urlsplit(self.path).path == '/api/places/retain':
             if not places_access_allowed(self): self.send_json(401, {'error': 'access_token_required'}); return
             try:
@@ -408,6 +531,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             length=int(self.headers.get('Content-Length','0'))
             if not 0<length<=1000000: raise ValueError('bounded_request_required')
             brief=json.loads(self.rfile.read(length).decode())
+            if isinstance(brief,dict) and brief.get('planning_strategy')=='personal_places' and not places_access_allowed(self):
+                self.send_json(401,{'error':'access_token_required'}); return
             job_id,brief=begin_job(brief)
         except RuntimeError:
             self.send_json(409,{'error':'research_already_running'}); return

@@ -1,0 +1,147 @@
+import base64
+import io
+import json
+import time
+import unittest
+import uuid
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.parse import urlsplit
+
+import bridge_server as bridge
+from trippy.social import extract as ex
+from trippy.social.gemini import GeminiPool, GeminiUnavailable
+from trippy.social.tiktok import vtt_text
+
+
+class FakeResponse(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+def reply(payload):
+    return FakeResponse(json.dumps({"candidates": [{"content": {"parts": [{"text": json.dumps(payload)}]}}]}).encode())
+
+
+def rate_limited(daily=False):
+    detail = {"error": {"code": 429, "message": "Quota exceeded", "details": [
+        {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier" if daily else "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]},
+        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "30s"}]}}
+    return HTTPError("u", 429, "Too Many", {}, io.BytesIO(json.dumps(detail).encode()))
+
+
+RESULT = {"post_title": "Cozy", "post_summary": "s", "transcript": "", "city": "Athens", "country": "Greece", "country_code": "GR",
+          "unresolved": [], "places": [
+              {"name": "Easy Peasy", "category": "Coffee", "search_query": "Easy Peasy, Peristeri, Athens", "vibe_tags": ["Cozy", "Summer", "Rooftop", "Extra"],
+               "tldr": "t", "pro_tips": [" a ", ""], "good_to_know": [], "must_try": [], "why_go": ["w"], "evidence": ["slide 6"], "confidence": 0.9},
+              {"name": "easy peasy", "category": "Coffee", "search_query": "x", "vibe_tags": [], "tldr": "", "pro_tips": [], "good_to_know": [],
+               "must_try": [], "why_go": [], "evidence": [], "confidence": 0.9},
+              {"name": "Maybe", "category": "Nope", "search_query": "x", "vibe_tags": [], "tldr": "", "pro_tips": [], "good_to_know": [],
+               "must_try": [], "why_go": [], "evidence": [], "confidence": 0.1}]}
+
+
+class GeminiPoolTests(unittest.TestCase):
+    def test_falls_through_and_parks_rate_limited_model(self):
+        calls = []
+        def opener(request, timeout=0):
+            calls.append(request.full_url)
+            if "model-a" in request.full_url: raise rate_limited()
+            return reply({"ok": True})
+        now = [1000.0]
+        pool = GeminiPool("k", ["model-a", "model-b"], opener=opener, clock=lambda: now[0])
+        self.assertEqual(pool.generate([{"text": "x"}]), ({"ok": True}, "model-b"))
+        pool.generate([{"text": "x"}])
+        self.assertEqual(sum("model-a" in c for c in calls), 1, "parked model is skipped until its retry delay")
+        now[0] += 40
+        pool.generate([{"text": "x"}])
+        self.assertEqual(sum("model-a" in c for c in calls), 2)
+
+    def test_daily_quota_parks_until_pacific_midnight(self):
+        pool = GeminiPool("k", ["model-a"], opener=lambda r, timeout=0: (_ for _ in ()).throw(rate_limited(daily=True)))
+        with self.assertRaises(GeminiUnavailable) as raised:
+            pool.generate([{"text": "x"}])
+        self.assertGreater(raised.exception.retry_at - time.time(), 60)
+
+    def test_discovery_prefers_new_flash_then_lite(self):
+        models = {"models": [{"name": f"models/{n}", "supportedGenerationMethods": ["generateContent"]} for n in
+                  ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash-tts", "gemini-4-argon"]]}
+        pool = GeminiPool("k", opener=lambda r, timeout=0: FakeResponse(json.dumps(models).encode()))
+        self.assertEqual(pool.models(), ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"])
+
+
+class ExtractTests(unittest.TestCase):
+    def test_clean_dedupes_and_normalises(self):
+        result = ex.clean(json.loads(json.dumps(RESULT)))
+        self.assertEqual([p["name"] for p in result["places"]], ["Easy Peasy"])
+        place = result["places"][0]
+        self.assertEqual(place["vibe_tags"], ["Cozy", "Summer", "Rooftop"])
+        self.assertEqual(place["pro_tips"], ["a"])
+        self.assertEqual((place["city"], place["country_code"]), ("Athens", "GR"))
+
+    def test_parts_include_slides_and_audio(self):
+        parts = ex.build_parts({"url": "u", "evidence": [{"origin": "post_caption", "text": "cap"}],
+                                "images": [("image/jpeg", b"1"), ("image/webp", b"2")], "audio": ("audio/mp4", b"a")})
+        self.assertIn("[Caption]", parts[0]["text"])
+        self.assertEqual([p["inline_data"]["mime_type"] for p in parts if "inline_data" in p], ["image/jpeg", "image/webp", "audio/mp4"])
+
+    def test_enrich_rejects_wrong_country(self):
+        result = ex.clean(json.loads(json.dumps(RESULT)))
+        ex.enrich(result, lambda q: [{"placeID": "x", "name": "Easy Peasy NYC", "countryCode": "US", "latitude": 1, "longitude": 2}])
+        self.assertNotIn("google", result["places"][0])
+        ex.enrich(result, lambda q: [{"placeID": "p", "name": "Easy Peasy", "address": "Peristeri", "countryCode": "GR", "latitude": 38.0, "longitude": 23.7}])
+        self.assertEqual(result["places"][0]["google"]["placeID"], "p")
+
+    def test_queue_runs_job_and_is_idempotent(self):
+        class Pool:
+            calls = 0
+            def generate(self, parts, **kw):
+                Pool.calls += 1
+                return json.loads(json.dumps(RESULT)), "fake-model"
+        queue = ex.ExtractionQueue(lambda: Pool(), search=None)
+        job_id = str(uuid.uuid4())
+        queue.submit(job_id, {"evidence": [{"origin": "post_caption", "text": "x"}]})
+        for _ in range(100):
+            if queue.get(job_id)["status"] == "ready": break
+            time.sleep(0.02)
+        job = queue.get(job_id)
+        self.assertEqual(job["status"], "ready")
+        self.assertEqual(job["result"]["model"], "fake-model")
+        self.assertNotIn("source", job)
+        queue.submit(job_id, {"evidence": [{"origin": "post_caption", "text": "x"}]})
+        self.assertEqual(Pool.calls, 1)
+
+    def test_vtt_to_text(self):
+        self.assertEqual(vtt_text("WEBVTT\n\n1\n00:00.0 --> 00:01.0\nHello\n\n00:01.0 --> 00:02.0\nHello\nworld"), "Hello world")
+
+
+class EndpointTests(unittest.TestCase):
+    def handler(self, path, body=None):
+        handler = object.__new__(bridge.RequestHandler)
+        handler.path = path; handler.replies = []
+        raw = json.dumps(body).encode() if body is not None else b""
+        handler.headers = {"Content-Length": str(len(raw))}; handler.rfile = io.BytesIO(raw)
+        handler.send_json = lambda status, payload: handler.replies.append((status, payload))
+        return handler
+
+    def test_requires_token(self):
+        handler = self.handler("/api/social/extract", {"source_id": str(uuid.uuid4())})
+        with patch.object(bridge, "places_access_allowed", return_value=False):
+            handler.do_POST()
+        self.assertEqual(handler.replies[0][0], 401)
+
+    def test_submit_and_poll(self):
+        class Queue:
+            def __init__(self): self.jobs = {}
+            def submit(self, job_id, source): self.jobs[job_id] = source; return {"job_id": job_id, "status": "queued"}
+            def get(self, job_id): return {"job_id": job_id, "status": "ready"} if job_id in self.jobs else None
+        queue, source_id = Queue(), str(uuid.uuid4())
+        body = {"source_id": source_id, "url": "https://www.tiktok.com/@a/video/1", "evidence": [{"origin": "post_caption", "text": "hi"}],
+                "images": [{"mime": "image/jpeg", "data": base64.b64encode(b"img").decode()}]}
+        with patch.object(bridge, "places_access_allowed", return_value=True), patch.object(bridge, "social_queue", return_value=queue):
+            handler = self.handler("/api/social/extract", body); handler.do_POST()
+            self.assertEqual(handler.replies[0], (202, {"job_id": source_id, "status": "queued"}))
+            self.assertEqual(queue.jobs[source_id]["images"], [("image/jpeg", b"img")])
+            handler = self.handler(f"/api/social/extract?job_id={source_id}"); handler.do_GET()
+            self.assertEqual(handler.replies[0][1]["status"], "ready")
+            handler = self.handler("/api/social/extract", {"source_id": "nope"}); handler.do_POST()
+            self.assertEqual(handler.replies[0][0], 422)

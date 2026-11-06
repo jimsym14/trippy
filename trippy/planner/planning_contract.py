@@ -56,6 +56,9 @@ def normalized_brief(supplied):
     for field in ('arrival','departure'):
         value=date_range.get(field)
         if value is not None and (not isinstance(value,str) or len(value)>10): raise ValueError('Invalid trip date')
+    # Optional flight/arrival clock times ("18:45") shape the first and last day.
+    for field in ('arrival_time','departure_time'):
+        if date_range.get(field) is not None: clock_minutes(date_range[field])
     if date_range.get('arrival') and date_range.get('departure') and not date_range.get('dates_unknown'):
         from datetime import date
         if (date.fromisoformat(date_range['departure'])-date.fromisoformat(date_range['arrival'])).days>30:
@@ -82,6 +85,11 @@ def normalized_brief(supplied):
             raise ValueError('Lock needs a valid place/date/time/duration')
         clock_minutes(lock['time'])
     brief['locked_stops'] = deepcopy(locks)
+    strategy = brief.get('planning_strategy', 'research')
+    if strategy not in {'research', 'personal_places'}: raise ValueError('Unknown planning strategy')
+    brief['planning_strategy'] = strategy
+    from .place_graph import validate_nodes
+    brief['library_nodes'] = validate_nodes(brief.get('library_nodes', []))
     for field in ['existing_places','existing_sources']:
         records=brief.get(field,[])
         if not isinstance(records,list) or len(records)>150 or any(not isinstance(r,dict) for r in records): raise ValueError('Invalid prior trip evidence')

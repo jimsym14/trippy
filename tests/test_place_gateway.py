@@ -22,6 +22,34 @@ class PlaceGatewayTests(unittest.TestCase):
             handler.google_places(urlsplit(handler.path))
         self.assertEqual(handler.replies, [(200, 'image/jpeg', b'photo')])
 
+    def test_photo_uri_mode(self):
+        name = 'places/ChIJexample/photos/' + 'B' * 700
+        handler = self.handler('/api/places/photo?format=uri&max_width=480&name=' + quote(name, safe=''))
+        with patch.object(bridge, 'places_access_allowed', return_value=True), patch.object(bridge, 'places_key', return_value='test'), \
+             patch.object(bridge, 'allow_places_request', return_value=True) as allow, \
+             patch.object(bridge, 'google_places_json', return_value={'name': name, 'photoUri': 'https://lh3.googleusercontent.com/p/x'}) as fetch:
+            handler.google_places(urlsplit(handler.path))
+        allow.assert_called_once_with('photo')
+        self.assertIn('skipHttpRedirect=true', fetch.call_args.args[0])
+        self.assertIn('maxWidthPx=480', fetch.call_args.args[0])
+        self.assertEqual(handler.replies, [(200, {'photoUri': 'https://lh3.googleusercontent.com/p/x'})])
+
+    def test_photo_uri_rejects_non_https(self):
+        handler = self.handler('/api/places/photo?format=uri&name=' + quote('places/x/photos/y', safe=''))
+        with patch.object(bridge, 'places_access_allowed', return_value=True), patch.object(bridge, 'places_key', return_value='test'), \
+             patch.object(bridge, 'allow_places_request', return_value=True), \
+             patch.object(bridge, 'google_places_json', return_value={'photoUri': 'http://evil.example/x'}):
+            handler.google_places(urlsplit(handler.path))
+        self.assertEqual(handler.replies[0][0], 502)
+
+    def test_photo_budget_is_separate_from_search(self):
+        bridge.places_request_times[:] = []; bridge.photo_request_times[:] = []
+        for _ in range(30): self.assertTrue(bridge.allow_places_request())
+        self.assertFalse(bridge.allow_places_request())
+        for _ in range(120): self.assertTrue(bridge.allow_places_request('photo'))
+        self.assertFalse(bridge.allow_places_request('photo'))
+        bridge.places_request_times[:] = []; bridge.photo_request_times[:] = []
+
     def test_reference_registration_and_failure(self):
         records = [{'placeID': 'ChIJexample', 'source': 'videos'}]
         for failed in [False, True]:

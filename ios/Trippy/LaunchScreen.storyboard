@@ -12,13 +12,13 @@
                 <viewController id="launch-controller" sceneMemberID="viewController">
                     <view key="view" contentMode="scaleToFill" id="launch-view">
                         <rect key="frame" x="0.0" y="0.0" width="393" height="852" />
-                        <color key="backgroundColor" red="0.976" green="0.957" blue="0.929" alpha="1" colorSpace="custom" customColorSpace="sRGB" />
+                        <color key="backgroundColor" red="0.9725" green="0.9569" blue="0.9255" alpha="1" colorSpace="custom" customColorSpace="sRGB" />
                         <subviews>
-                            <imageView userInteractionEnabled="NO" contentMode="scaleAspectFit" image="BrandMark" translatesAutoresizingMaskIntoConstraints="NO" id="launch-mark">
+                            <imageView userInteractionEnabled="NO" contentMode="scaleAspectFit" image="LaunchEmblem" translatesAutoresizingMaskIntoConstraints="NO" id="launch-mark">
                                 <rect key="frame" x="156.5" y="386" width="80" height="80" />
                                 <constraints>
-                                    <constraint firstAttribute="width" constant="80" id="mark-width" />
-                                    <constraint firstAttribute="height" constant="80" id="mark-height" />
+                                    <constraint firstAttribute="width" constant="194" id="mark-width" />
+                                    <constraint firstAttribute="height" constant="190" id="mark-height" />
                                 </constraints>
                             </imageView>
                         </subviews>
@@ -34,6 +34,6 @@
         </scene>
     </scenes>
     <resources>
-        <image name="BrandMark" width="512" height="512" />
+        <image name="LaunchEmblem" width="1280" height="1232" />
     </resources>
 </document>
