@@ -294,7 +294,9 @@ class LocalCatalogTravelProvider:
 class GoogleTravelProvider:
     """Injected transport uses the app's existing server-only Google connection.
 
-    No transcripts, reviews, photos, ratings or model-generated coordinates.
+    No transcripts, reviews, photos or model-generated coordinates. Ratings and
+    weekly opening hours ride on the same Text Search call (website already puts
+    it in the Enterprise tier), so they add no request.
     Search is bounded per run and receipts are reused by StageStore.
     """
     name = 'google_places'
@@ -316,7 +318,8 @@ class GoogleTravelProvider:
         else:
             query = task.get('query') or f"{terms.get(category, category)} in {brief['destination']}"
         response = self.request('places:searchText', body={'textQuery':query, 'pageSize':min(task['target'], 12)},
-            field_mask='places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,places.websiteUri,places.businessStatus')
+            field_mask='places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,places.websiteUri,places.businessStatus,'
+                       'places.rating,places.userRatingCount,places.regularOpeningHours,places.utcOffsetMinutes')
         if not isinstance(response, dict) or not isinstance(response.get('places', []), list):
             raise ValueError('Invalid places response')
         batch = empty_batch(); brands = []
@@ -341,6 +344,60 @@ class GoogleTravelProvider:
                 'price':{'min':None,'max':None,'currency':None,'basis':'unknown'},'price_source_ids':[],
                 'cuisine':None,'dietary_options':[],'best_for':[],'best_time':None,'reservation_required':None,
                 'image_url':None,'image_source_url':None,'image_attribution':None,
-                'rating':{'value':None,'scale':None,'platform':None,'review_count':None},
+                'rating':google_rating(row),
                 'average_visit_minutes':None,'duration_basis':'unknown'})
+            hours = hours_tag(row)
+            if hours: batch['places'][-1]['tags'].append(hours)
         return batch
+
+
+def google_rating(row):
+    value, count = row.get('rating'), row.get('userRatingCount')
+    if not isinstance(value, (int, float)) or not 0 <= value <= 5:
+        return {'value':None,'scale':None,'platform':None,'review_count':None}
+    return {'value':float(value),'scale':5,'platform':'Google Maps','review_count':count if isinstance(count, int) else None}
+
+
+HOURS_PREFIX = 'hours:v1:'
+
+
+def hours_tag(row):
+    """Weekly hours as one compact tag, so they survive batch validation and caching.
+
+    "hours:v1:<utc offset minutes>:<open day><HHMM>-<close day><HHMM>,…", days 0=Sunday
+    as Google sends them; "always" for 24/7. The pipeline turns it into
+    `opening_hours` on the finished plan.
+    """
+    periods = (row.get('regularOpeningHours') or {}).get('periods')
+    if not isinstance(periods, list) or not periods: return None
+    offset = row.get('utcOffsetMinutes') if isinstance(row.get('utcOffsetMinutes'), int) else ''
+    parts = []
+    for period in periods[:21]:
+        start, end = period.get('open') or {}, period.get('close')
+        if end is None and start.get('day') == 0 and not start.get('hour') and not start.get('minute'):
+            return f'{HOURS_PREFIX}{offset}:always'
+        try:
+            parts.append('%d%02d%02d-%d%02d%02d' % (start['day'], start.get('hour', 0), start.get('minute', 0),
+                                                  end['day'], end.get('hour', 0), end.get('minute', 0)))
+        except (KeyError, TypeError):
+            return None
+    return f'{HOURS_PREFIX}{offset}:' + ','.join(parts) if parts else None
+
+
+def opening_hours_from_tags(place):
+    """Move a place's hours tag into `opening_hours` (periods with day/hour/minute)."""
+    tags = place.get('tags') or []
+    tag = next((t for t in tags if isinstance(t, str) and t.startswith(HOURS_PREFIX)), None)
+    if not tag: return None
+    place['tags'] = [t for t in tags if t != tag]
+    offset, _, body = tag[len(HOURS_PREFIX):].partition(':')
+    hours = {'source':'google','utc_offset_minutes':int(offset) if offset.lstrip('-').isdigit() else None}
+    if body == 'always': hours['always_open'] = True; hours['periods'] = []; return hours
+    periods = []
+    for part in body.split(','):
+        a, _, b = part.partition('-')
+        if len(a) != 5 or len(b) != 5 or not (a + b).isdigit(): return None
+        periods.append({'open':{'day':int(a[0]),'hour':int(a[1:3]),'minute':int(a[3:5])},
+                        'close':{'day':int(b[0]),'hour':int(b[1:3]),'minute':int(b[3:5])}})
+    hours['periods'] = periods
+    return hours

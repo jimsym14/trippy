@@ -68,6 +68,8 @@ struct GuideStop: Identifiable, Hashable {
     let durationMinutes: Int
     let travelMinutes: Int?
     let alternatives: [String]
+    var why = ""
+    var tip = ""
 }
 
 struct GuideDay: Identifiable, Hashable {
@@ -75,6 +77,8 @@ struct GuideDay: Identifiable, Hashable {
     let index: Int
     let date: String
     let stops: [GuideStop]
+    var theme = ""
+    var summary = ""
 }
 
 struct GuideInfoRow: Identifiable, Hashable {
@@ -127,9 +131,12 @@ struct GuideModel {
             let stops = ((d["stops"] as? [[String: Any]]) ?? []).compactMap { s -> GuideStop? in
                 guard let id = str(s["place_id"]), places[id] != nil else { return nil }
                 return GuideStop(placeID: id, time: str(s["time"]) ?? "", durationMinutes: Int(num(s["duration_minutes"]) ?? 60),
-                                 travelMinutes: num(s["travel_time_minutes"]).map { Int($0) }, alternatives: s["alternatives"] as? [String] ?? [])
+                                 travelMinutes: num(s["travel_time_minutes"]).map { Int($0) }, alternatives: s["alternatives"] as? [String] ?? [],
+                                 why: str(s["why"]) ?? "", tip: str(s["tip"]) ?? "")
             }
-            days.append(GuideDay(index: i, date: str(d["date"]) ?? "Day \(i + 1)", stops: stops))
+            // The engine's placeholder title is not a theme; the notes pass writes real ones.
+            let theme = str(d["theme"]).flatMap { ["Η ημέρα σου", "Your day"].contains($0) ? nil : $0 } ?? ""
+            days.append(GuideDay(index: i, date: str(d["date"]) ?? "Day \(i + 1)", stops: stops, theme: theme, summary: str(d["summary"]) ?? ""))
         }
         tickets = list("ticket_options").enumerated().map { i, t in
             GuideInfoRow(id: str(t["id"]) ?? "ticket-\(i)", title: str(t["name"]) ?? "Ticket", detail: str(t["notes"]) ?? "",
@@ -225,6 +232,10 @@ struct GuideEdits: Codable, Equatable {
     var extras: Double?
     var checklistDone: Set<String> = []
     var customChecklist: [String] = []
+    /// Meal and coffee blocks: "date|itemID" → chosen place id ("" = decide later).
+    var slotPicks: [String: String] = [:]
+    /// Places chosen from the nearby pool that the plan itself didn't include.
+    var extraPlaces: [String: GuideSavedPlace] = [:]
 
     init() {}
 
@@ -251,11 +262,13 @@ struct GuideEdits: Codable, Equatable {
         extras = try? c.decode(Double.self, forKey: .extras)
         checklistDone = (try? c.decode(Set<String>.self, forKey: .checklistDone)) ?? []
         customChecklist = (try? c.decode([String].self, forKey: .customChecklist)) ?? []
+        slotPicks = (try? c.decode([String: String].self, forKey: .slotPicks)) ?? [:]
+        extraPlaces = (try? c.decode([String: GuideSavedPlace].self, forKey: .extraPlaces)) ?? [:]
     }
 
     enum CodingKeys: String, CodingKey {
         case sections, hidden, pigment, flight, fares, order, times, notes, dayTitles, booked, prices, transportLines
-        case stayTotal, foodPerPersonDay, extras, checklistDone, customChecklist
+        case stayTotal, foodPerPersonDay, extras, checklistDone, customChecklist, slotPicks, extraPlaces
     }
 
     func encode(to encoder: Encoder) throws {
@@ -268,6 +281,7 @@ struct GuideEdits: Codable, Equatable {
         try c.encode(transportLines, forKey: .transportLines); try c.encodeIfPresent(stayTotal, forKey: .stayTotal)
         try c.encode(foodPerPersonDay, forKey: .foodPerPersonDay); try c.encodeIfPresent(extras, forKey: .extras)
         try c.encode(checklistDone, forKey: .checklistDone); try c.encode(customChecklist, forKey: .customChecklist)
+        try c.encode(slotPicks, forKey: .slotPicks); try c.encode(extraPlaces, forKey: .extraPlaces)
     }
 }
 

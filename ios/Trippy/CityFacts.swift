@@ -111,19 +111,35 @@ actor FamousPlaces {
         "Q790344", "Q676050", "Q123705", "Q2983893", "Q188509", "Q3024240", "Q937876", "Q5503", "Q1656682", "Q4830453",
         "Q43229", "Q3918", "Q875538", "Q178706", "Q621985", "Q114609228", "Q26132862", "Q135976384", "Q159821", "Q27020041",
         "Q355304", "Q4022", "Q6256", "Q3624078", "Q35657", "Q107390", "Q10864048", "Q1221156", "Q3957", "Q532", "Q486972",
-        "Q7930989", "Q1907114", "Q16970", "Q11032", "Q1248784", "Q124017602", "Q11446", "Q34442", "Q928830", "Q55488",
+        "Q7930989", "Q1907114", "Q11032", "Q1248784", "Q124017602", "Q11446", "Q34442", "Q928830", "Q55488",
     ]
+
+    private static let visitable: Set<String> = ["Q16970", "Q163687", "Q174782", "Q483453", "Q16560", "Q23413", "Q4989906",
+                                                 "Q839954", "Q641226", "Q12280", "Q570116", "Q44539", "Q2977", "Q12518", "Q57821",
+                                                 "Q1081138", "Q24398318", "Q162875", "Q15243209", "Q1440300"]
+    private static let museums: Set<String> = ["Q33506", "Q207694", "Q16735822", "Q3329412", "Q588140", "Q1007870", "Q2668072",
+                                               "Q1970365", "Q17431399", "Q839954", "Q2772772", "Q1060829"]
+    private static let nature: Set<String> = ["Q22698", "Q22746", "Q1107656", "Q167346", "Q6017969", "Q54050", "Q40080", "Q8502",
+                                              "Q46169", "Q3364016", "Q120560"]
+    /// Planner category from Wikidata "instance of" types.
+    static func category(_ types: Set<String>) -> String {
+        if !types.isDisjoint(with: museums) { return "museum" }
+        if !types.isDisjoint(with: nature) { return "nature" }
+        return "attraction"
+    }
 
     func places(near center: CLLocationCoordinate2D, city: String) async -> [ComposerPlace] {
         let key = String(format: "%.2f,%.2f", center.latitude, center.longitude)
         if let hit = memory[key] { return hit }
         let q = """
-        SELECT ?item ?itemLabel ?loc ?links (GROUP_CONCAT(DISTINCT ?t) AS ?types) WHERE {
+        SELECT ?item ?itemLabel ?loc ?links (GROUP_CONCAT(DISTINCT ?t) AS ?types) (SAMPLE(?img) AS ?image) (COUNT(?built) AS ?builtSignals) WHERE {
           SERVICE wikibase:around { ?item wdt:P625 ?loc . bd:serviceParam wikibase:center "Point(\(center.longitude) \(center.latitude))"^^geo:wktLiteral . bd:serviceParam wikibase:radius "9" . }
           ?item wikibase:sitelinks ?links . FILTER(?links > 15)
           OPTIONAL { ?item wdt:P31 ?t }
+          OPTIONAL { ?item wdt:P18 ?img }
+          OPTIONAL { ?item wdt:P1435|wdt:P84|wdt:P149 ?built }
           SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
-        } GROUP BY ?item ?itemLabel ?loc ?links ORDER BY DESC(?links) LIMIT 60
+        } GROUP BY ?item ?itemLabel ?loc ?links ORDER BY DESC(?links) LIMIT 90
         """
         var components = URLComponents(string: "https://query.wikidata.org/sparql")!
         components.queryItems = [URLQueryItem(name: "query", value: q)]
@@ -141,6 +157,10 @@ actor FamousPlaces {
             guard let name = value(row, "itemLabel"), let loc = value(row, "loc") else { continue }
             let types = Set((value(row, "types") ?? "").split(separator: " ").map { String($0.split(separator: "/").last ?? "") })
             if !types.isDisjoint(with: Self.skip) { continue }
+            // Visitable: a heritage listing, an architect or a style, or a known visitable kind.
+            // Keeps out states, orders, treaties and institutions that merely have an address.
+            let built = Int(value(row, "builtSignals") ?? "0") ?? 0
+            if built == 0 && types.isDisjoint(with: Self.visitable) && types.isDisjoint(with: Self.museums) && types.isDisjoint(with: Self.nature) { continue }
             let folded = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
             // Unlabelled items come back as their Q-ID; events often slip through without a type.
             if name.hasPrefix("Q") && name.dropFirst().allSatisfy(\.isNumber) { continue }
@@ -148,8 +168,10 @@ actor FamousPlaces {
             // "Point(lon lat)"
             let nums = loc.replacingOccurrences(of: "Point(", with: "").replacingOccurrences(of: ")", with: "").split(separator: " ").compactMap { Double($0) }
             guard nums.count == 2 else { continue }
-            out.append(ComposerPlace(name: name, latitude: nums[1], longitude: nums[0], category: "attraction"))
-            if out.count == 10 { break }
+            // Commons serves a resized copy of the item's main image.
+            let image = value(row, "image").map { $0.replacingOccurrences(of: "http://", with: "https://") + "?width=480" }
+            out.append(ComposerPlace(name: name, latitude: nums[1], longitude: nums[0], category: Self.category(types), imageURL: image))
+            if out.count == 30 { break }
         }
         memory[key] = out
         return out

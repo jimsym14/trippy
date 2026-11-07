@@ -13,7 +13,8 @@ struct GuideInput {
 
 struct ResolvedStop: Identifiable, Hashable {
     var id: String { key }
-    let key: String            // "date|placeID"
+    let key: String            // "date|itemID"
+    let itemID: String         // what the day's order stores: a place id or a "slot:kind:…" id
     let place: GuidePlace
     let time: String
     let durationMinutes: Int
@@ -21,6 +22,18 @@ struct ResolvedStop: Identifiable, Hashable {
     let alternatives: [GuidePlace]
     let note: String
     let added: Bool
+    var why = ""
+    var tip = ""
+    var slot: ResolvedSlot? = nil
+}
+
+/// A meal or coffee block: a kind, the area it fits in, and the place picked for it (if any).
+struct ResolvedSlot: Hashable {
+    let kind: SlotKind
+    let latitude: Double?
+    let longitude: Double?
+    let pickedID: String?      // nil = decide later
+    let suggestedID: String?   // the planner's own pick
 }
 
 struct ResolvedDay: Identifiable, Hashable {
@@ -53,29 +66,87 @@ struct GuideContext {
         days = model.days.map { GuideContext.resolve($0, model: model, edits: edits, holidays: holidays) }
     }
 
+    /// The day's order of item ids, with an afternoon coffee break added when the plan has none.
+    static func baseOrder(_ day: GuideDay, model: GuideModel) -> [String] {
+        var ids = day.stops.map(\.placeID)
+        let hasBreak = day.stops.contains { ["coffee", "bar", "nightlife"].contains(model.places[$0.placeID]?.category ?? "") }
+        guard !hasBreak, ids.count >= 2 else { return ids }
+        // After the first sight that ends mid-afternoon, before the next stop.
+        for (i, stop) in day.stops.enumerated().dropLast() {
+            guard let place = model.places[stop.placeID], !place.isFood, let start = GuideDates.minutes(stop.time) else { continue }
+            let end = start + stop.durationMinutes
+            if (14 * 60 + 30)...(17 * 60 + 30) ~= end { ids.insert(SlotKind.coffee.autoID, at: i + 1); break }
+        }
+        return ids
+    }
+
+    static func place(_ id: String, model: GuideModel, edits: GuideEdits) -> GuidePlace? {
+        model.places[id] ?? edits.extraPlaces[id]?.guidePlace
+    }
+
     static func resolve(_ day: GuideDay, model: GuideModel, edits: GuideEdits, holidays: [GuideHoliday]) -> ResolvedDay {
         let original = Dictionary(day.stops.map { ($0.placeID, $0) }, uniquingKeysWith: { a, _ in a })
-        let ids = edits.order[day.date] ?? day.stops.map(\.placeID)
+        let ids = edits.order[day.date] ?? baseOrder(day, model: model)
+        // Coordinates of real stops, for placing open blocks between their neighbours.
+        let anchors: [String: (Double, Double)] = Dictionary(ids.compactMap { id -> (String, (Double, Double))? in
+            guard SlotKind.parse(id) == nil, let c = model.places[id]?.coordinate else { return nil }
+            return (id, (c.latitude, c.longitude))
+        }, uniquingKeysWith: { a, _ in a })
+        func between(_ index: Int) -> (Double, Double)? {
+            let before = ids[..<index].reversed().compactMap { anchors[$0] }.first
+            let after = ids[(index + 1)...].compactMap { anchors[$0] }.first
+            switch (before, after) {
+            case let (a?, b?): return ((a.0 + b.0) / 2, (a.1 + b.1) / 2)
+            case let (a?, nil): return a
+            case let (nil, b?): return b
+            default: return nil
+            }
+        }
         var clock = DateTimeCursor()
         var stops: [ResolvedStop] = []
-        for id in ids {
-            guard let place = model.places[id] else { continue }
-            let base = original[id]
+        for (index, id) in ids.enumerated() {
             let key = "\(day.date)|\(id)"
-            let duration = base?.durationMinutes ?? (place.isFood ? 75 : 90)
-            let proposed = edits.times[key] ?? base?.time ?? clock.next(after: stops.last)
-            stops.append(ResolvedStop(key: key, place: place, time: proposed, durationMinutes: duration,
+            let base = original[id]
+            if let kind = SlotKind.parse(id) {
+                // An open block: the traveller's pick, or a placeholder in the area between stops.
+                let center = between(index)
+                let pickedID = edits.slotPicks[key]?.nilIfEmpty
+                let picked = pickedID.flatMap { place($0, model: model, edits: edits) }
+                let shown = picked ?? GuidePlace.slot(id: id, kind: kind, latitude: center?.0, longitude: center?.1)
+                let time = edits.times[key] ?? (id == SlotKind.coffee.autoID ? clock.next(after: stops.last) : kind.defaultTime)
+                stops.append(ResolvedStop(key: key, itemID: id, place: shown, time: time, durationMinutes: kind.minutes,
+                                          travelMinutes: nil, alternatives: [], note: edits.notes[key] ?? "", added: true,
+                                          slot: ResolvedSlot(kind: kind, latitude: center?.0, longitude: center?.1, pickedID: pickedID, suggestedID: nil)))
+                continue
+            }
+            guard let planned = model.places[id] else { continue }
+            let time = edits.times[key] ?? base?.time ?? clock.next(after: stops.last)
+            var slot: ResolvedSlot? = nil
+            var shown = planned
+            if let kind = SlotKind.infer(planned, time: time) {
+                // The planner's restaurant is a suggestion inside a block the traveller can re-pick.
+                let pick = edits.slotPicks[key]
+                let pickedID = pick == nil ? planned.id : pick!.nilIfEmpty
+                let center = between(index) ?? planned.coordinate.map { ($0.latitude, $0.longitude) }
+                shown = pickedID.flatMap { place($0, model: model, edits: edits) }
+                    ?? GuidePlace.slot(id: id, kind: kind, latitude: center?.0, longitude: center?.1)
+                slot = ResolvedSlot(kind: kind, latitude: center?.0, longitude: center?.1, pickedID: pickedID, suggestedID: planned.id)
+            }
+            let duration = base?.durationMinutes ?? slot?.kind.minutes ?? (planned.isFood ? 75 : 90)
+            stops.append(ResolvedStop(key: key, itemID: id, place: shown, time: time, durationMinutes: duration,
                                       travelMinutes: stops.isEmpty ? nil : base?.travelMinutes,
                                       alternatives: (base?.alternatives ?? []).compactMap { model.places[$0] },
-                                      note: edits.notes[key] ?? "", added: base == nil))
+                                      note: edits.notes[key] ?? "", added: base == nil,
+                                      why: shown.id == planned.id ? (base?.why ?? "") : "", tip: shown.id == planned.id ? (base?.tip ?? "") : "",
+                                      slot: slot))
         }
         stops.sort { (GuideDates.minutes($0.time) ?? 0) < (GuideDates.minutes($1.time) ?? 0) }
-        let sights = stops.filter { !$0.place.isFood }.map(\.place.name)
-        let food = stops.filter { $0.place.isFood }.map(\.place.name)
+        let sights = stops.filter { $0.slot == nil && !$0.place.isFood }.map(\.place.name)
+        let food = stops.filter { $0.slot != nil || $0.place.isFood }.map { $0.slot?.pickedID == nil ? ($0.slot?.kind.title ?? $0.place.name) : $0.place.name }
         // Two names read as a title; more becomes a list.
-        let title = edits.dayTitles[day.date]?.nilIfEmpty
+        let title = edits.dayTitles[day.date]?.nilIfEmpty ?? day.theme.nilIfEmpty
             ?? (sights.isEmpty ? (stops.isEmpty ? "Free day" : food.prefix(2).joined(separator: " & ")) : sights.prefix(2).joined(separator: " & "))
-        let subtitle = food.isEmpty ? "\(stops.count) stops" : "Eat at " + food.joined(separator: ", ")
+        let subtitle = day.summary.nilIfEmpty ?? (food.isEmpty ? "\(stops.count) stops" : "Eat at " + food.joined(separator: ", "))
         return ResolvedDay(index: day.index, date: day.date, title: title, subtitle: subtitle, stops: stops,
                            holiday: holidays.first { $0.date == day.date })
     }
@@ -90,7 +161,7 @@ struct GuideContext {
     var people: Int { max(1, edits.fares.reduce(0) { $0 + $1.count }) }
     var plannedPlaces: [GuidePlace] {
         var seen = Set<String>()
-        return days.flatMap(\.stops).map(\.place).filter { seen.insert($0.id).inserted }
+        return days.flatMap(\.stops).filter { $0.slot == nil || $0.slot?.pickedID != nil }.map(\.place).filter { seen.insert($0.id).inserted }
     }
     var sights: [GuidePlace] { plannedPlaces.filter { !$0.isFood }.sorted { $0.fame > $1.fame } }
     /// Sights that may charge entry; parks and squares are left out of the calculator.

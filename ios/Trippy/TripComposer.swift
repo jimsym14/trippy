@@ -16,6 +16,9 @@ struct TripComposerView: View {
     @State private var placeResults: [MKMapItem] = []
     @State private var suggestions: [MKMapItem] = []
     @State private var famous: [ComposerPlace] = []
+    @State private var localPicks: [String: [ComposerPlace]] = [:]   // "food", "bars": from Apple Maps
+    @State private var pickCategory = "sights"
+    @State private var showAllPicks = false
     @State private var stayResults: [MKMapItem] = []
     @State private var showLook = false
     @State private var showStayMap = false
@@ -337,8 +340,11 @@ struct TripComposerView: View {
                 Divider()
                 timeRow(result.travelMode == "plane" ? "Flight home" : result.travelMode == "train" ? "Train home" : "Heading home", text: $result.departureTime, field: .departure, placeholder: "19:40")
             }
-            browseButton(modeBrowseTitle, symbol: "arrow.up.right") { if let url = modeBrowseURL { openURL(url) } }
-                .disabled(city.isEmpty)
+            HStack(spacing: 8) {
+                browseButton(modeBrowseTitle, symbol: "arrow.up.right") { if let url = modeBrowseURL { openURL(url) } }
+                    .disabled(city.isEmpty)
+                if result.travelMode != "car" { FindBookingMenu(city: city, mode: result.travelMode) }
+            }
         }
     }
 
@@ -349,6 +355,11 @@ struct TripComposerView: View {
             TextField(placeholder, text: text).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing)
                 .font(Sketch.text(15, "SemiBold", relativeTo: .body)).monospacedDigit().frame(maxWidth: 120)
                 .focused($focus, equals: field)
+                .onSubmit { text.wrappedValue = TimeShorthand.normalize(text.wrappedValue) }
+                .onChange(of: focus) { old, new in
+                    // "12" becomes "12:00" as soon as the field is left.
+                    if old == field && new != field { text.wrappedValue = TimeShorthand.normalize(text.wrappedValue) }
+                }
         }
         .frame(minHeight: 40)
     }
@@ -516,18 +527,106 @@ struct TripComposerView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(placeResults.prefix(6).enumerated()), id: \.offset) { _, item in placeRow(item) }
                 }
-            } else if !famous.isEmpty {
-                Text("Most famous in \(city)").font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
-                VStack(spacing: 0) {
-                    ForEach(famous, id: \.self) { famousRow($0) }
-                }
-            } else if !suggestions.isEmpty {
-                Text("Landmarks in \(city)").font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
-                VStack(spacing: 0) {
-                    ForEach(Array(suggestions.prefix(6).enumerated()), id: \.offset) { _, item in placeRow(item) }
-                }
+            } else if Self.pickCategories.contains(where: { !picks($0.id).isEmpty }) {
+                pickBrowser
             }
         }
+    }
+
+    // MARK: Picks by category
+
+    private static let pickCategories: [(id: String, title: String, symbol: String)] = [
+        ("sights", "Sights", "building.columns"), ("museums", "Museums", "paintpalette"), ("nature", "Parks & views", "leaf"),
+        ("food", "Food & markets", "fork.knife"), ("bars", "Bars", "wineglass"),
+    ]
+    /// Famous places (Wikidata, ranked by fame) split by kind; food and bars come from Apple Maps.
+    private func picks(_ category: String) -> [ComposerPlace] {
+        switch category {
+        case "museums": famous.filter { $0.category == "museum" }
+        case "nature": famous.filter { $0.category == "nature" }
+        case "sights":
+            famous.filter { $0.category == "attraction" } + (famous.isEmpty ? suggestions.compactMap(Self.composerPlace) : [])
+        default: localPicks[category] ?? []
+        }
+    }
+    private static func composerPlace(_ item: MKMapItem) -> ComposerPlace? {
+        guard let name = item.name, !name.isEmpty else { return nil }
+        let c = item.placemark.coordinate
+        return ComposerPlace(name: name, latitude: c.latitude, longitude: c.longitude,
+                             address: item.placemark.thoroughfare ?? "", category: plannerCategory(item))
+    }
+
+    private var pickBrowser: some View {
+        let available = Self.pickCategories.filter { !picks($0.id).isEmpty }
+        let current = available.contains { $0.id == pickCategory } ? pickCategory : (available.first?.id ?? "sights")
+        let items = picks(current)
+        let shown = showAllPicks ? items : Array(items.prefix(6))
+        return VStack(alignment: .leading, spacing: 12) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(available, id: \.id) { category in
+                        let on = category.id == current
+                        Button {
+                            withAnimation(.snappy) { pickCategory = category.id; showAllPicks = false }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: category.symbol).font(.system(size: 12, weight: .semibold))
+                                Text(category.title)
+                                Text("\(picks(category.id).count)").monospacedDigit().opacity(0.6)
+                            }
+                            .font(Sketch.text(13, "SemiBold", relativeTo: .footnote))
+                            .foregroundStyle(on ? Sketch.paper : Sketch.ink)
+                            .padding(.horizontal, 12).frame(minHeight: 36)
+                            .background(Capsule().fill(on ? Sketch.ink : Sketch.paperDeep))
+                        }
+                        .buttonStyle(SketchPressStyle()).accessibilityAddTraits(on ? .isSelected : [])
+                    }
+                }
+            }
+            .scrollClipDisabled()
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], alignment: .leading, spacing: 14) {
+                ForEach(shown, id: \.self) { pickCard($0, category: current) }
+            }
+            if items.count > 6 {
+                Button(showAllPicks ? "Show fewer" : "Show all \(items.count)") { withAnimation(.snappy) { showAllPicks.toggle() } }
+                    .font(Sketch.text(14, "SemiBold", relativeTo: .subheadline)).frame(minHeight: 44)
+            }
+            Text(current == "food" || current == "bars" ? "From Apple Maps, near the centre of \(city)." : "Ranked by how widely they're known, from Wikipedia and Wikidata.")
+                .font(Sketch.text(11, relativeTo: .caption2)).foregroundStyle(Sketch.inkFaint)
+        }
+    }
+
+    private func pickCard(_ place: ComposerPlace, category: String) -> some View {
+        let added = result.mustSee.contains { $0.name == place.name }
+        let symbol = Self.pickCategories.first { $0.id == category }?.symbol ?? "star"
+        return Button {
+            withAnimation(.snappy) {
+                if added { result.mustSee.removeAll { $0.name == place.name } } else { result.mustSee.append(place) }
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                PlacePhoto(name: place.name, latitude: place.latitude, longitude: place.longitude,
+                           sight: !["food", "bars"].contains(category), symbol: symbol, tint: Sketch.ochre,
+                           imageURL: place.imageURL.flatMap(URL.init(string:)))
+                    .frame(height: 108).frame(maxWidth: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(added ? Sketch.sage : .clear, lineWidth: 2.5))
+                    .overlay(alignment: .topTrailing) {
+                        Image(systemName: added ? "checkmark.circle.fill" : "plus.circle.fill")
+                            .font(.system(size: 24, weight: .semibold))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, added ? Sketch.sage : Color.black.opacity(0.45))
+                            .contentTransition(.symbolEffect(.replace))
+                            .padding(6)
+                    }
+                Text(place.name).font(Sketch.text(13, "Bold", relativeTo: .footnote)).foregroundStyle(Sketch.ink)
+                    .lineLimit(2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(SketchPressStyle())
+        .accessibilityLabel(added ? "Remove \(place.name)" : "Add \(place.name)")
+        .accessibilityAddTraits(added ? .isSelected : [])
     }
 
     private func famousRow(_ place: ComposerPlace) -> some View {
@@ -672,8 +771,12 @@ struct TripComposerView: View {
     /// nothing from elsewhere). Landmark categories come first.
     private func loadSuggestions() async {
         try? await Task.sleep(for: .milliseconds(700))
-        guard !Task.isCancelled, let region = await region() else { suggestions = []; famous = []; return }
-        famous = await FamousPlaces.shared.places(near: region.center, city: city)
+        guard !Task.isCancelled, let region = await region() else { suggestions = []; famous = []; localPicks = [:]; return }
+        async let famousPlaces = FamousPlaces.shared.places(near: region.center, city: city)
+        async let food = Self.mapPicks(query: "famous restaurant", categories: [.restaurant, .foodMarket, .bakery], region: region, as: "food")
+        async let bars = Self.mapPicks(query: "cocktail bar", categories: [.nightlife, .winery, .brewery], region: region, as: "bar")
+        famous = await famousPlaces
+        localPicks = ["food": await food, "bars": await bars]
         guard !Task.isCancelled, famous.isEmpty else { return }
         var landmarks: [MKPointOfInterestCategory] = [.museum, .stadium, .theater]
         if #available(iOS 18.0, *) { landmarks = [.landmark, .castle, .nationalMonument, .fortress] + landmarks }
@@ -686,6 +789,27 @@ struct TripComposerView: View {
         guard !Task.isCancelled else { return }
         var seen = Set<String>()
         suggestions = Array((a + b).filter { Self.inside(region, $0) && seen.insert($0.name ?? "").inserted }.prefix(8))
+    }
+
+    /// Apple Maps places of some kinds in the city's centre, closest to the centre first.
+    private static func mapPicks(query: String, categories: [MKPointOfInterestCategory], region: MKCoordinateRegion, as category: String) async -> [ComposerPlace] {
+        let filter = MKPointOfInterestFilter(including: categories)
+        let centre = MKCoordinateRegion(center: region.center, latitudinalMeters: 6000, longitudinalMeters: 6000)
+        let search = MKLocalSearch.Request()
+        search.naturalLanguageQuery = query; search.region = centre
+        search.resultTypes = .pointOfInterest; search.pointOfInterestFilter = filter
+        let nearby = MKLocalPointsOfInterestRequest(coordinateRegion: centre)
+        nearby.pointOfInterestFilter = filter
+        async let a = try? MKLocalSearch(request: search).start()
+        async let b = try? MKLocalSearch(request: nearby).start()
+        let items = ((await a)?.mapItems ?? []) + ((await b)?.mapItems ?? [])
+        var seen = Set<String>()
+        return items.filter { item in
+            guard let kind = item.pointOfInterestCategory, categories.contains(kind), inside(centre, item) else { return false }
+            return seen.insert((item.name ?? "").lowercased()).inserted
+        }.prefix(18).compactMap { item in
+            composerPlace(item).map { var p = $0; p.category = category; return p }
+        }
     }
 
     private static func inside(_ region: MKCoordinateRegion, _ item: MKMapItem) -> Bool {

@@ -79,6 +79,9 @@ def allow_places_request(kind='places'):
         return True
 
 
+_hours_cache={}
+
+
 def google_places_json(path, api_key, *, body=None, field_mask=None):
     data=json.dumps(body).encode() if body is not None else None
     headers={'X-Goog-Api-Key':api_key,'Accept':'application/json'}
@@ -435,6 +438,24 @@ class RequestHandler(BaseHTTPRequestHandler):
                     # Diagnostic: which top-level fields Google actually returned (names only, no content).
                     'returnedFields':sorted(place.keys())})
                 return True
+            if target.path=='/api/places/hours':
+                # Weekly hours only, for the map's "Open now" toggle: up to 10 places per
+                # call, one Place Details request each, remembered for a day.
+                ids=[i.strip() for i in query.get('ids',[''])[0].split(',') if i.strip()][:10]
+                allowed=set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-')
+                if not ids or any(len(i)>180 or not set(i)<=allowed for i in ids):
+                    self.send_json(422,{'error':'invalid_place_ids'}); return True
+                out={}
+                for place_id in ids:
+                    hit=_hours_cache.get(place_id)
+                    if hit and time.time()-hit[0]<86400: out[place_id]=hit[1]; continue
+                    try: place=google_places_json('places/'+quote(place_id,safe=''),api_key,field_mask='id,regularOpeningHours,utcOffsetMinutes')
+                    except Exception: continue
+                    periods=(place.get('regularOpeningHours') or {}).get('periods')
+                    value={'periods':periods if isinstance(periods,list) else [],'utc_offset_minutes':place.get('utcOffsetMinutes'),
+                           'known':isinstance(periods,list) and bool(periods)}
+                    _hours_cache[place_id]=(time.time(),value); out[place_id]=value
+                self.send_json(200,{'hours':out}); return True
             if target.path=='/api/places/photo':
                 name=query.get('name',[''])[0]
                 if not name.startswith('places/') or '/photos/' not in name or len(name)>4096:

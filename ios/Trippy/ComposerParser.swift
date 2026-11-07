@@ -33,6 +33,8 @@ struct ComposerPlace: Codable, Hashable {
     var longitude: Double?
     var address = ""
     var category = "attraction"
+    /// A photo for the picker (Wikimedia Commons for famous places), when known.
+    var imageURL: String? = nil
 }
 
 /// Reads plain Greek or English. It only picks up what is clearly written and
@@ -109,8 +111,7 @@ enum ComposerParser {
     }
 
     private static func normalizedTime(_ s: String) -> String {
-        let parts = s.split(whereSeparator: { $0 == ":" || $0 == "." }).compactMap { Int($0) }
-        return parts.count == 2 ? String(format: "%02d:%02d", parts[0], parts[1]) : s
+        TimeShorthand.normalize(s)
     }
 }
 

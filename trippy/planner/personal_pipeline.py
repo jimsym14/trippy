@@ -220,6 +220,11 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
         progress('notes_started', {'stops':stops})
         notes_report=plan_notes.annotate(notes_pool, result, planning_brief, guide, cache_dir=Path(root)/'.local/plan-notes')
         progress('notes_completed', {k:v for k,v in notes_report.items() if k!='retry_at'})
+    # Weekly hours travel as a tag through validation; the plan carries them as a field.
+    from .travel_provider import opening_hours_from_tags
+    for place in result['places']:
+        hours=opening_hours_from_tags(place)
+        if hours: place['opening_hours']=hours
     if pending or failures: result['plan_validation']['status']='needs_checks'; result['delivery_status']='partial'
     if not result['places']: result['delivery_status']='failed'
     result['pipeline_report']={'version':VERSION,'scheduling_owned_by':'deterministic_engine','scheduled_stops':stops,

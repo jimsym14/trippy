@@ -1560,6 +1560,8 @@ private struct TripFlowView: View {
     @State private var worldAddRequest: UUID?
     @State private var videoStatusFilter: LibrarySourceStatus = .all
     @State private var mapSearchRequestID: UUID?
+    @State private var tripMapSearchRequestID: UUID?
+    @AppStorage("trippy.native.map.showApplePlaces") private var tripShowsApplePlaces = true
     @State private var libraryMapFilter: MapLibraryFilter?
     @State private var libraryCity: String?
     @State private var libraryQuery = ""
@@ -1761,6 +1763,10 @@ private struct TripFlowView: View {
             case "guide": rootTab = "library"; libraryHasMounted = true
                 if let trip = trips.first(where: { $0.research != nil }) { activeTripID = trip.id; guideTripID = trip.id }
             case "composer": openComposer(for: nil)
+            case "trip": // `-TrippyStartScreen trip [-TrippyTripSpan 0.02]`
+                if let trip = trips.first(where: { $0.research != nil }) {
+                    Task { @MainActor in try? await Task.sleep(for: .seconds(2)); selectMapTrip(trip) }
+                }
             case "been": rootTab = "library"; libraryHasMounted = true; librarySection = "World"
             case "pins": rootTab = "library"; libraryHasMounted = true; librarySection = "Pins"
             case "research": brief.destination = PlanningLive.demo == nil ? "Barcelona" : "Rome"; liveResearchStep = 2; isResearching = true
@@ -4285,7 +4291,11 @@ private struct TripFlowView: View {
         let category = MapPlaceCategory.classify(recordValue(place, keys: ["category", "type", "kind"]) ?? "")
         return VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: category.symbol).font(.title3).foregroundStyle(AppPalette.brand).frame(width: 32, height: 44)
+                let coordinate = placeCoordinate(place)
+                PlacePhoto(name: recordTitle(place) ?? "", latitude: coordinate?.latitude, longitude: coordinate?.longitude,
+                           sight: !["food", "coffee", "bar", "nightlife"].contains(recordValue(place, keys: ["category"]) ?? ""),
+                           symbol: category.symbol, tint: AppPalette.brand)
+                    .frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 Button {
                     if expanded { expandedPlanPlaceIDs.remove(id) } else { expandedPlanPlaceIDs.insert(id) }
                 } label: {
@@ -6059,6 +6069,8 @@ private struct WorkspaceMapPin: Identifiable {
     var placeID: String? = nil
     var appearance: MarkAppearance? = nil
     var customCategory: String? = nil
+    /// Weekly hours when the plan already knows them (Google, via the planner).
+    var openingHours: OpeningHours? = nil
     var personalPlace: PersonalPlace {
         PersonalPlace(id: placeID ?? id, name: name, city: city, address: address,
                       latitude: coordinate.latitude, longitude: coordinate.longitude, category: category,
@@ -7334,7 +7346,15 @@ private extension TripFlowView {
         return WorkspaceMapPin(id: place.flatMap { recordValue($0, keys: ["id", "place_id"]) } ?? itemID,
                                name: name, coordinate: coordinate, layer: "planned", category: category,
                                city: brief.destination, address: recordValue(place ?? [:], keys: ["address"]) ?? "",
-                               badge: "\(dayIndex + 1).\(stopIndex + 1)")
+                               badge: "\(dayIndex + 1).\(stopIndex + 1)",
+                               googlePlaceID: place.flatMap(recordGoogleID), openingHours: place.flatMap(recordHours))
+    }
+    /// The Google place id the planner found this place through ("google-<id>" source).
+    func recordGoogleID(_ place: [String: Any]) -> String? {
+        (place["source_ids"] as? [String])?.first { $0.hasPrefix("google-") }.map { String($0.dropFirst(7)) }
+    }
+    func recordHours(_ place: [String: Any]) -> OpeningHours? {
+        (place["opening_hours"] as? [String: Any]).flatMap(OpeningHours.google)
     }
     var tripWorkspacePins: [WorkspaceMapPin] {
         var result: [WorkspaceMapPin] = []
@@ -7352,7 +7372,8 @@ private extension TripFlowView {
             guard !plannedIDs.contains(id), let coordinate = placeCoordinate(place) else { continue }
             result.append(WorkspaceMapPin(id: id, name: recordTitle(place) ?? "Place", coordinate: coordinate, layer: "recommended",
                                           category: .classify(recordValue(place, keys: ["category", "type", "kind"]) ?? ""), city: brief.destination,
-                                          address: recordValue(place, keys: ["address"]) ?? ""))
+                                          address: recordValue(place, keys: ["address"]) ?? "",
+                                          googlePlaceID: recordGoogleID(place), openingHours: recordHours(place)))
         }
         let center = cityCoordinates[brief.destination]?.coordinate ?? result.first?.coordinate
         result += savedPlaces.filter { place in
@@ -7410,6 +7431,7 @@ private extension TripFlowView {
             }
             detailsDetent = .large; showTripDetails = true
         },
+                        searchRequestID: tripMapSearchRequestID, onSearchRequestHandled: { tripMapSearchRequestID = nil },
                         onNewTrip: { startNewTrip() }, onCreateNote: { place, tripID in
                             let id = UUID(); let linked = linkedPlaceReference(place); travelNotes.insert(TravelNote(id: id, title: place.name, tripID: tripID, sourceIDs: [], userText: place.address, updatedAt: .now, linkedPlaceIDs: [place.id], linkedPlaces: [linked]), at: 0); selectedTravelNoteID = id
                         }, noteChoices: travelNotes.map { MapNoteChoice(id: $0.id, title: $0.title, tripID: $0.tripID) },
@@ -7430,26 +7452,7 @@ private extension TripFlowView {
                         }, selectionKey: "\(activeTripID?.uuidString ?? ""):\(selectedMapDay.map(String.init) ?? "overview")",
                         schedulablePlaceIDs: dayRecords.isEmpty ? [] : Set(placeRecords.compactMap { recordValue($0, keys: ["id", "place_id"]) }),
                         planDayTitle: "Day \((selectedMapDay ?? 0) + 1)") {
-            HStack(alignment: .top, spacing: 12) {
-                Button { stage = .library; activeTripID = nil; rootTab = "map" } label: {
-                    Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold))
-                        .frame(width: 44, height: 44).background(AppPalette.canvas, in: Circle())
-                }.accessibilityLabel("Close trip")
-                VStack(alignment: .leading, spacing: 10) {
-                    MapTripTitle(title: activeTrip?.title ?? brief.title)
-                    if verticalSizeClass != .compact {
-                        Text("\(brief.dateSummary) · \(brief.travelers) people")
-                            .font(.subheadline.weight(.medium)).padding(.horizontal, 14).padding(.vertical, 8)
-                            .background(AppPalette.canvas, in: RoundedRectangle(cornerRadius: 12))
-                    }
-                }
-                Spacer(minLength: 0)
-                Menu {
-                    Button("Trip name", systemImage: "pencil") { tripNameDraft = activeTrip?.title ?? brief.title; showRenameTrip = true }
-                    Button("Edit request", systemImage: "slider.horizontal.3") { openBrief() }
-                } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).background(AppPalette.canvas, in: Circle()) }
-                    .accessibilityLabel("Trip options")
-            }
+            tripMapHeader
         }
         .task(id: "\(activeTripID?.uuidString ?? ""):\(activeTrip?.research?.hashValue ?? 0)") { await resolvePlaceCoordinates() }
         .safeAreaInset(edge: .bottom, spacing: 12) { tripMapShelf }
@@ -7462,25 +7465,121 @@ private extension TripFlowView {
             if let id = alternativesForItemID { alternativesSheet(itemID: id) }
         }
     }
+    /// "9–13 Jan · 5 days · 6 travellers", falling back to the brief's own wording.
+    var tripMetaLine: String {
+        let parse = DateFormatter(); parse.locale = Locale(identifier: "en_US_POSIX"); parse.dateFormat = "yyyy-MM-dd"
+        var parts: [String] = []
+        if let start = parse.date(from: brief.startDate) {
+            let end = parse.date(from: brief.endDate) ?? start
+            let calendar = Calendar.current
+            let day = DateFormatter(); day.locale = Locale(identifier: "en_GB"); day.setLocalizedDateFormatFromTemplate("d")
+            let dayMonth = DateFormatter(); dayMonth.locale = Locale(identifier: "en_GB"); dayMonth.setLocalizedDateFormatFromTemplate("d MMM")
+            if calendar.isDate(start, inSameDayAs: end) { parts.append(dayMonth.string(from: start)) }
+            else if calendar.isDate(start, equalTo: end, toGranularity: .month) { parts.append("\(day.string(from: start))–\(dayMonth.string(from: end))") }
+            else { parts.append("\(dayMonth.string(from: start)) – \(dayMonth.string(from: end))") }
+            let days = (calendar.dateComponents([.day], from: start, to: end).day ?? 0) + 1
+            parts.append(days == 1 ? "1 day" : "\(days) days")
+        } else { parts.append(brief.dateSummary) }
+        parts.append(brief.travelers == 1 ? "Solo" : "\(brief.travelers) travellers")
+        return parts.joined(separator: " · ")
+    }
+    var tripMapHeader: some View {
+        HStack(spacing: 6) {
+            Button { stage = .library; activeTripID = nil; rootTab = "map" } label: {
+                Image(systemName: "chevron.left").font(.system(size: 15, weight: .semibold))
+                    .frame(width: 44, height: 44).contentShape(Circle())
+            }.buttonStyle(QuietPressStyle()).accessibilityLabel("Close trip")
+            VStack(alignment: .leading, spacing: 1) {
+                Text(activeTrip?.title ?? brief.title)
+                    .font(.custom("Georgia-BoldItalic", size: 21, relativeTo: .title3)).tracking(-0.4)
+                    .lineLimit(1).minimumScaleFactor(0.75)
+                if verticalSizeClass != .compact {
+                    Text(tripMetaLine).font(.custom("PlusJakartaSans-Medium", size: 12, relativeTo: .caption))
+                        .foregroundStyle(AppPalette.secondaryInk).lineLimit(1).minimumScaleFactor(0.85)
+                }
+            }.accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 4)
+            Button { tripMapSearchRequestID = UUID() } label: {
+                Image(systemName: "magnifyingglass").font(.system(size: 15, weight: .semibold))
+                    .frame(width: 44, height: 44).contentShape(Circle())
+            }.buttonStyle(QuietPressStyle()).accessibilityLabel("Search the map")
+            Menu {
+                Button("Map layers", systemImage: "square.3.layers.3d") { showTripMapFilters = true }
+                Toggle(isOn: $tripShowsApplePlaces) { Label("Apple Maps places", systemImage: "apple.logo") }
+                Button(darkMode ? "Light map" : "Dark map", systemImage: darkMode ? "sun.max" : "moon") { darkMode.toggle() }
+                Divider()
+                Button("Trip name", systemImage: "pencil") { tripNameDraft = activeTrip?.title ?? brief.title; showRenameTrip = true }
+                Button("Edit request", systemImage: "slider.horizontal.3") { openBrief() }
+            } label: {
+                Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold))
+                    .frame(width: 44, height: 44).contentShape(Circle())
+            }.accessibilityLabel("Trip options")
+        }
+        .foregroundStyle(AppPalette.ink)
+        .padding(.horizontal, 4).padding(.vertical, 4)
+        .background(Sketch.card.opacity(0.97), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Sketch.rule.opacity(0.9), lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
+    }
+    private func tripDayChip(_ index: Int?) -> some View {
+        let selected = selectedMapDay == index
+        let color = index.map { TripDayPalette.color($0, dark: darkMode) } ?? AppPalette.ink
+        var date: String? = nil
+        if let index, dayRecords.indices.contains(index), let raw = recordValue(dayRecords[index], keys: ["date"]) {
+            let parse = DateFormatter(); parse.locale = Locale(identifier: "en_US_POSIX"); parse.dateFormat = "yyyy-MM-dd"
+            let short = DateFormatter(); short.locale = Locale(identifier: "en_GB"); short.setLocalizedDateFormatFromTemplate("EEE d")
+            date = parse.date(from: raw).map(short.string(from:))
+        }
+        return Button {
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { selectedMapDay = index; selectedScheduleDayIndex = index }
+        } label: {
+            HStack(spacing: 6) {
+                if index != nil {
+                    Circle().fill(selected ? Color.white.opacity(0.9) : color).frame(width: 7, height: 7)
+                }
+                Text(index.map { "Day \($0 + 1)" } ?? "All days").font(.custom("PlusJakartaSans-Bold", size: 13, relativeTo: .subheadline))
+                if let date {
+                    Text(date).font(.custom("PlusJakartaSans-Medium", size: 12, relativeTo: .caption))
+                        .opacity(selected ? 0.85 : 0.6)
+                }
+            }
+            .lineLimit(1).fixedSize()
+            .foregroundStyle(selected ? (index == nil ? AppPalette.inverseInk : .white) : AppPalette.ink)
+            .padding(.horizontal, 12).frame(minHeight: 40)
+            .background(selected ? color : Sketch.paperDeep.opacity(0.7), in: Capsule())
+            .contentShape(Capsule())
+        }.buttonStyle(QuietPressStyle())
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
     @ViewBuilder var tripMapShelf: some View {
         HStack(spacing: 8) {
-            Menu {
-                Button("Whole trip") { selectedMapDay = nil; selectedScheduleDayIndex = nil }
-                ForEach(dayRecords.indices, id: \.self) { index in
-                    Button("Day \(index + 1)") { selectedMapDay = index; selectedScheduleDayIndex = index }
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        tripDayChip(nil).id(-1)
+                        ForEach(dayRecords.indices, id: \.self) { index in tripDayChip(index).id(index) }
+                    }.padding(.leading, 2)
                 }
-            } label: {
-                Label(selectedMapDay.map { "Day \($0 + 1)" } ?? "Whole trip", systemImage: "chevron.down")
-                    .font(PlanType.detail).frame(minHeight: 44)
+                .onChange(of: selectedMapDay) { _, day in
+                    withAnimation(reduceMotion ? nil : .snappy) { proxy.scrollTo(day ?? -1, anchor: .center) }
+                }
             }
-            Spacer(minLength: 0)
-            Button { showTripMapFilters = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44) }.accessibilityLabel("Map filters")
+            .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.9), .init(color: .clear, location: 1)],
+                                 startPoint: .leading, endPoint: .trailing))
             Button { selectedScheduleDayIndex = selectedMapDay; detailsDetent = .large; showTripDetails = true } label: {
-                Text("Plan").font(PlanType.detail).padding(.horizontal, 16).frame(minHeight: 44)
-                    .foregroundStyle(AppPalette.inverseInk).background(AppPalette.brand, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(QuietPressStyle())
-        }.foregroundStyle(AppPalette.ink).padding(12).background(AppPalette.canvas, in: RoundedRectangle(cornerRadius: 16))
-            .padding(.horizontal, 16).padding(.bottom, 8).frame(maxWidth: 720)
+                HStack(spacing: 6) {
+                    Image(systemName: "list.bullet").font(.system(size: 13, weight: .bold))
+                    Text("Plan").font(.custom("PlusJakartaSans-Bold", size: 14, relativeTo: .subheadline))
+                }
+                .padding(.horizontal, 16).frame(minHeight: 44)
+                .foregroundStyle(AppPalette.inverseInk).background(AppPalette.brand, in: Capsule())
+            }.buttonStyle(QuietPressStyle()).accessibilityLabel(selectedMapDay.map { "Plan for day \($0 + 1)" } ?? "Whole plan")
+        }
+        .padding(6)
+        .background(Sketch.card.opacity(0.97), in: Capsule())
+        .overlay(Capsule().strokeBorder(Sketch.rule.opacity(0.9), lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
+        .padding(.horizontal, 16).padding(.bottom, 8).frame(maxWidth: 720)
     }
 
     var tripPeekSummary: String {
@@ -7970,6 +8069,114 @@ private enum MapScreenClustering {
         }.sorted { $0.id < $1.id }
     }
 }
+/// One-tap "show only" filters for the map: they narrow both your own pins and Apple's places.
+private enum MapQuickFilter: String, CaseIterable, Identifiable {
+    case food, coffee, bars, clubs, sights, museums, parks, beaches, brunch, streetFood, vegan, markets, shopping, stay, transit
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .sights: "Sights"; case .museums: "Museums"; case .food: "Food"; case .coffee: "Coffee"
+        case .bars: "Bars"; case .clubs: "Clubs"; case .parks: "Parks"; case .shopping: "Shops"
+        case .beaches: "Beaches"; case .brunch: "Brunch"; case .streetFood: "Street food"; case .vegan: "Vegan"
+        case .markets: "Markets"; case .stay: "Stay"; case .transit: "Transit"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .sights: "building.columns.fill"; case .museums: "paintpalette.fill"; case .food: "fork.knife"
+        case .coffee: "cup.and.saucer.fill"; case .bars: "wineglass.fill"; case .clubs: "music.note"
+        case .parks: "leaf.fill"; case .shopping: "bag.fill"; case .beaches: "beach.umbrella.fill"
+        case .brunch: "sun.horizon.fill"; case .streetFood: "takeoutbag.and.cup.and.straw.fill"; case .vegan: "carrot.fill"
+        case .markets: "basket.fill"; case .stay: "bed.double.fill"; case .transit: "tram.fill"
+        }
+    }
+    var tint: Color {
+        switch self {
+        case .sights, .museums: Color(hex: "E88752"); case .food, .streetFood: Color(hex: "E56C52"); case .coffee, .brunch: Color(hex: "A96D45")
+        case .bars, .clubs: Color(hex: "B16E62"); case .parks, .vegan: Color(hex: "6F9A6A"); case .shopping, .markets: Color(hex: "C99A45")
+        case .beaches: Color(hex: "3E8DB5"); case .stay: Color(hex: "7462C6"); case .transit: Color(hex: "718A83")
+        }
+    }
+    var appleCategories: [MKPointOfInterestCategory] {
+        switch self {
+        case .sights:
+            if #available(iOS 18.0, *) { return [.landmark, .castle, .nationalMonument, .fortress, .theater] }
+            return [.theater, .stadium]
+        case .museums: return [.museum]
+        case .food: return [.restaurant, .bakery, .foodMarket]
+        case .coffee: return [.cafe]
+        case .bars: return [.brewery, .winery, .nightlife]
+        case .clubs: return [.nightlife]
+        case .parks: return [.park, .nationalPark]
+        case .shopping: return [.store]
+        case .beaches: return [.beach]
+        case .brunch: return [.cafe, .bakery]
+        case .streetFood, .vegan: return [.restaurant]
+        case .markets: return [.foodMarket]
+        case .stay: return [.hotel]
+        case .transit: return [.publicTransport]
+        }
+    }
+    private static let beachWords = ["beach", "playa", "platja", "spiaggia", "plage", "praia", "παραλία", "παραλια"]
+    private static let museumWords = ["museum", "museo", "musée", "musee", "museu", "μουσείο", "μουσειο", "gallery", "galleria", "galerie", "pinacoteca"]
+    func includes(_ pin: WorkspaceMapPin) -> Bool {
+        let isMuseum = Self.museumWords.contains { pin.name.lowercased().contains($0) }
+        switch self {
+        case .sights: return pin.category == .sights && !isMuseum
+        case .museums: return pin.category == .sights && isMuseum
+        case .food: return [.restaurants, .streetFood, .burgers, .seafood, .vegan, .brunch].contains(pin.category)
+        case .coffee: return pin.category == .coffee || pin.category == .brunch
+        case .bars: return pin.category == .bars
+        case .clubs: return pin.category == .clubs
+        case .parks: return pin.category == .parks && !Self.beachWords.contains { pin.name.lowercased().contains($0) }
+        case .shopping: return [.shopping, .touristShops].contains(pin.category)
+        case .beaches: return Self.beachWords.contains { pin.name.lowercased().contains($0) }
+        case .brunch: return pin.category == .brunch
+        case .streetFood: return [.streetFood, .burgers].contains(pin.category)
+        case .vegan: return pin.category == .vegan
+        case .markets: return pin.category == .groceries
+        case .stay: return false   // your pins have no lodging category; this filters Apple's hotels
+        case .transit: return pin.category == .metro
+        }
+    }
+    static func decode(_ raw: String) -> Set<MapQuickFilter> { Set(raw.split(separator: "|").compactMap { MapQuickFilter(rawValue: String($0)) }) }
+}
+
+/// A small ready-to-press toggle on the map.
+private struct MapQuickChip: View {
+    let title: String
+    let symbol: String
+    let tint: Color
+    let on: Bool
+    var count: Int? = nil
+    /// Layer switches are on by default: they stay light and dim when off. Filters fill when chosen.
+    var layerSwitch = false
+    let action: () -> Void
+    @Environment(\.colorScheme) private var scheme
+    private var filled: Bool { on && !layerSwitch }
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: layerSwitch && !on ? "eye.slash" : symbol).font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(filled ? .white : (layerSwitch && !on ? AppPalette.secondaryInk : tint))
+                Text(title).font(.custom("PlusJakartaSans-Bold", size: 13, relativeTo: .footnote))
+                if let count, count > 0 { Text("\(count)").font(.custom("PlusJakartaSans-Bold", size: 11, relativeTo: .caption2)).opacity(0.7).monospacedDigit() }
+            }
+            .lineLimit(1).fixedSize()
+            .foregroundStyle(filled ? Color.white : (layerSwitch && !on ? AppPalette.secondaryInk : AppPalette.ink))
+            .strikethrough(layerSwitch && !on, color: AppPalette.secondaryInk)
+            .padding(.horizontal, 12).frame(minHeight: 36)
+            .background(filled ? AnyShapeStyle(tint) : AnyShapeStyle(Sketch.card.opacity(layerSwitch && !on ? 0.7 : (scheme == .dark ? 0.92 : 0.95))), in: Capsule())
+            .overlay(Capsule().strokeBorder(filled ? Color.clear : Sketch.rule, lineWidth: 0.7))
+            .shadow(color: .black.opacity(0.07), radius: 4, y: 2)
+            .frame(minHeight: 44).contentShape(Capsule())
+        }
+        .buttonStyle(QuietPressStyle())
+        .accessibilityValue(on ? "On" : "Off")
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
 private enum AppleMapPlaceCategory: String, CaseIterable, Identifiable {
     case food = "Food", coffee = "Coffee", nightlife = "Bars", shopping = "Shops"
     case sights = "Sights", nature = "Nature", lodging = "Stay", transport = "Getting around"
@@ -8612,6 +8819,11 @@ private struct TrippyMapCanvas<Header: View>: View {
     @AppStorage("trippy.native.map.showSaves") private var showSaves = true
     @AppStorage("trippy.native.map.showPins") private var showPins = true
     @AppStorage("trippy.native.map.showVisited") private var showVisited = false
+    @AppStorage("trippy.native.map.quickFilters") private var quickFilterStorage = ""
+    @AppStorage("trippy.native.map.openNow") private var openNowOnly = false
+    @AppStorage("trippy.native.map.filtersOpen") private var filtersOpen = false
+    @ObservedObject private var hoursStore = OpeningHoursStore.shared
+    @AppStorage("trippy.native.map.trip.showSuggestions") private var tripShowsSuggestions = true
     @AppStorage("trippy.native.map.been.outlines") private var beenOutlines = true
     @AppStorage("trippy.native.map.been.fill") private var beenFill = true
     @AppStorage("trippy.native.map.been.hatches") private var beenHatches = false
@@ -8660,6 +8872,7 @@ private struct TrippyMapCanvas<Header: View>: View {
     @State private var cachedRenderedMarkers: [MapRenderedMarker] = []
     @State private var cachedStandaloneBeenCities: [VisitedPlace] = []
     @State private var markerGroups: [MapScreenCluster] = []
+    @State private var labeledMarkerIDs: Set<String> = []
     @State private var markerViewport: CGSize = .zero
     @State private var hasFittedMap = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -8729,9 +8942,48 @@ private struct TrippyMapCanvas<Header: View>: View {
         }).map { $0.compactMap { index[$0] } }
     }
     private var physicalPinGroups: [[WorkspaceMapPin]] { physicalPlaceGroups(visiblePins) }
+    private var quickFilters: Set<MapQuickFilter> { MapQuickFilter.decode(quickFilterStorage) }
+    /// Empty means everything; otherwise a pin shows when any chosen filter covers it.
+    private func quickAllows(_ pin: WorkspaceMapPin) -> Bool {
+        guard pin.layer != "city" else { return true }
+        // "Open now" hides what is known to be closed; unknown hours stay (dimmed in a trip).
+        if openNowOnly, openState(pin) == false { return false }
+        let chosen = quickFilters
+        return chosen.isEmpty || chosen.contains { $0.includes(pin) }
+    }
+    /// true open, false closed, nil unknown.
+    private func openState(_ pin: WorkspaceMapPin) -> Bool? {
+        guard let hours = pin.openingHours ?? hoursStore.hours[pin.id] else { return nil }
+        return hours.isOpen()
+    }
+    private var hoursQueries: [OpeningHoursQuery] {
+        // Only what's on screen (or near the trip), never every pin you own.
+        let region = visibleRegion
+        return pins.filter { pin in
+            guard pin.layer != "city", pin.openingHours == nil else { return false }
+            guard let region else { return !destination.isEmpty }
+            return abs(pin.coordinate.latitude - region.center.latitude) < region.span.latitudeDelta * 0.6
+                && abs(pin.coordinate.longitude - region.center.longitude) < region.span.longitudeDelta * 0.6
+        }.prefix(120).map {
+            OpeningHoursQuery(key: $0.id, name: $0.name, latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude,
+                              googlePlaceID: $0.googlePlaceID)
+        }
+    }
+    private func toggleQuick(_ filter: MapQuickFilter) {
+        var chosen = quickFilters
+        if chosen.contains(filter) { chosen.remove(filter) } else { chosen.insert(filter) }
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+            quickFilterStorage = MapQuickFilter.allCases.filter(chosen.contains).map(\.rawValue).joined(separator: "|")
+        }
+    }
     private var visiblePins: [WorkspaceMapPin] {
         pins.filter { pin in
-            guard destination.isEmpty else { return categories.contains(pin.category) }
+            guard quickAllows(pin) else { return false }
+            guard destination.isEmpty else {
+                if pin.layer == "recommended" && !tripShowsSuggestions { return false }
+                if (pin.layer == "saved" && !showSaves) || (pin.layer == "pin" && !showPins) { return false }
+                return categories.contains(pin.category)
+            }
             if let custom = pin.customCategory, hiddenPinCategories.split(separator: "|").contains(Substring(MarkGlyphCatalog.categoryKey(custom))) { return false }
             return MapLayerVisibility.includes(layer: pin.layer, showSaves: showSaves, showPins: showPins,
                 showTrips: showTrips, categoryIncluded: homeCategories.contains(pin.category), tripIncluded: tripIsVisible(pin.tripID))
@@ -8745,7 +8997,7 @@ private struct TrippyMapCanvas<Header: View>: View {
         return (visiblePins + visibleCityPins).filter { seen.insert($0.id).inserted }
     }
     private var markerFilterKey: String {
-        "\(pointTaskID):\(showTrips):\(showSaves):\(showPins):\(hiddenTrips):\(hiddenPinCategories):\(categories.map(\.rawValue).sorted()):\(visitedStorage):\(beenCityPins):\(beenBadges)"
+        "\(pointTaskID):\(quickFilterStorage):\(openNowOnly):\(hoursStore.revision):\(tripShowsSuggestions):\(showTrips):\(showSaves):\(showPins):\(hiddenTrips):\(hiddenPinCategories):\(categories.map(\.rawValue).sorted()):\(visitedStorage):\(beenCityPins):\(beenBadges)"
     }
     private var displayedSearchResults: [PersonalPlace] { searchResults.filter { searchFilter.includes($0) } }
     private var routeTaskID: String {
@@ -8762,9 +9014,11 @@ private struct TrippyMapCanvas<Header: View>: View {
     private var poiCategories: [MKPointOfInterestCategory] {
         appleCategories.flatMap(\.categories)
     }
+    private var quickPOICategories: [MKPointOfInterestCategory] { Array(Set(quickFilters.flatMap(\.appleCategories))) }
     private var mapStyle: MapStyle {
         let interests: PointOfInterestCategories
-        if !showApplePlaces { interests = .excludingAll }
+        if !showApplePlaces || openNowOnly { interests = .excludingAll }
+        else if !quickFilters.isEmpty { interests = .including(quickPOICategories) }
         else if appleCategories.count == AppleMapPlaceCategory.allCases.count { interests = showTransitStations ? .all : .excluding([.publicTransport]) }
         else if appleCategories.contains(.other) {
             interests = .excluding(AppleMapPlaceCategory.allCases.filter { !appleCategories.contains($0) }.flatMap(\.categories) + (showTransitStations ? [] : [.publicTransport]))
@@ -8821,7 +9075,8 @@ private struct TrippyMapCanvas<Header: View>: View {
     }
     private var standaloneBeenCities: [VisitedPlace] { cachedStandaloneBeenCities }
     private func makeStandaloneBeenCities(renderedMarkers sourceMarkers: [MapRenderedMarker]? = nil) -> [VisitedPlace] {
-        guard beenCityPins else { return [] }
+        // Inside a trip the map is about this trip; "been there" city badges stay on the home map.
+        guard beenCityPins, destination.isEmpty else { return [] }
         let summaries = (sourceMarkers ?? renderedMarkers).filter(\.isCitySummary)
         return mapVisitedPlaces.filter { place in
             !summaries.contains { MapCityGrouping.sameCity($0.city, countryCode: $0.countryCode, place.name, countryCode: place.countryCode) }
@@ -8997,7 +9252,7 @@ private struct TrippyMapCanvas<Header: View>: View {
                     .init(color: .white.opacity(0.34), location: 0.72),
                     .init(color: .clear, location: 1)
                 ], startPoint: .top, endPoint: .bottom))
-                .frame(height: 250).allowsHitTesting(false)
+                .frame(height: destination.isEmpty || showMapSearch ? 250 : 150).allowsHitTesting(false)
         }
         .overlay(alignment: .bottom) {
             Rectangle()
@@ -9033,6 +9288,24 @@ private struct TrippyMapCanvas<Header: View>: View {
             if appearance != .smallDot { expandedMapSummaries = [] }
         }
         .onChange(of: markerFilterKey) { _, _ in refreshMarkerGroups(proxy: mapProxy) }
+        .task(id: openNowOnly ? "hours:\(Int((visibleRegion?.center.latitude ?? 0) * 100)):\(Int((visibleRegion?.center.longitude ?? 0) * 100)):\(pins.count)" : "hours:off") {
+            // Look hours up only while "Open now" is on, for what's in view.
+            guard openNowOnly else { return }
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            await hoursStore.lookup(hoursQueries, google: true, bridgeBaseURL: placesBaseURL, token: placesAccessToken)
+        }
+        .task(id: destination.isEmpty ? "prefetch:off" : "prefetch:\(pointTaskID.hashValue)") {
+            // Inside a trip, fetch free OpenStreetMap hours in the background so
+            // "Open now" answers instantly later. Google is only used on demand.
+            guard !destination.isEmpty else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            let queries = pins.filter { $0.layer != "city" && $0.openingHours == nil }.prefix(150).map {
+                OpeningHoursQuery(key: $0.id, name: $0.name, latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude, googlePlaceID: $0.googlePlaceID)
+            }
+            await hoursStore.lookup(Array(queries), google: false)
+        }
         .onChange(of: selectedSearchPlace?.id) { _, _ in if destination.isEmpty { refreshGeneralMarkers() } }
         .onChange(of: markerViewport) { _, _ in refreshMarkerGroups(proxy: mapProxy) }
         .onChange(of: locationService.location?.timestamp) { _, _ in
@@ -9060,13 +9333,17 @@ private struct TrippyMapCanvas<Header: View>: View {
         .ignoresSafeArea(.container, edges: [.top, .bottom])
         .safeAreaInset(edge: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 16) {
+                // Inside a trip the header card is the only chrome; search and map options live in it.
+                if showMapSearch || destination.isEmpty {
                 HStack(spacing: 10) {
                     searchBar
-                    if !showMapSearch && !destination.isEmpty { filterPill("Maps", symbol: "apple.logo", enabled: $showApplePlaces, panel: "apple") }
                     if !showMapSearch { mapOptionsMenu }
                     if showMapSearch || (destination.isEmpty && onNewTrip != nil) { searchCloseOrCreateButton }
                 }
-                if !showMapSearch && !destination.isEmpty { header() }
+                }
+                if !showMapSearch && !destination.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) { header(); filterDrawer(layers: true, opensUp: false) }
+                }
                 if !showMapSearch && destination.isEmpty { mapFilterCarousel }
             }.frame(maxWidth: 720).frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20).padding(.top, 8)
@@ -9135,7 +9412,16 @@ private struct TrippyMapCanvas<Header: View>: View {
                     .accessibilityLabel("Show all places")
                 }
                 .padding(.trailing, 16)
-                .padding(.bottom, 52)
+                .padding(.bottom, destination.isEmpty ? (filtersOpen ? 262 : 76) : 52)
+                .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: filtersOpen)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            // Home map: filters sit just above the tab bar and fold away.
+            if destination.isEmpty && !showMapSearch {
+                filterDrawer(layers: false, opensUp: true)
+                    .padding(.horizontal, 16).padding(.bottom, 12)
+                    .frame(maxWidth: 720)
             }
         }
         // Draw expanded cards after the map controls so they cover those controls.
@@ -9247,7 +9533,7 @@ private struct TrippyMapCanvas<Header: View>: View {
         })
     }
     private var mapFilterCarousel: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             ScrollView(.horizontal) {
                 HStack(spacing: 10) {
                     filterPill("Maps", symbol: "apple.logo", enabled: $showApplePlaces, panel: "apple")
@@ -9255,13 +9541,129 @@ private struct TrippyMapCanvas<Header: View>: View {
                     filterPill("Saves", symbol: "heart.fill", enabled: $showSaves)
                     filterPill("Pins", symbol: "mappin", enabled: $showPins, panel: "pins")
                     filterPill("Been to", symbol: "checkmark.seal.fill", enabled: $showVisited, panel: "been")
-                }.padding(.vertical, 12)
+                }.padding(.top, 12).padding(.bottom, 4)
             }.scrollIndicators(.hidden).defaultScrollAnchor(.leading)
                 .contentMargins(.horizontal, 20, for: .scrollContent)
                 .scrollClipDisabled()
                 .padding(.horizontal, -20)
         }.frame(maxWidth: .infinity, alignment: .leading)
             .environment(\.layoutDirection, .leftToRight)
+    }
+    private var activeFilterCount: Int { quickFilters.count + (openNowOnly ? 1 : 0) }
+    /// A folded filter drawer: one small button, and when open a card of toggles in a
+    /// two-row carousel. Inside a trip it also switches suggestions and your saves/pins.
+    private func filterDrawer(layers: Bool, opensUp: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if opensUp && filtersOpen { filterCard(layers: layers).transition(.move(edge: .bottom).combined(with: .opacity)) }
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.28)) { filtersOpen.toggle() }
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "line.3.horizontal.decrease").font(.system(size: 13, weight: .bold))
+                        Text("Filters").font(.custom("PlusJakartaSans-Bold", size: 14, relativeTo: .subheadline))
+                        if activeFilterCount > 0 {
+                            Text("\(activeFilterCount)").font(.custom("PlusJakartaSans-Bold", size: 11, relativeTo: .caption2)).monospacedDigit()
+                                .foregroundStyle(AppPalette.inverseInk).frame(minWidth: 18, minHeight: 18)
+                                .background(AppPalette.brand, in: Capsule())
+                        }
+                        Image(systemName: (filtersOpen == opensUp) ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 11, weight: .bold)).foregroundStyle(AppPalette.secondaryInk)
+                    }
+                    .foregroundStyle(AppPalette.ink)
+                    .padding(.horizontal, 14).frame(minHeight: 40)
+                    .background(Sketch.card.opacity(0.97), in: Capsule())
+                    .overlay(Capsule().strokeBorder(Sketch.rule, lineWidth: 0.7))
+                    .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+                    .frame(minHeight: 44).contentShape(Capsule())
+                }
+                .buttonStyle(QuietPressStyle())
+                .accessibilityLabel("Filters")
+                .accessibilityValue(activeFilterCount > 0 ? "\(activeFilterCount) on" : "None on")
+                .accessibilityHint(filtersOpen ? "Hides the filters" : "Shows the filters")
+                // While folded, what's on stays visible as a short summary.
+                if !filtersOpen && activeFilterCount > 0 {
+                    Text(activeFilterSummary).font(.custom("PlusJakartaSans-SemiBold", size: 12, relativeTo: .caption))
+                        .foregroundStyle(AppPalette.ink).lineLimit(1)
+                        .padding(.horizontal, 10).frame(minHeight: 30)
+                        .background(Sketch.card.opacity(0.9), in: Capsule())
+                    Button { clearFilters() } label: {
+                        Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(AppPalette.secondaryInk)
+                            .frame(width: 30, height: 30).background(Sketch.card.opacity(0.9), in: Circle())
+                            .frame(width: 44, height: 44).contentShape(Circle())
+                    }.buttonStyle(QuietPressStyle()).accessibilityLabel("Clear filters")
+                }
+                Spacer(minLength: 0)
+            }
+            if !opensUp && filtersOpen { filterCard(layers: layers).transition(.move(edge: .top).combined(with: .opacity)) }
+        }
+        .environment(\.layoutDirection, .leftToRight)
+    }
+    private func quickChip(_ filter: MapQuickFilter, chosen: Set<MapQuickFilter>, counts: Bool) -> some View {
+        MapQuickChip(title: filter.title, symbol: filter.symbol, tint: filter.tint, on: chosen.contains(filter),
+                     count: counts ? pins.filter { $0.layer != "city" && filter.includes($0) }.count : nil) { toggleQuick(filter) }
+    }
+    private var activeFilterSummary: String {
+        ((openNowOnly ? ["Open now"] : []) + MapQuickFilter.allCases.filter(quickFilters.contains).map(\.title)).joined(separator: " · ")
+    }
+    private func clearFilters() {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { quickFilterStorage = ""; openNowOnly = false }
+    }
+    private func filterCard(layers: Bool) -> some View {
+        let chosen = quickFilters
+        return VStack(alignment: .leading, spacing: 10) {
+            if layers {
+                HStack(spacing: 6) {
+                    MapQuickChip(title: "Suggestions", symbol: "sparkles", tint: Color(hex: "CE6651"), on: tripShowsSuggestions, layerSwitch: true) {
+                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { tripShowsSuggestions.toggle() }
+                    }
+                    MapQuickChip(title: "Saved", symbol: "heart.fill", tint: AppPalette.accent, on: showSaves, layerSwitch: true) {
+                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { showSaves.toggle() }
+                    }
+                    MapQuickChip(title: "Pins", symbol: "mappin", tint: Color(hex: "E17861"), on: showPins, layerSwitch: true) {
+                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { showPins.toggle() }
+                    }
+                }
+            }
+            // Two rows that scroll together: eating and drinking on top, things to see below.
+            ScrollView(.horizontal) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        MapQuickChip(title: "Open now", symbol: hoursStore.loading && openNowOnly ? "hourglass" : "clock.fill",
+                                     tint: Color(hex: "3F8F5F"), on: openNowOnly,
+                                     count: openNowOnly ? pins.filter { $0.layer != "city" && openState($0) == true }.count : nil) {
+                            withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { openNowOnly.toggle() }
+                        }
+                        ForEach([MapQuickFilter.food, .coffee, .bars, .clubs, .brunch, .streetFood, .vegan, .markets]) { quickChip($0, chosen: chosen, counts: layers) }
+                    }
+                    HStack(spacing: 6) {
+                        ForEach([MapQuickFilter.sights, .museums, .parks, .beaches, .shopping, .stay, .transit]) { quickChip($0, chosen: chosen, counts: layers) }
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+            .contentMargins(.horizontal, 12, for: .scrollContent)
+            .padding(.horizontal, -12)
+            HStack {
+                Text(openNowOnly ? "Open now uses Google and OpenStreetMap hours; Apple's places hide while it's on."
+                                 : "Pick any to show only those. Nothing picked shows everything.")
+                    .font(.custom("PlusJakartaSans-Medium", size: 11, relativeTo: .caption2)).foregroundStyle(AppPalette.secondaryInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 6)
+                if activeFilterCount > 0 || !tripShowsSuggestions || !showSaves || !showPins {
+                    Button("Reset") {
+                        clearFilters()
+                        if layers { tripShowsSuggestions = true; showSaves = true; showPins = true }
+                    }
+                    .font(.custom("PlusJakartaSans-Bold", size: 13, relativeTo: .footnote)).foregroundStyle(AppPalette.brand)
+                    .frame(minHeight: 44)
+                }
+            }
+        }
+        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
+        .background(Sketch.card.opacity(0.97), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Sketch.rule, lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.1), radius: 14, y: 5)
     }
     private func filterPill(_ title: String, symbol: String, enabled: Binding<Bool>, panel: String? = nil) -> some View {
         MapFilterPill(title: title, symbol: symbol, enabled: enabled.wrappedValue,
@@ -9374,7 +9776,8 @@ private struct TrippyMapCanvas<Header: View>: View {
         .modifier(MapFilterPanelSurface(beenTo: panel == "been"))
     }
     private var nativePOIFilter: MKPointOfInterestFilter {
-        if !showApplePlaces { return .excludingAll }
+        if !showApplePlaces || openNowOnly { return .excludingAll }
+        if !quickFilters.isEmpty { return .init(including: quickPOICategories) }
         if appleCategories.count == AppleMapPlaceCategory.allCases.count {
             return showTransitStations ? .includingAll : .init(excluding: [.publicTransport])
         }
@@ -9609,6 +10012,10 @@ private struct TrippyMapCanvas<Header: View>: View {
             guard let point = proxy.convert(pin.coordinate, to: .local), point.x.isFinite, point.y.isFinite,
                   abs(point.x) < 1e9, abs(point.y) < 1e9 else { return nil }
             let stored = pin.layer == "pin" || pin.layer == "saved"
+            if !destination.isEmpty {
+                // Trip map: markers are small discs at every zoom; only true overlaps merge.
+                return MapScreenPoint(id: pin.id, point: point, radius: pin.layer == "planned" ? 13 : (stored ? 12 : 10))
+            }
             let labelRadius = max(20, min(63, CGFloat(pin.name.count) * 3.5 + 7))
             return MapScreenPoint(id: pin.id, point: point, radius: stored && appearance != .smallDot ? labelRadius : (appearance == .pill ? 0 : appearance.collisionRadius))
         }
@@ -9617,8 +10024,9 @@ private struct TrippyMapCanvas<Header: View>: View {
                   abs(point.x) < 1e9, abs(point.y) < 1e9 else { return nil }
             return MapScreenPoint(id: anchor.id, point: point, radius: appearance == .pill ? 0 : (compactCities ? 22 : 40))
         }
-        let next = MapScreenClustering.groups(points, clusterRadius: appearance == .smallDot ? 24 : 40)
+        let next = MapScreenClustering.groups(points, clusterRadius: destination.isEmpty ? (appearance == .smallDot ? 24 : 40) : 16)
         let nextRendered = makeRenderedMarkers(groups: next, span: latitudeSpan)
+        let nextLabels = destination.isEmpty ? [] : tripLabelIDs(nextRendered, proxy: proxy, span: latitudeSpan)
         let nextStandalone = makeStandaloneBeenCities(renderedMarkers: nextRendered)
         let nextCountryClusters = makeCountryCityClusters(proxy: proxy, span: latitudeSpan, rendered: nextRendered, standalone: nextStandalone)
         let membershipChanged = next.map(\.memberIDs) != markerGroups.map(\.memberIDs)
@@ -9626,6 +10034,7 @@ private struct TrippyMapCanvas<Header: View>: View {
         let publish = {
             markerGroups = next
             cachedRenderedMarkers = nextRendered
+            labeledMarkerIDs = nextLabels
             cachedStandaloneBeenCities = nextStandalone
             countryCityClusters = nextCountryClusters
         }
@@ -9788,7 +10197,8 @@ private struct TrippyMapCanvas<Header: View>: View {
     }
     @ViewBuilder
     private func renderedMarkerView(_ marker: MapRenderedMarker) -> some View {
-        if marker.isCitySummary { citySummaryPinView(marker) }
+        if !destination.isEmpty { tripMarkerView(marker) }
+        else if marker.isCitySummary { citySummaryPinView(marker) }
         else {
             let points = physicalPlaceGroups(marker.members)
             if points.count > 1 { mapSummaryView(marker) }
@@ -9800,6 +10210,65 @@ private struct TrippyMapCanvas<Header: View>: View {
                 } else { pinButton(pin) }
             }
         }
+    }
+    /// (day index, stop number) from a planned pin's "day.stop" badge.
+    private func tripStop(_ pin: WorkspaceMapPin) -> (day: Int, stop: Int)? {
+        guard pin.layer == "planned", let parts = pin.badge?.split(separator: ".").compactMap({ Int($0) }), parts.count == 2 else { return nil }
+        return (parts[0] - 1, parts[1])
+    }
+    /// Planned stops first (in plan order), then suggestions, then your own pins.
+    private func tripPriority(_ pin: WorkspaceMapPin) -> (Int, Int, Int) {
+        if let stop = tripStop(pin) { return (0, stop.day, stop.stop) }
+        return (pin.layer == "recommended" ? 1 : 2, 0, 0)
+    }
+    @ViewBuilder private func tripMarkerView(_ marker: MapRenderedMarker) -> some View {
+        let groups = physicalPlaceGroups(marker.members)
+        let lead = groups.compactMap(\.first).min { tripPriority($0) < tripPriority($1) }
+        if let pin = lead {
+            if groups.count == 1 && (pin.layer == "pin" || pin.layer == "saved") { storedLocationButton(pin) }
+            else {
+                let stop = tripStop(pin)
+                Button {
+                    if groups.count > 1 { openCluster(marker.members) } else { focusPin(pin) }
+                } label: {
+                    TripStopMarker(name: pin.name, symbol: pin.category.symbol,
+                                   tint: stop.map { routeColor($0.day) } ?? pinIconTint(pin.category.tint),
+                                   number: stop?.stop, extra: groups.count - 1,
+                                   showsLabel: labeledMarkerIDs.contains(marker.id),
+                                   focused: groups.count == 1 && focusedMapPinID == pin.id)
+                }.buttonStyle(QuietPressStyle())
+                    .opacity(openNowOnly && openState(pin) == nil ? 0.4 : 1)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: labeledMarkerIDs.contains(marker.id))
+            }
+        }
+    }
+    /// Greedy label placement: a name goes to the right of its marker only when
+    /// it overlaps no other label or marker and stays on screen.
+    private func tripLabelIDs(_ rendered: [MapRenderedMarker], proxy: MapProxy, span: Double) -> Set<String> {
+        guard span < 0.09 else { return [] }
+        let size = markerViewport
+        var dots: [(id: String, rect: CGRect)] = []
+        var candidates: [(id: String, point: CGPoint, name: String, priority: (Int, Int, Int))] = []
+        for marker in rendered {
+            guard let point = proxy.convert(marker.coordinate, to: .local), point.x.isFinite, point.y.isFinite else { continue }
+            dots.append((marker.id, CGRect(x: point.x - 14, y: point.y - 14, width: 28, height: 28)))
+            let groups = physicalPlaceGroups(marker.members)
+            guard groups.count == 1, let pin = groups.first?.first, pin.layer != "pin", pin.layer != "saved" else { continue }
+            let priority = tripPriority(pin)
+            if priority.0 == 1 && span > 0.03 { continue }   // suggestions are named only close in
+            candidates.append((marker.id, point, pin.name, priority))
+        }
+        var placed: [CGRect] = []
+        var result = Set<String>()
+        for candidate in candidates.sorted(by: { $0.priority < $1.priority }) {
+            let width = min(176, CGFloat(candidate.name.count) * 6.7 + 18)
+            let rect = CGRect(x: candidate.point.x + 16, y: candidate.point.y - 12, width: width, height: 24)
+            if size != .zero && (rect.maxX > size.width - 6 || rect.minY < 0 || rect.maxY > size.height) { continue }
+            if placed.contains(where: { $0.insetBy(dx: -4, dy: -3).intersects(rect) }) { continue }
+            if dots.contains(where: { $0.id != candidate.id && $0.rect.intersects(rect) }) { continue }
+            placed.append(rect); result.insert(candidate.id)
+        }
+        return result
     }
     private func storedLocationButton(_ pin: WorkspaceMapPin) -> some View {
         Button { focusPin(pin) } label: {
@@ -10969,7 +11438,16 @@ private struct TrippyMapCanvas<Header: View>: View {
         return distance < 30 && place.name.localizedCaseInsensitiveCompare(pin.name) == .orderedSame
     }
     func fitMap() {
-        let coordinates = mapMarkers.map(\.coordinate)
+        // A trip frames its planned stops; far-off suggestions shouldn't zoom the city out.
+        let planned = mapMarkers.filter { $0.layer == "planned" }.map(\.coordinate)
+        let coordinates = planned.count > 1 ? planned : mapMarkers.map(\.coordinate)
+        #if DEBUG
+        let debugSpan = UserDefaults.standard.double(forKey: "TrippyTripSpan")
+        if debugSpan > 0, let first = coordinates.first {
+            nativeCameraRequestID = UUID(); position = .region(.init(center: first, span: .init(latitudeDelta: debugSpan, longitudeDelta: debugSpan)))
+            return
+        }
+        #endif
         if coordinates.isEmpty {
             if let fallback { nativeCameraRequestID = UUID(); position = .region(.init(center: fallback, span: .init(latitudeDelta: 0.08, longitudeDelta: 0.08))) }
             else { nativeCameraRequestID = UUID(); position = .automatic }
@@ -11050,12 +11528,7 @@ private struct TrippyMapCanvas<Header: View>: View {
     func routeKey(_ leg: TripRouteLeg) -> String {
         "\(leg.from.latitude),\(leg.from.longitude):\(leg.to.latitude),\(leg.to.longitude):\(leg.walking)"
     }
-    func routeColor(_ day: Int) -> Color {
-        let colors = darkMode
-            ? [Color(hex: "8BCEAB"), Color(hex: "FF957D"), Color(hex: "91C9E4"), Color(hex: "D6BD86")]
-            : [AppPalette.brand, Color(hex: "CE6651"), Color(hex: "427E9B"), Color(hex: "8D7846")]
-        return colors[day % colors.count]
-    }
+    func routeColor(_ day: Int) -> Color { TripDayPalette.color(day, dark: darkMode) }
     func updateRoutes() async {
         // Clearing first ensures a changed itinerary never shows a stale path.
         renderedRoutes = [:]; failedRoutes = 0
@@ -13818,6 +14291,77 @@ private struct RouteStepsSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+}
+
+/// One colour per day, shared by the route lines, the stop markers and the day chips.
+enum TripDayPalette {
+    static func color(_ day: Int, dark: Bool) -> Color {
+        let colors = dark
+            ? [Color(hex: "8BCEAB"), Color(hex: "FF957D"), Color(hex: "91C9E4"), Color(hex: "D6BD86")]
+            : [AppPalette.brand, Color(hex: "CE6651"), Color(hex: "427E9B"), Color(hex: "8D7846")]
+        return colors[max(0, day) % colors.count]
+    }
+}
+
+/// A place on the trip map: a numbered disc in the day's colour for planned
+/// stops, a small quiet disc for suggestions. The name sits beside it only when
+/// the map has room (decided by the canvas), so labels never pile up.
+private struct TripStopMarker: View {
+    let name: String
+    let symbol: String
+    let tint: Color
+    var number: Int? = nil
+    var extra = 0
+    var showsLabel = false
+    var focused = false
+    @Environment(\.colorScheme) private var scheme
+    private var planned: Bool { number != nil }
+    var body: some View {
+        ZStack {
+            if let number {
+                Circle().fill(tint).frame(width: 26, height: 26)
+                    .overlay(Circle().strokeBorder(.white, lineWidth: 2.5))
+                    .overlay {
+                        Text("\(number)").font(.system(size: 12, weight: .heavy, design: .rounded)).monospacedDigit()
+                            .foregroundStyle(scheme == .dark ? Color.black.opacity(0.85) : .white)
+                    }
+                    .shadow(color: .black.opacity(0.22), radius: 3, y: 1.5)
+            } else {
+                Circle().fill(Sketch.card).frame(width: 22, height: 22)
+                    .overlay(Circle().strokeBorder(tint.opacity(0.55), lineWidth: 1.2))
+                    .overlay { Image(systemName: symbol).font(.system(size: 9, weight: .bold)).foregroundStyle(tint) }
+                    .shadow(color: .black.opacity(0.14), radius: 2.5, y: 1)
+            }
+            if extra > 0 {
+                Text("+\(extra)").font(.system(size: 9, weight: .bold, design: .rounded)).monospacedDigit()
+                    .foregroundStyle(AppPalette.inverseInk)
+                    .padding(.horizontal, 4).frame(minWidth: 16, minHeight: 16)
+                    .background(AppPalette.ink, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Sketch.card, lineWidth: 1.2))
+                    .offset(x: 12, y: -11)
+            }
+            if focused {
+                Circle().strokeBorder(tint, lineWidth: 2).frame(width: planned ? 36 : 32, height: planned ? 36 : 32)
+            }
+        }
+        .frame(width: 44, height: 44).contentShape(Circle())
+        .overlay(alignment: .leading) {
+            if showsLabel || focused {
+                Text(name).font(.custom(planned ? "PlusJakartaSans-Bold" : "PlusJakartaSans-SemiBold", size: 12))
+                    .foregroundStyle(planned ? AppPalette.ink : AppPalette.secondaryInk)
+                    .lineLimit(1).frame(maxWidth: 160, alignment: .leading).fixedSize()
+                    .padding(.horizontal, 8).frame(height: 24)
+                    .background(Sketch.card.opacity(0.94), in: Capsule())
+                    .overlay(Capsule().strokeBorder(Sketch.rule, lineWidth: 0.7))
+                    .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
+                    .offset(x: 38).allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(number.map { "Stop \($0), \(name)" } ?? "Suggestion, \(name)")
+        .accessibilityHint(extra > 0 ? "\(extra) more nearby. Double tap to zoom in." : "")
     }
 }
 

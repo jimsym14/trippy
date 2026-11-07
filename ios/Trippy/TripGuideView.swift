@@ -21,6 +21,7 @@ struct TripGuideView: View {
     @State private var undo: GuideEdits?
     @State private var undoTask: Task<Void, Never>?
     @State private var scrolledID: Block?
+    @State private var scrollAnchor: UnitPoint = .top
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var ctx: GuideContext { GuideContext(model: model, edits: edits, input: input, holidays: holidays) }
@@ -58,7 +59,7 @@ struct TripGuideView: View {
                 .padding(.horizontal, 20).padding(.top, 4)
                 .frame(maxWidth: 680).frame(maxWidth: .infinity)
             }
-            .scrollPosition(id: $scrolledID, anchor: .top)
+            .scrollPosition(id: $scrolledID, anchor: scrollAnchor)
             .scrollDismissesKeyboard(.interactively)
             .overlay(alignment: .bottom) { undoBar }
             .animation(reduceMotion ? nil : .snappy, value: undo != nil)
@@ -70,6 +71,15 @@ struct TripGuideView: View {
             .sheet(isPresented: $showFacts) { GuideFactsSheet(edits: $edits, input: input) }
             #if DEBUG
             .task { if UserDefaults.standard.bool(forKey: "TrippyGuideFacts") { try? await Task.sleep(for: .seconds(1)); showFacts = true } }
+            .task {
+                // `-TrippyGuideDay 1 [-TrippyGuideEdit YES]` scrolls to a day for screenshots.
+                let n = UserDefaults.standard.integer(forKey: "TrippyGuideDay")
+                guard n > 0 else { return }
+                try? await Task.sleep(for: .seconds(1.5))
+                editingDays = UserDefaults.standard.bool(forKey: "TrippyGuideEdit")
+                if UserDefaults.standard.bool(forKey: "TrippyGuideBottom") { scrollAnchor = .bottom }
+                if model.days.indices.contains(n - 1) { scrolledID = .day(model.days[n - 1].date) }
+            }
             #endif
         }
         .tint(tint)
@@ -437,37 +447,69 @@ private struct DayView: View {
                         Label(warning, systemImage: "exclamationmark.triangle").font(Sketch.text(12, "SemiBold", relativeTo: .caption))
                             .foregroundStyle(Sketch.coral).padding(.leading, 70).padding(.top, 6)
                     }
-                    StopRow(stop: stop, color: color, editing: editing, booked: edits.booked.contains(stop.place.id),
-                            note: Binding(get: { edits.notes[stop.key] ?? "" }, set: { edits.notes[stop.key] = $0.nilIfEmpty }),
-                            time: Binding(get: { edits.times[stop.key] ?? stop.time }, set: { edits.times[stop.key] = $0 }),
-                            onMove: { move(stop, by: $0) }, onRemove: { remove(stop) }, onSwap: { swap(stop, with: $0) })
+                    if let slot = stop.slot {
+                        SlotRow(stop: stop, slot: slot, color: color, editing: editing, planPlaces: Array(ctx.model.places.values),
+                                time: Binding(get: { edits.times[stop.key] ?? stop.time }, set: { edits.times[stop.key] = $0 }),
+                                onPick: { pick(stop, $0) }, onMove: { move(stop, by: $0) }, onRemove: { remove(stop) })
+                    } else {
+                        StopRow(stop: stop, color: color, editing: editing, booked: edits.booked.contains(stop.place.id),
+                                note: Binding(get: { edits.notes[stop.key] ?? "" }, set: { edits.notes[stop.key] = $0.nilIfEmpty }),
+                                time: Binding(get: { edits.times[stop.key] ?? stop.time }, set: { edits.times[stop.key] = $0 }),
+                                onMove: { move(stop, by: $0) }, onRemove: { remove(stop) }, onSwap: { swap(stop, with: $0) })
+                    }
                 }
             }
             if editing { addMenu }
         }
     }
 
-    private var ids: [String] { day.stops.map(\.place.id) }
+    private var ids: [String] { day.stops.map(\.itemID) }
     private func setOrder(_ new: [String]) { edits.order[day.date] = new }
     private func move(_ stop: ResolvedStop, by delta: Int) {
         var list = ids
-        guard let i = list.firstIndex(of: stop.place.id), list.indices.contains(i + delta) else { return }
+        guard let i = list.firstIndex(of: stop.itemID), list.indices.contains(i + delta) else { return }
         // Swap clock times too, so the day still reads top to bottom.
         let other = day.stops[i + delta]
         edits.times[stop.key] = other.time; edits.times[other.key] = stop.time
         list.swapAt(i, i + delta); setOrder(list)
     }
-    private func remove(_ stop: ResolvedStop) { beforeRemove(); setOrder(ids.filter { $0 != stop.place.id }) }
+    private func remove(_ stop: ResolvedStop) { beforeRemove(); setOrder(ids.filter { $0 != stop.itemID }) }
     private func swap(_ stop: ResolvedStop, with place: GuidePlace) {
         edits.times["\(day.date)|\(place.id)"] = stop.time
-        setOrder(ids.map { $0 == stop.place.id ? place.id : $0 })
+        setOrder(ids.map { $0 == stop.itemID ? place.id : $0 })
+    }
+    /// Re-pick a block's place; nil keeps the block open ("decide on the day").
+    private func pick(_ stop: ResolvedStop, _ option: SlotOption?) {
+        if let saved = option?.saved { edits.extraPlaces[saved.id] = saved }
+        edits.slotPicks[stop.key] = option?.id ?? ""
+        if edits.order[day.date] == nil { setOrder(ids) }   // keep an automatic coffee break once touched
+    }
+    private func addBlock(_ kind: SlotKind) {
+        let id = kind.newID()
+        edits.times["\(day.date)|\(id)"] = suggestedTime(for: kind)
+        setOrder(ids + [id])
+    }
+    /// A free moment near the block's usual time, after whatever runs then.
+    private func suggestedTime(for kind: SlotKind) -> String {
+        guard let target = GuideDates.minutes(kind.defaultTime) else { return kind.defaultTime }
+        let busy = day.stops.compactMap { stop -> ClosedRange<Int>? in
+            guard let start = GuideDates.minutes(stop.time) else { return nil }
+            return start...(start + stop.durationMinutes)
+        }
+        guard let clash = busy.first(where: { $0.contains(target) }) else { return kind.defaultTime }
+        return GuideDates.clock(clash.upperBound + 10)
     }
     private var addMenu: some View {
         let used = Set(ctx.days.flatMap(\.stops).map(\.place.id))
         let pool = ctx.model.orderedPlaces.filter { !used.contains($0.id) }
+        let present = Set(day.stops.compactMap(\.slot?.kind))
         return Menu {
+            Section("A block, pick the place later") {
+                ForEach(SlotKind.allCases) { kind in
+                    Button(present.contains(kind) ? "Another \(kind.title.lowercased())" : kind.title, systemImage: kind.symbol) { addBlock(kind) }
+                }
+            }
             Section("Sights") { ForEach(pool.filter { !$0.isFood }.prefix(12)) { p in Button(p.name) { setOrder(ids + [p.id]) } } }
-            Section("Food and drink") { ForEach(pool.filter(\.isFood).prefix(12)) { p in Button(p.name) { setOrder(ids + [p.id]) } } }
         } label: {
             Label("Add a stop", systemImage: "plus").font(Sketch.text(14, "SemiBold", relativeTo: .subheadline))
                 .padding(.horizontal, 16).frame(minHeight: 44)
@@ -509,6 +551,7 @@ private struct StopRow: View {
                     TextField("10:00", text: $time).font(Sketch.text(15, "Bold", relativeTo: .body)).monospacedDigit()
                         .keyboardType(.numbersAndPunctuation).multilineTextAlignment(.center)
                         .frame(width: 58, height: 34).background(RoundedRectangle(cornerRadius: 8).fill(Sketch.paperDeep))
+                        .onSubmit { time = TimeShorthand.normalize(time) }
                 } else {
                     Text(stop.time).font(Sketch.text(15, "Bold", relativeTo: .body)).monospacedDigit()
                 }
@@ -516,6 +559,11 @@ private struct StopRow: View {
             }
             .frame(width: 58)
             VStack(alignment: .leading, spacing: 5) {
+                if stop.place.coordinate != nil {
+                    PlacePhoto(place: stop.place, tint: color).frame(height: 132).frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .padding(.bottom, 4)
+                }
                 Button { withAnimation(.snappy) { expanded.toggle() } } label: {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Image(systemName: stop.place.symbol).foregroundStyle(color).imageScale(.small)
@@ -528,6 +576,14 @@ private struct StopRow: View {
                 .buttonStyle(.plain)
                 .accessibilityHint(expanded ? "Show less" : "Show more")
                 Text(meta).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+                if !stop.why.isEmpty {
+                    Text(stop.why).font(Sketch.text(14, relativeTo: .subheadline)).foregroundStyle(Sketch.ink.opacity(0.82))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !stop.tip.isEmpty {
+                    Label(stop.tip, systemImage: "lightbulb").font(Sketch.text(13, "Medium", relativeTo: .footnote))
+                        .foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
+                }
                 if expanded || editing { details }
                 if editing { editControls }
                 else if !note.isEmpty {
@@ -991,17 +1047,22 @@ private struct GuideFactsSheet: View {
                     link(TripLinks.travelTitle(mode: input.travelMode, city: city),
                          symbol: input.travelMode == "train" ? "tram.fill" : input.travelMode == "car" ? "car.fill" : "airplane",
                          url: TripLinks.travel(mode: input.travelMode, city: city, start: input.startDate, end: input.endDate))
+                    Button {
+                        if let url = MailSearch.gmailURL(MailSearch.bookingQuery(city: city, mode: input.travelMode)) { openURL(url) }
+                    } label: { Label("Find my booking in Gmail", systemImage: "envelope.open") }
                     Button { showStayMap = true } label: { Label("Where to stay", systemImage: "safari") }
                     link("Stays on Booking.com", symbol: "bed.double", url: stayURL(airbnb: false))
                     link("Homes on Airbnb", symbol: "house", url: stayURL(airbnb: true))
-                } header: { Text("Find") } footer: { Text("Opens with your city, dates and travelers filled in.") }
+                } header: { Text("Find") } footer: { Text("Opens with your city, dates and travelers filled in. The Gmail search looks for booking emails about \(city.isEmpty ? "your trip" : city).") }
                 Section("Arrival") {
                     TextField("Flight, e.g. ATH 16:40 → BCN 18:45", text: $edits.flight.outbound, axis: .vertical)
                     TextField("Landing time, e.g. 18:45", text: $edits.flight.arrivalTime).keyboardType(.numbersAndPunctuation)
+                        .onSubmit { edits.flight.arrivalTime = TimeShorthand.normalize(edits.flight.arrivalTime) }
                 }
                 Section("Return") {
                     TextField("Flight, e.g. BCN 19:40 → ATH 23:30", text: $edits.flight.inbound, axis: .vertical)
                     TextField("Take-off time, e.g. 19:40", text: $edits.flight.departureTime).keyboardType(.numbersAndPunctuation)
+                        .onSubmit { edits.flight.departureTime = TimeShorthand.normalize(edits.flight.departureTime) }
                 }
                 Section("Stay") {
                     TextField("Name", text: $edits.flight.stayName)
@@ -1010,12 +1071,17 @@ private struct GuideFactsSheet: View {
                 }
             }
             .navigationTitle("Flights and stay").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { normalizeTimes(); dismiss() } } }
+            .onDisappear(perform: normalizeTimes)
         }
         .sheet(isPresented: $showStayMap) {
             StayHeatmapView(city: city) { area in edits.flight.stayName = area }
                 .presentationDragIndicator(.visible)
         }
+    }
+    private func normalizeTimes() {
+        edits.flight.arrivalTime = TimeShorthand.normalize(edits.flight.arrivalTime)
+        edits.flight.departureTime = TimeShorthand.normalize(edits.flight.departureTime)
     }
     private func stayURL(airbnb: Bool) -> URL? {
         TripLinks.stay(area: edits.flight.stayName, city: city, start: input.startDate, end: input.endDate, travelers: input.travelers, airbnb: airbnb)
