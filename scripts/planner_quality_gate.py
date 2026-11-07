@@ -41,15 +41,16 @@ CASES = [
      # Simulates a city without creator videos: only Overture + Wikidata + Wikivoyage.
      'disable_videos': True, 'min_video_share': 0.0},
     {'id': 'seven-days', 'days': ('2026-12-10', '2026-12-16'), 'interests': ['attraction', 'food'],
-     'text': 'Museums, art and good local food', 'themes': {'art'}, 'min_video_share': 0.2},
-    # Seven days now hold quick in-between stops (squares, fountains, churches), so the
-    # same 7 creator-video places are a smaller share of a longer plan (2026-11-07).
+     'text': 'Museums, art and good local food', 'themes': {'art'}, 'min_video_share': 0.15},
+    # Seven days fill each morning and afternoon with as many visits as fit (2026-11-07),
+    # so the same creator-video places are a smaller share of a longer plan.
 ]
 UNSUITABLE = {'movie_theater', 'drive_in_theater', 'theatre_venue', 'fast_food_restaurant', 'petting_zoo',
               'dog_park', 'skate_park', 'home_theater_systems_stores'}
 MAX_LEG_MINUTES = 45          # draft walking estimate, not a verified route
 MIN_EVIDENCE_SHARE = 0.5      # stops backed by a creator video, Wikivoyage or Wikidata fame
-MIN_VIDEO_SHARE = 0.25        # Barcelona has creator videos; other cities may not
+MIN_VIDEO_SHARE = 0.15        # Barcelona has creator videos; other cities may not. Days hold
+                              # more visits since 2026-11-07, so the same creator places are a smaller share.
 
 
 def brief(case):

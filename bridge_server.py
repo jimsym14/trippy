@@ -272,8 +272,11 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
                 if not ledger.is_absolute(): ledger=root()/ledger
                 provider=AzureResearchProvider(values,ledger)
             ai_adapter=AzureIntentAdapter(provider) if provider is not None else None
+            # Free OpenStreetMap venues stand in when Google fails (a spent daily quota).
+            from trippy.planner.osm_places import FallbackChain
+            fallback=FallbackChain(root()) if place_provider is not None else None
             result=execute_personal_plan(brief_data,place_provider=place_provider,intelligence=provider,
-                ai_adapter=ai_adapter,notes_pool=gemini_pool(),
+                ai_adapter=ai_adapter,notes_pool=gemini_pool(),fallback_provider=fallback,
                 directory=job_directory(job_id),root=root(),route_provider=route_provider,progress=report_progress)
         else:
             result=execute_plan(brief_data,provider=provider,directory=job_directory(job_id),root=root(),

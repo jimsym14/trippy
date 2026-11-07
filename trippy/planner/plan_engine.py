@@ -208,22 +208,17 @@ def slot_rank(p, previous, brief, centers=(), trip_centers=(), elsewhere=False, 
     # A place in an area planned for another day waits for that day.
     return (elsewhere, -personal, -len(set(p['tags']) & set(brief['preference_tags'])),
             -p.get('judge_score', 0.0), meters > MAX_PREFERRED_LEG_METERS,
-            -(quality(p) + strength(p) + 4 * sum(t.startswith('theme:') for t in p.get('tags', [])) - DISTANCE_PENALTY_PER_KM * (meters + (0 if asked_for(p) else outside_metres(p, centers)) + homeward) / 1000), p['id'])
-
-
-SHORT_VISIT = ('fontana', 'fountain', 'piazza', 'square', 'plaza', 'plaça', 'steps', 'scalinata', 'ponte', 'bridge',
-               'obelisk', 'statue', 'keyhole', 'buco', 'viewpoint', 'belvedere', 'gate', 'porta ')
-CHURCH = ('basilica', 'church', 'chiesa', 'cathedral', 'duomo', 'santa ', 'san ', 'santo ', 'chapel', 'cappella', 'parròquia', 'iglesia')
+            -(quality(p) + strength(p) + 20 * sum(t.startswith('theme:') for t in p.get('tags', [])) - DISTANCE_PENALTY_PER_KM * (meters + (0 if asked_for(p) else outside_metres(p, centers)) + homeward) / 1000), p['id'])
 
 
 def visit_minutes(p):
-    """Sourced duration, else a sensible default by kind: a fountain is not a museum."""
-    if p['average_visit_minutes']: return p['average_visit_minutes']
-    name = (p['name'] or '').casefold()
-    if p['category'] == 'museum': return 120
-    if any(w in name for w in SHORT_VISIT): return 25
-    if any(w in name for w in CHURCH): return 45
-    return {'attraction':75,'nature':75,'excursion':300,'shopping':60,'food':75,'coffee':30,'bar':75,'club':120}.get(p['category'],60)
+    """Sourced duration, else an estimate by what the place is (see visits.py)."""
+    from .visits import minutes
+    return minutes(p)
+
+
+# Visits per day by pace; a quick stop (fountain, square) counts half.
+DAY_VISITS = {'relaxed': 3.5, 'balanced': 6, 'speedrun': 9}
 
 
 def compose_plan(document, brief, *, route_provider=None):
@@ -256,7 +251,8 @@ def compose_plan(document, brief, *, route_provider=None):
                 # 2.5 km assume a ride (car, taxi or transit) at ~25 km/h door to door.
                 result = {'minutes': math.ceil(metres/1000/25*60)+12, 'method':'ride_estimate', 'verified':False}
             else:
-                result = {'minutes': math.ceil(metres/1000/4*60)+10, 'method':'distance_estimate', 'verified':False}
+                # Next door is a short walk: less buffer for finding the way.
+                result = {'minutes': math.ceil(metres/1000/4*60)+(5 if metres < 1000 else 10), 'method':'distance_estimate', 'verified':False}
         result = {**result,'from_place_id':a['id'],'to_place_id':b['id'],'date':local_date}
         route_cache[cache_key]=result; routes.append(result)
         return result
@@ -268,19 +264,46 @@ def compose_plan(document, brief, *, route_provider=None):
         return all(requirement_supported(doc,p['id'],r,local_date) for r in requirements)
     dates = trip_dates(brief)
     visits = {'attraction','museum','nature','shopping','excursion'}
-    # (start, period, categories, longest visit that fits). The short slots take
-    # quick stops (a fountain, a square, a church) between the main ones; lunch is
-    # food only, and a coffee break sits mid-afternoon when cafés were found.
-    slots = [(600,'morning',visits,None), (705,'morning',visits,50), (780,'afternoon',{'food'},None),
-             (900,'afternoon',visits,None), (1005,'afternoon',visits,50), (1035,'afternoon',{'coffee'},None),
-             (1140,'evening',{'food'},None), (1260,'night',{'bar','club'},None)]
-    if brief.get('pace') in {'χαλαρός','relaxed'}: slots = [slots[0],slots[2],slots[3],slots[5],slots[6]]
-    # Speedrun: only a short visit per highlight, starting early, every slot used.
-    speedrun = brief.get('pace') == 'speedrun'
-    if speedrun:
-        sights = {'attraction','museum','nature'}
-        slots = [(540,'morning',sights,None), slots[0], (720,'afternoon',sights|{'shopping'},None), slots[2], slots[3],
-                 (1050,'afternoon',sights,None), slots[6], slots[7]]
+    # (start, period, categories, end of the window or None for a single stop).
+    # Sight windows are filled with as many visits as fit, like a real day:
+    # morning until lunch, early afternoon until a coffee break, late afternoon
+    # until dinner. Lunch and dinner are food only; coffee is a break.
+    pace = 'relaxed' if brief.get('pace') in {'χαλαρός','relaxed'} else 'speedrun' if brief.get('pace') == 'speedrun' else 'balanced'
+    # The coffee break sits inside the afternoon window, once the clock passes 16:00.
+    slots = {
+        'relaxed':  [(630,'morning',visits,780), (780,'afternoon',{'food'},None), (900,'afternoon',visits,1080),
+                     (1170,'evening',{'food'},None), (1290,'night',{'bar','club'},None)],
+        'balanced': [(570,'morning',visits,780), (780,'afternoon',{'food'},None), (870,'afternoon',visits,1140),
+                     (1170,'evening',{'food'},None), (1290,'night',{'bar','club'},None)],
+        'speedrun': [(540,'morning',visits,780), (780,'afternoon',{'food'},None), (840,'afternoon',visits,1170),
+                     (1170,'evening',{'food'},None), (1290,'night',{'bar','club'},None)],
+    }[pace]
+    # Who travels changes the clock, as real itineraries do: friends out for the
+    # night start later, take an aperitivo before a late dinner and go out after
+    # it (clubs past midnight); families eat early and skip the late bars.
+    group = str((brief.get('travelers') or {}).get('group') or '').casefold()
+    nightlife = bool(categories & {'bar', 'club'})
+    if group in {'friends', 'φίλοι'} and nightlife:
+        slots = [(600 if x[0] == 570 else x[0], x[1], x[2], 1110 if x[3] == 1140 else x[3]) for x in slots if x[1] not in {'evening', 'night'}]
+        slots += [(1110,'evening',{'bar'},None), (1230,'evening',{'food'},None), (1335,'night',{'bar'},None)]
+        if 'club' in categories: slots.append((1420,'night',{'club'},None))  # times stay before midnight in the plan format
+    elif group in {'family', 'οικογένεια'}:
+        slots = [(1140,'evening',{'food'},None) if x[1] == 'evening' else x for x in slots if x[1] != 'night']
+        if pace == 'balanced': slots = [(x[0], x[1], x[2], 1080 if x[3] == 1140 else x[3]) for x in slots]
+    speedrun = pace == 'speedrun'
+    from .visits import groups as visit_groups, group_minutes, quick, closes_by
+    from .areas import strength as area_strength, in_day_area
+    # Sights Wikidata links (part of / located in) and that stand together are one visit.
+    linked = visit_groups(places, area_strength)
+    members_of = {lead: [indexed[i] for i in ids] for lead, ids in linked.items()}
+    grouped = {i for ids in linked.values() for i in ids}
+    # Filler sights must be worth the walk: a fraction of the city's best, so weak
+    # parks and office towers don't pad a day (saved and asked-for places always count).
+    best_visit = max((area_strength(p) for p in places if p['category'] in visits), default=0)
+    floor = min(15, 0.2 * best_visit)
+    covered_themes = set()
+    def worth(p):
+        return p.get('personal_priority') or area_strength(p) >= (floor / 2 if asked_for(p) else floor)
     # Areas first: each day gets one or two neighbouring areas, starting from the base.
     from .areas import cluster, assign
     base = brief.get('base') if isinstance(brief.get('base'), dict) and brief['base'].get('latitude') is not None else None
@@ -288,7 +311,9 @@ def compose_plan(document, brief, *, route_provider=None):
     late_arrival = bool(times_all.get('arrival_time')) and clock_minutes(times_all['arrival_time']) >= 12*60
     early_departure = bool(times_all.get('departure_time')) and clock_minutes(times_all['departure_time']) <= 17*60
     areas = cluster(places, brief['preference_tags'])
-    area_plan, uncovered = assign(areas, dates, base=base, partial_first=late_arrival, partial_last=early_departure and len(dates) > 1)
+    # A short departure morning only has time for something by the base, so it gets no area of its own.
+    area_dates = dates[:-1] if early_departure and len(dates) > 1 else dates
+    area_plan, uncovered = assign(areas, area_dates, base=base, partial_first=late_arrival)
     area_by_id = {a['id']: a for a in areas}
     trip_centers = [(area_by_id[a]['latitude'], area_by_id[a]['longitude']) for ids in area_plan.values() for a in ids]
     area_of = {pid: a['id'] for a in areas for pid in a['place_ids']}
@@ -312,27 +337,67 @@ def compose_plan(document, brief, *, route_provider=None):
         # and stop 3 h before a departure.
         times = brief.get('date_range') or {}
         earliest = clock_minutes(times['arrival_time'])+90 if times.get('arrival_time') and day_number==1 else 0
-        latest = clock_minutes(times['departure_time'])-180 if times.get('departure_time') and day_number==len(dates) else 1380
+        latest = clock_minutes(times['departure_time'])-150 if times.get('departure_time') and day_number==len(dates) else 1380
         day['areas'] = area_plan.get(local_date, [])
         centers = [(area_by_id[a]['latitude'], area_by_id[a]['longitude']) for a in day['areas']]
         area_anchor = {'id':'area','coordinates':{'latitude':centers[0][0],'longitude':centers[0][1]}} if centers else None
-        for start, period, slot_categories, longest in slots:
-            # Coffee is a break, not an interest: it runs whenever cafés were found.
-            if categories and not categories & slot_categories and slot_categories != {'coffee'}: continue
-            if start < earliest - 60 or start >= latest: continue
-            options = [p for p in places if p['id'] not in used and p['category'] in slot_categories and available(p,local_date)]
-            home = base_place if base_place and start >= 1140 else None
-            options.sort(key=lambda p:slot_rank(p, previous or area_anchor or base_place, brief, centers, trip_centers,
-                                                elsewhere=area_day.get(area_of.get(p['id'])) not in (None, local_date), home=home))
+        last_day = day_number == len(dates) and len(dates) > 1 and bool(times.get('departure_time'))
+        month = int(local_date[5:7])
+        day_slots = list(slots)
+        if last_day and latest - 540 >= 90:
+            # Departure morning: breakfast near the base, then whatever fits close by.
+            day_slots = [(540,'morning',{'coffee'},None), (585,'morning',visits,latest)] + [x for x in slots if x[0] >= latest]
+        state = {'budget': DAY_VISITS[pace], 'previous': None, 'coffee': False}
+
+        def last_end(before):
+            ends = [clock_minutes(s['time'])+s['duration_minutes'] for s in day['stops'] if clock_minutes(s['time']) <= before]
+            return max(ends, default=None)
+
+        def place(slot_categories, start, window_end, period, home):
+            """Put the best fitting place of these categories at the next free moment; True if placed."""
+            fill = window_end is not None
+            previous = state['previous']
+            options = [p for p in places if p['id'] not in used and p['id'] not in grouped
+                       and p['category'] in slot_categories and available(p,local_date)]
+            if fill:
+                options = [p for p in options if worth(p)]
+                if last_day and base_place:
+                    # Departure morning: anything still unseen close to the base.
+                    options = [p for p in options if distance(base_place, p) < 1800 and visit_minutes(p) <= 60]
+                else:
+                    # A place in an area planned for another day waits for that day, and the
+                    # next sight is a walk away: no cross-town hop for one more stop.
+                    # Measured from the last sight: lunch somewhere else doesn't move the day.
+                    here = state.get('visit') or previous or area_anchor or base_place
+                    # Areas of earlier days are open again: what's left there is fair filler.
+                    options = [p for p in options if (area_day.get(area_of.get(p['id'])) or '') <= local_date
+                               and (not here or distance(here, p) < 1600
+                                    or (p.get('personal_priority') and centers and in_day_area(p, centers) and distance(here, p) < 2400))]
+            def rank(p):
+                r = slot_rank(p, previous or area_anchor or base_place, brief, centers, trip_centers,
+                              elsewhere=area_day.get(area_of.get(p['id'])) not in (None, local_date), home=home)
+                # Mornings start with the long visits (big museums, ruins): fresh legs, open doors.
+                # A theme the traveller asked for (beach, seafood) gets its first stop early.
+                fresh = (any(t.startswith('theme:') and t not in covered_themes for t in p.get('tags', []))
+                         and (not previous or distance(previous, p) < 1200))
+                long_first = 0 if period == 'morning' and fill and (group_minutes(p, members_of[p['id']]) if p['id'] in members_of else visit_minutes(p)) >= 90 else 1
+                # A meal or a drink is a short walk from where the day is.
+                near = 0 if fill or not previous else int(distance(previous, p) > 1200)
+                return (r[0], min(r[1], -50) if fresh else r[1], near, long_first) + r[2:]
+            if not fill and start == 540 and last_day and base_place:
+                # Breakfast before the airport is round the corner from the base.
+                options = [p for p in options if distance(base_place, p) < 1500]
+            options.sort(key=rank)
             for p in options:
-                duration = visit_minutes(p)
-                if speedrun: duration = min(duration, 45)
-                # Quick in-between stops are only worth it right next door.
-                if longest and (duration > longest or (previous and distance(previous, p) > 900)): continue
+                members = [m for m in members_of.get(p['id'], []) if m['id'] not in used]
+                duration = group_minutes(p, members) if members else visit_minutes(p)
+                if speedrun: duration = min(duration, 45 if not members else 90)
                 # The day starts at the base: the first stop carries the trip from there.
                 leg = travel(previous,p,local_date) if previous else (travel(base_place,p,local_date) if base_place else None)
-                prior_stops = [s for s in day['stops'] if clock_minutes(s['time'])<=start]
-                candidate_start = max(start, max((clock_minutes(s['time'])+s['duration_minutes'] for s in prior_stops),default=start)+(math.ceil(leg['minutes']) if leg and leg['minutes'] is not None and prior_stops else 0))
+                # The next free moment: after everything placed that starts before this
+                # window ends (a single stop also waits for a morning visit running late).
+                ended = last_end(window_end if fill else start + 180)
+                candidate_start = max(start, ended + (math.ceil(leg['minutes']) if leg and leg['minutes'] is not None else 0)) if ended is not None else start
                 check = check_for(doc,p['id'],local_date)
                 if check and check['status']=='confirmed' and check['opening_windows']:
                     windows = [(clock_minutes(w['start']),clock_minutes(w['end'])) for w in check['opening_windows']]
@@ -340,9 +405,24 @@ def compose_plan(document, brief, *, route_provider=None):
                     if not viable: continue
                     candidate_start = min(viable)[0]
                 candidate_start = max(candidate_start, earliest)
-                # Meals stay at meal times: lunch by 15:30, dinner by 22:00.
-                if p['category']=='food' and start in (780,1140) and candidate_start > start+150: continue
-                if candidate_start+duration>min(1380, latest) or any(candidate_start<clock_minutes(s['time'])+s['duration_minutes'] and candidate_start+duration>clock_minutes(s['time']) for s in day['stops']): continue
+                # Meals stay at meal times: lunch by 15:30, dinner by 22:00; coffee by 17:30.
+                if p['category']=='food' and not fill and candidate_start > start+150: continue
+                # An aperitivo is before dinner, not after a long afternoon visit.
+                if p['category']=='bar' and start == 1110 and candidate_start > 1170: continue
+                if p['category']=='coffee' and not fill and candidate_start > max(start, 1050) and start != 540: continue
+                if fill:
+                    # No new visit starts in the last 20 minutes of a window.
+                    if candidate_start > window_end - 20: continue
+                    # A window may run over by a quarter hour; a big visit never squeezes into its end.
+                    # Lunch can wait for a long morning visit (Italy and Spain lunch at two).
+                    # A site that closes at dusk (ruins in winter) can push it to half past two.
+                    overrun = (90 if closes_by(p, month) < 1100 else 60) if period == 'morning' else 15
+                    if candidate_start + duration > window_end + overrun: continue
+                    # Unknown hours: open-air sites end by dusk, museums by early evening.
+                    if not (check and check['status']=='confirmed') and candidate_start + duration > closes_by(p, month): continue
+                day_end = 1650 if p['category'] in {'bar','club'} else 1380
+                if candidate_start+duration > min(day_end, latest if latest < 1380 else day_end): continue
+                if any(candidate_start<clock_minutes(s['time'])+s['duration_minutes'] and candidate_start+duration>clock_minutes(s['time']) for s in day['stops']): continue
                 price = money(p)
                 day['stops'].append({'place_id':p['id'],'activity':p['name'],'time':f'{candidate_start//60:02d}:{candidate_start%60:02d}',
                     'duration_minutes':duration,'duration_basis':p['duration_basis'] if p['average_visit_minutes'] else 'estimate',
@@ -351,10 +431,35 @@ def compose_plan(document, brief, *, route_provider=None):
                     'travel_time_minutes':round(leg['minutes']) if leg and leg['minutes'] is not None else None,
                     'travel_time_basis':leg['method'] if leg else None,
                     **({'travel_from':'base'} if not previous and base_place else {}),
+                    **({'includes':[m['id'] for m in members]} if members else {}),
                     'transport_mode':brief.get('transport_mode','walking'),
                     'alternatives':[q['id'] for q in options if q['id']!=p['id']][:3]})
-                used.add(p['id']); previous=p
-                break
+                used.add(p['id']); used.update(m['id'] for m in members); state['previous'] = p
+                if fill: state['visit'] = p
+                if fill: state['budget'] -= 0.5 if quick(p) and not members else 1
+                if p['category'] == 'coffee': state['coffee'] = True
+                covered_themes.update(t for t in p.get('tags', []) if t.startswith('theme:'))
+                return True
+            return False
+
+        for start, period, slot_categories, window_end in day_slots:
+            # Coffee is a break, not an interest: it runs whenever cafés were found.
+            if categories and not categories & slot_categories and slot_categories != {'coffee'}: continue
+            fill = window_end is not None
+            if fill:
+                if window_end <= earliest or start >= latest: continue
+            elif start < earliest - 60 or start >= latest: continue
+            home = base_place if base_place and start >= 1140 else None
+            # Several drinks in one evening: aperitivo, after dinner, the club.
+            if not fill:
+                place(slot_categories, start, None, period, home); continue
+            while state['budget'] > 0:
+                # A coffee break once the afternoon passes 16:00.
+                ended = last_end(window_end)
+                if period == 'afternoon' and not state['coffee'] and ended is not None and ended >= 960:
+                    state['coffee'] = True
+                    place({'coffee'}, ended, None, 'afternoon', None)
+                if not place(slot_categories, start, window_end, period, home): break
         day['stops'].sort(key=lambda s:clock_minutes(s['time']))
         # Validate the final sorted sequence, including user anchors; estimated
         # routes inform drafting but never certify real walking/transit feasibility.
@@ -387,7 +492,7 @@ def compose_plan(document, brief, *, route_provider=None):
     if base: doc['itinerary']['base']={'name':base.get('name') or 'Base','latitude':base['latitude'],'longitude':base['longitude'],
                                        'address':base.get('address')}
     # Area coverage: which days visit each area, and which important ones the plan skips.
-    scheduled_ids={s['place_id'] for d in days for s in d['stops']}
+    scheduled_ids={i for d in days for s in d['stops'] for i in [s['place_id']]+s.get('includes',[])}
     for area in areas:
         area['days']=[d['date'] for d in days if area['id'] in d.get('areas',[]) and any(s['place_id'] in area['place_ids'] for s in d['stops'])]
         area['planned_place_ids']=[i for i in area['place_ids'] if i in scheduled_ids]

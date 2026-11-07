@@ -23,7 +23,7 @@ from pathlib import Path
 
 from trippy.catalog.boundaries import area_key, city_slug
 
-GUIDE_PAGES = 4               # main article + first district pages
+GUIDE_PAGES = 8               # main article + first district pages
 GUIDE_MAX_AGE = 30 * 86400
 MAX_STOPS = 40                # 7 days x ~5 stops; longer trips are annotated in part
 LIMITS = {'title': 5, 'summary': 20, 'why': 18, 'tip': 16, 'trip': 40, 'character': 22, 'vibe': 4}
@@ -66,7 +66,7 @@ LANGUAGES = {'el': 'Greek', 'en': 'English'}
 def guide_listings(root, destination, *, fetcher=None, log=lambda *a: None):
     """Listings (see/do/eat/drink/buy) for a destination; [] when there is no article."""
     directory = Path(root) / '.local/city_layer' / city_slug(destination)
-    cached = directory / 'guide.json'
+    cached = directory / 'guide-v2.json'
     try:
         if cached.is_file() and time.time() - cached.stat().st_mtime < GUIDE_MAX_AGE:
             return json.loads(cached.read_text())['listings']
@@ -84,12 +84,22 @@ def guide_listings(root, destination, *, fetcher=None, log=lambda *a: None):
                 for page in data['pages'] for l in page['listings'] if l.get('content')]
     try:
         directory.mkdir(parents=True, exist_ok=True)
+        main = data['pages'][0] if data['pages'] else None
         cached.write_text(json.dumps({'destination': destination, 'licence': data['licence'],
-                                      'pages': [p['url'] for p in data['pages']], 'listings': listings},
+                                      'pages': [p['url'] for p in data['pages']], 'listings': listings,
+                                      'scene': {**(main.get('scene') or {}), 'source_url': main['url']} if main else {}},
                                      ensure_ascii=False))
     except OSError:
         pass
     return listings
+
+
+def guide_scene(root, destination):
+    """{'eat': prose, 'drink': prose, 'source_url': url} from the cached guide (call guide_listings first)."""
+    try:
+        return json.loads((Path(root) / '.local/city_layer' / city_slug(destination) / 'guide-v2.json').read_text()).get('scene') or {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _metres(a_lat, a_lon, b_lat, b_lon):

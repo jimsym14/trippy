@@ -10930,8 +10930,13 @@ private struct TrippyMapCanvas<Header: View>: View {
                             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                             .accessibilityLabel("Loading photos")
                     } else {
-                        PlacePaintedHero(doodle: category.doodle, tint: tint,
-                                         caption: details == nil ? "Photos appear once details load" : "No photos on Google Maps yet")
+                        // No Google photos: a real photo from Wikipedia or the venue's website,
+                        // and only then the street view or the painted card.
+                        PlacePhoto(name: title, latitude: pin.coordinate.latitude, longitude: pin.coordinate.longitude,
+                                   sight: category == .sights || category == .parks, symbol: category.symbol, tint: tint,
+                                   website: (details?.websiteURL).flatMap(URL.init(string:)))
+                            .frame(height: 212).frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                     }
                 }
 

@@ -28,6 +28,8 @@ struct ResolvedStop: Identifiable, Hashable {
     var slot: ResolvedSlot? = nil
     /// Minutes from the base, on the day's first stop.
     var fromBaseMinutes: Int? = nil
+    /// Names of the sights seen in the same visit.
+    var includes: [String] = []
 }
 
 /// One tap that improves a day; the traveller can always ignore it.
@@ -112,6 +114,26 @@ struct GuideContext {
         let used = Set(days.flatMap { $0.stops.map(\.place.id) })
         return areas(of: day).flatMap(\.placeIDs).filter { !used.contains($0) }.compactMap { model.places[$0] }
             .sorted { ($0.fame, $0.name) > ($1.fame, $1.name) }
+    }
+
+    /// A free or food-only day still gets something easy to do: the best-known sights
+    /// nobody planned, closest to the stay first. They are ideas, never added on their own.
+    func freeDayIdeas(for day: ResolvedDay) -> [GuideSuggestion] {
+        let included = Set(model.days.flatMap { $0.stops.flatMap(\.includes) })
+        let used = Set(days.flatMap { $0.stops.map(\.place.id) }).union(included)
+        let home = base.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
+        func metres(_ p: GuidePlace) -> Double {
+            guard let home, let c = p.coordinate else { return 5_000 }
+            return home.distance(from: CLLocation(latitude: c.latitude, longitude: c.longitude))
+        }
+        let pool = model.places.values.filter { !used.contains($0.id) && !$0.isFood && $0.coordinate != nil && !$0.isSlotPlaceholder }
+        let ranked = pool.sorted { (Double($0.fame) - metres($0) / 60, $0.name) > (Double($1.fame) - metres($1) / 60, $1.name) }
+        return ranked.prefix(4).map { place in
+            let walk = home != nil ? "\(max(1, Int((metres(place) / 80).rounded()))) min from your stay" : place.categoryLabel
+            return GuideSuggestion(id: "idea|\(place.id)", text: place.name,
+                                   detail: place.reason.isEmpty ? walk : "\(place.reason) · \(walk)",
+                                   symbol: place.symbol, action: .addPlace(place.id))
+        }
     }
 
     /// At most three gentle suggestions for a day, most useful first.
@@ -209,7 +231,8 @@ struct GuideContext {
                                       alternatives: (base?.alternatives ?? []).compactMap { model.places[$0] },
                                       note: edits.notes[key] ?? "", added: base == nil,
                                       why: shown.id == planned.id ? (base?.why ?? "") : "", tip: shown.id == planned.id ? (base?.tip ?? "") : "",
-                                      slot: slot))
+                                      slot: slot,
+                                      includes: shown.id == planned.id ? (base?.includes ?? []).compactMap { model.places[$0]?.name } : []))
         }
         stops.sort { (GuideDates.minutes($0.time) ?? 0) < (GuideDates.minutes($1.time) ?? 0) }
         // The day starts at the base: the planner's own estimate, else one from the distance.

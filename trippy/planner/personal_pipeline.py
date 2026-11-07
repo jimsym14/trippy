@@ -50,7 +50,7 @@ def missing_tasks(brief, graph, intent=None):
 
 
 def run(brief, *, directory, root, place_provider=None, intelligence=None, route_provider=None,
-        ai_adapter=None, judge_enabled=False, progress=None, community_nodes=(), notes_pool=None):
+        ai_adapter=None, judge_enabled=False, progress=None, community_nodes=(), notes_pool=None, fallback_provider=None):
     """Run the personal_places planning pipeline.
 
     ai_adapter  – optional AIAdapter used to extract SearchIntent from the
@@ -64,6 +64,14 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
     """
     brief = normalized_brief(brief)
     progress = progress or (lambda stage, detail:None)
+    live = getattr(place_provider, 'name', None) == 'google_places'
+    if live and not brief.get('base'):
+        # Every day starts at the base. When the app sent none, a note like
+        # "Staying in Trastevere" still places it (free geocoding, cached).
+        from .osm_places import geocode, stay_from_text
+        stay = stay_from_text(brief.get('custom_instructions'))
+        found = geocode(root, f"{stay}, {brief['destination']}") if stay else None
+        if found: brief = {**brief, 'base': {'name': stay, 'latitude': found[0], 'longitude': found[1], 'address': None}}
     store = StageStore(directory)
     graph = library_graph(brief, community_nodes)
     if place_provider is None:
@@ -118,23 +126,40 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
     failures = []; completed = []
     progress('pipeline_started', {'planned_discovery_tasks':len(tasks)})
     def document(): return attach_graph(merge_batches(batches, brief), graph)
+    primary_down = False
     for task in tasks:
         if place_provider is None: break
         progress('task_started', {'task':task['id'], 'stage':'place_retrieval'})
+        if not primary_down:
+            try:
+                batches.append(store.run(task['id'], {'task':task,'brief':brief},
+                    lambda:validate_batch(place_provider.discover(task, brief))))
+                completed.append(task['id'])
+                progress('task_completed', {'task':task['id'], 'stage':'place_retrieval', 'place_count':len(batches[-1]['places'])})
+                continue
+            except Exception as exc:
+                failure = failure_details(exc, task=task['id'], stage='place_retrieval')
+                failures.append(failure); progress('task_failed', failure)
+                # One failure (a spent daily quota, an outage) means the rest would fail too.
+                primary_down = True
+                if fallback_provider is None: break
+        # The free fallback keeps lunch, dinner, coffee and bars in the plan.
         try:
-            batches.append(store.run(task['id'], {'task':task,'brief':brief},
-                lambda:validate_batch(place_provider.discover(task, brief))))
-            completed.append(task['id'])
-            progress('task_completed', {'task':task['id'], 'stage':'place_retrieval', 'place_count':len(batches[-1]['places'])})
+            batches.append(store.run(task['id'] + '-fallback', {'task':task,'brief':brief,'provider':fallback_provider.name},
+                lambda:validate_batch(fallback_provider.discover(task, brief))))
+            completed.append(task['id'] + '-fallback')
+            progress('fallback_completed', {'task':task['id'], 'provider':fallback_provider.name, 'place_count':len(batches[-1]['places'])})
         except Exception as exc:
-            failure = failure_details(exc, task=task['id'], stage='place_retrieval')
-            failures.append(failure); progress('task_failed', failure); break
+            failure = failure_details(exc, task=task['id'] + '-fallback', stage='place_fallback')
+            failures.append(failure); progress('task_failed', failure)
     # Famous places the provider missed, free from Wikidata (live providers only:
     # the local catalog already carries Wikidata fame).
-    if getattr(place_provider, 'name', None) == 'google_places' and not failures:
+    # Wikidata is free and separate, so it runs even when the paid provider failed.
+    if live:
         from . import famous
-        points = sorted((p['coordinates']['latitude'], p['coordinates']['longitude']) for b in batches[1:] for p in b['places']
+        points = sorted((p['coordinates']['latitude'], p['coordinates']['longitude']) for b in batches for p in b['places']
                         if p['coordinates'].get('latitude') is not None)
+        if not points and brief.get('base'): points = [(brief['base']['latitude'], brief['base']['longitude'])]
         wanted = set(categories(brief)) & {'attraction', 'museum', 'nature'}
         # Sightseeing includes the very famous museums and parks (the Vatican Museums
         # are a sight in Rome), even when "museums" wasn't picked as an interest.
@@ -242,6 +267,13 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
         progress('notes_started', {'stops':stops})
         notes_report=plan_notes.annotate(notes_pool, result, planning_brief, guide, cache_dir=Path(root)/'.local/plan-notes')
         progress('notes_completed', {k:v for k,v in notes_report.items() if k!='retry_at'})
+    # The city's food and drink scene, and a data-backed reason on every place (no model).
+    if live:
+        from . import plan_notes, scene
+        listings = plan_notes.guide_listings(root, brief['destination'])
+        scene.add_reasons(result, listings)
+        found = scene.build(result, listings, plan_notes.guide_scene(root, brief['destination']))
+        if found: result['scene'] = found
     # Weekly hours travel as a tag through validation; the plan carries them as a field.
     from .travel_provider import opening_hours_from_tags
     for place in result['places']:

@@ -22,6 +22,8 @@ struct GuidePlace: Identifiable, Hashable {
     let reviewCount: Int?
     let reservationRequired: Bool?
     let tags: [String]
+    /// A short reason backed by data (a guide line, fame, rating or "Saved by you"), no model needed.
+    var reason = ""
 
     static func == (a: GuidePlace, b: GuidePlace) -> Bool { a.id == b.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -71,6 +73,8 @@ struct GuideStop: Identifiable, Hashable {
     var why = ""
     var tip = ""
     var fromBase = false
+    /// Sights visited together with this one (the Arch of Constantine with the Colosseum).
+    var includes: [String] = []
 }
 
 struct GuideDay: Identifiable, Hashable {
@@ -109,6 +113,26 @@ struct GuideArea: Identifiable, Hashable {
     var coordinate: CLLocationCoordinate2D { .init(latitude: latitude, longitude: longitude) }
 }
 
+/// What the city's food and nightlife scene is, from its guide, with a few places to start.
+struct GuideScene: Hashable {
+    struct Pick: Identifiable, Hashable {
+        var id: String { placeID }
+        let placeID: String
+        let name: String
+        let category: String
+        let reason: String
+        let planned: Bool
+    }
+    struct Part: Hashable {
+        let text: String
+        let picks: [Pick]
+    }
+    var eat: Part?
+    var drink: Part?
+    var sourceURL: URL?
+    var isEmpty: Bool { eat == nil && drink == nil }
+}
+
 struct GuideInfoRow: Identifiable, Hashable {
     let id: String
     let title: String
@@ -129,6 +153,7 @@ struct GuideModel {
     var gaps: [String] = []
     var areas: [GuideArea] = []
     var base: GuideBase?
+    var scene = GuideScene()
 
     var orderedPlaces: [GuidePlace] { places.values.sorted { ($0.fame, $0.name) > ($1.fame, $1.name) } }
 
@@ -154,7 +179,8 @@ struct GuideModel {
                                     priceMin: num(price?["min"]), priceMax: num(price?["max"]),
                                     rating: num(rating?["value"]), ratingScale: num(rating?["scale"]),
                                     reviewCount: num(rating?["review_count"]).map { Int($0) },
-                                    reservationRequired: p["reservation_required"] as? Bool, tags: p["tags"] as? [String] ?? [])
+                                    reservationRequired: p["reservation_required"] as? Bool, tags: p["tags"] as? [String] ?? [],
+                                    reason: str(p["reason"]) ?? "")
         }
         let itinerary = root["itinerary"] as? [String: Any]
         for (i, d) in ((itinerary?["days"] as? [[String: Any]]) ?? []).enumerated() {
@@ -162,12 +188,26 @@ struct GuideModel {
                 guard let id = str(s["place_id"]), places[id] != nil else { return nil }
                 return GuideStop(placeID: id, time: str(s["time"]) ?? "", durationMinutes: Int(num(s["duration_minutes"]) ?? 60),
                                  travelMinutes: num(s["travel_time_minutes"]).map { Int($0) }, alternatives: s["alternatives"] as? [String] ?? [],
-                                 why: str(s["why"]) ?? "", tip: str(s["tip"]) ?? "", fromBase: str(s["travel_from"]) == "base")
+                                 why: str(s["why"]) ?? "", tip: str(s["tip"]) ?? "", fromBase: str(s["travel_from"]) == "base",
+                                 includes: (s["includes"] as? [String] ?? []).filter { places[$0] != nil })
             }
             // The engine's placeholder title is not a theme; the notes pass writes real ones.
             let theme = str(d["theme"]).flatMap { ["Η ημέρα σου", "Your day"].contains($0) ? nil : $0 } ?? ""
             days.append(GuideDay(index: i, date: str(d["date"]) ?? "Day \(i + 1)", stops: stops, theme: theme, summary: str(d["summary"]) ?? "",
                                  areaIDs: d["areas"] as? [String] ?? []))
+        }
+        if let raw = root["scene"] as? [String: Any] {
+            func part(_ key: String) -> GuideScene.Part? {
+                guard let p = raw[key] as? [String: Any] else { return nil }
+                let picks = (p["picks"] as? [[String: Any]] ?? []).compactMap { x -> GuideScene.Pick? in
+                    guard let id = str(x["place_id"]), let name = str(x["name"]) else { return nil }
+                    return .init(placeID: id, name: name, category: str(x["category"]) ?? "bar", reason: str(x["reason"]) ?? "",
+                                 planned: x["planned"] as? Bool ?? false)
+                }
+                let text = str(p["text"]) ?? ""
+                return text.isEmpty && picks.isEmpty ? nil : .init(text: text, picks: picks)
+            }
+            scene = GuideScene(eat: part("eat"), drink: part("drink"), sourceURL: url(raw["source_url"]))
         }
         if let b = itinerary?["base"] as? [String: Any], let lat = num(b["latitude"]), let lon = num(b["longitude"]) {
             base = GuideBase(name: str(b["name"]) ?? "Your stay", latitude: lat, longitude: lon)
@@ -245,7 +285,7 @@ enum GuideSection: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .glance: "Overview"; case .map: "Map"; case .areas: "Areas"; case .calendar: "Holidays"
         case .days: "Day by day"; case .book: "Book ahead"; case .tickets: "Tickets"
-        case .transport: "Getting around"; case .food: "Food"; case .budget: "Budget"
+        case .transport: "Getting around"; case .food: "Food & nightlife"; case .budget: "Budget"
         case .checklist: "Checklist"; case .unknowns: "Not yet checked"
         }
     }

@@ -85,6 +85,11 @@ struct GuideSavedPlace: Codable, Hashable {
                    reservationRequired: nil, tags: ["apple_maps"])
     }
 
+    init(id: String, name: String, category: String, latitude: Double, longitude: Double, address: String?, url: String?) {
+        self.id = id; self.name = name; self.category = category; self.latitude = latitude; self.longitude = longitude
+        self.address = address; self.url = url
+    }
+
     init(item: MKMapItem, category: String) {
         let c = item.placemark.coordinate
         let name = item.name ?? "Place"
@@ -193,7 +198,7 @@ actor PlaceImageStore {
     private var running = 0
     private var waiting: [CheckedContinuation<Void, Never>] = []
     private let directory: URL = {
-        let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("place-images", isDirectory: true)
+        let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("place-images-v2", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()
@@ -205,7 +210,7 @@ actor PlaceImageStore {
 
     func cached(_ key: String) -> UIImage? { memory[key] }
 
-    func image(name: String, latitude: Double?, longitude: Double?, sight: Bool, url: URL? = nil) async -> UIImage? {
+    func image(name: String, latitude: Double?, longitude: Double?, sight: Bool, url: URL? = nil, website: URL? = nil) async -> UIImage? {
         let key = Self.key(name: name, latitude: latitude, longitude: longitude)
         if let hit = memory[key] { return hit }
         if misses.contains(key) { return nil }
@@ -217,7 +222,10 @@ actor PlaceImageStore {
         if let url, let (data, _) = try? await URLSession.shared.data(for: Self.request(url)) { found = UIImage(data: data) }
         if found == nil, let latitude, let longitude {
             let c = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            // Real photos first: Wikipedia for sights, the venue's own website photo for
+            // cafés, restaurants and bars. The street-level 3D view only when neither exists.
             if sight { found = await Self.wikipedia(name: name, coordinate: c) }
+            if found == nil, let website { found = await Self.websitePhoto(website) }
             if found == nil { found = await Self.lookAround(c) }
             if found == nil { found = await Self.mapSnapshot(c) }
         }
@@ -268,6 +276,23 @@ actor PlaceImageStore {
               let (imageData, _) = try? await URLSession.shared.data(from: imageURL) else { return nil }
         return UIImage(data: imageData)
     }
+    /// The picture a venue publishes for link previews (`og:image` / `twitter:image`) on its own website.
+    private static func websitePhoto(_ site: URL) async -> UIImage? {
+        guard ["http", "https"].contains(site.scheme ?? ""),
+              let (data, response) = try? await URLSession.shared.data(for: request(site)),
+              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false else { return nil }
+        let html = String(decoding: data.prefix(400_000), as: UTF8.self)
+        let pattern = #"<meta[^>]+(?:property|name)=["'](?:og:image(?::secure_url)?|twitter:image)["'][^>]*>"#
+        guard let tag = html.range(of: pattern, options: [.regularExpression, .caseInsensitive]).map({ String(html[$0]) }),
+              let content = tag.range(of: #"content=["']([^"']+)["']"#, options: .regularExpression).map({ String(tag[$0]) }) else { return nil }
+        let raw = content.dropFirst(9).dropLast().replacingOccurrences(of: "&amp;", with: "&")
+        guard let imageURL = URL(string: raw, relativeTo: site)?.absoluteURL, imageURL.scheme == "https",
+              let (bytes, imageResponse) = try? await URLSession.shared.data(for: request(imageURL)),
+              (imageResponse.mimeType ?? "").hasPrefix("image/"), let image = UIImage(data: bytes),
+              // Logos and icons are not photos of the place.
+              image.size.width >= 300, image.size.height >= 160 else { return nil }
+        return image
+    }
     private static func lookAround(_ coordinate: CLLocationCoordinate2D) async -> UIImage? {
         guard let scene = try? await MKLookAroundSceneRequest(coordinate: coordinate).scene else { return nil }
         let options = MKLookAroundSnapshotter.Options()
@@ -299,6 +324,7 @@ struct PlacePhoto: View {
     var symbol = "photo"
     var tint: Color = Sketch.inkSoft
     var imageURL: URL? = nil
+    var website: URL? = nil
     @State private var image: UIImage?
     private var key: String { PlaceImageStore.key(name: name, latitude: latitude, longitude: longitude) }
     var body: some View {
@@ -315,7 +341,8 @@ struct PlacePhoto: View {
         .accessibilityHidden(true)
         .task(id: key) {
             guard latitude != nil || imageURL != nil else { return }
-            let found = await PlaceImageStore.shared.image(name: name, latitude: latitude, longitude: longitude, sight: sight, url: imageURL)
+            let found = await PlaceImageStore.shared.image(name: name, latitude: latitude, longitude: longitude, sight: sight, url: imageURL,
+                                                           website: website)
             withAnimation(.easeOut(duration: 0.2)) { image = found }
         }
     }
@@ -324,7 +351,7 @@ struct PlacePhoto: View {
 extension PlacePhoto {
     init(place: GuidePlace, tint: Color = Sketch.inkSoft) {
         self.init(name: place.name, latitude: place.coordinate?.latitude, longitude: place.coordinate?.longitude,
-                  sight: !place.isFood, symbol: place.symbol, tint: tint)
+                  sight: !place.isFood, symbol: place.symbol, tint: tint, website: place.url)
     }
 }
 
@@ -368,6 +395,38 @@ struct AreaLabel: View {
 
 // MARK: - The option pool
 
+/// The traveller's saved map places (the same store the map uses), read-only here.
+enum SavedPins {
+    struct Pin: Decodable {
+        let id: String
+        let name: String
+        let latitude: Double
+        let longitude: Double
+        let category: String
+        var address: String?
+        var websiteURL: String?
+        var saved: Bool?
+        /// The plan category a saved place can fill: a saved café is a coffee break.
+        var slotCategory: String? {
+            switch category {
+            case "Coffee", "Brunch": "coffee"
+            case "Food", "Street food", "Burger", "Seafood", "Vegan": "food"
+            case "Bars", "Clubs": "bar"
+            default: nil
+            }
+        }
+        var place: GuideSavedPlace {
+            GuideSavedPlace(id: "pin:" + id, name: name, category: slotCategory ?? "food", latitude: latitude, longitude: longitude,
+                            address: address?.nilIfEmpty, url: websiteURL)
+        }
+    }
+    static func all() -> [Pin] {
+        guard let data = UserDefaults.standard.data(forKey: "trippy.native.personalPlaces.v1"),
+              let pins = try? JSONDecoder().decode([Pin].self, from: data) else { return [] }
+        return pins.filter { $0.saved != false }
+    }
+}
+
 struct SlotOption: Identifiable, Hashable {
     var id: String { place.id }
     let place: GuidePlace
@@ -390,8 +449,14 @@ struct SlotOption: Identifiable, Hashable {
             guard let center, let c else { return nil }
             return center.distance(from: CLLocation(latitude: c.latitude, longitude: c.longitude))
         }
-        // The planner's own candidates first: they are the curated ones.
-        var result = planPlaces.filter { kind.matches($0.category) }
+        // Places the traveller saved (from TikTok, a search, a friend) lead; then the planner's own candidates.
+        let pins = SavedPins.all().filter { $0.slotCategory.map(kind.matches) ?? false }.map { pin -> SlotOption in
+            var place = pin.place.guidePlace
+            place.reason = "Saved by you"
+            return SlotOption(place: place, saved: pin.place, metres: metres(place.coordinate), fromPlan: true)
+        }.filter { ($0.metres ?? .infinity) < 2000 }
+        let pinNames = Set(pins.map { $0.place.name.lowercased() })
+        var result = pins.sorted { ($0.metres ?? .infinity) < ($1.metres ?? .infinity) } + planPlaces.filter { kind.matches($0.category) && !pinNames.contains($0.name.lowercased()) }
             .map { SlotOption(place: $0, saved: nil, metres: metres($0.coordinate), fromPlan: true) }
             .filter { ($0.metres ?? 0) < 1300 }
             .sorted { ($0.metres ?? .infinity) < ($1.metres ?? .infinity) }
@@ -801,7 +866,8 @@ private struct OptionCard: View {
     let onChoose: () -> Void
     static func detail(_ option: SlotOption, suggested: Bool) -> String {
         var parts: [String] = []
-        if suggested { parts.append("Planner's pick") } else if option.fromPlan { parts.append("Fits your plan") }
+        if option.place.reason == "Saved by you" { parts.append("Saved by you") }
+        else if suggested { parts.append("Planner's pick") } else if option.fromPlan { parts.append("Fits your plan") }
         if let walk = option.walk { parts.append(walk) }
         if let rating = option.place.rating { parts.append("★ \(rating.formatted(.number.precision(.fractionLength(1))))") }
         return parts.joined(separator: " · ")

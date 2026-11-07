@@ -277,3 +277,82 @@ struct LeftOutSection: View {
         }
     }
 }
+
+// MARK: - Food & nightlife scene
+
+/// What eating and going out is like in this city (from its Wikivoyage guide),
+/// and a few places to start with, each with the reason it is there.
+struct SceneSection: View {
+    let scene: GuideScene
+    let ctx: GuideContext
+    @State private var open: Set<String> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let drink = scene.drink { part("drink", title: "Drinks & going out", symbol: "wineglass", tint: Sketch.plum, drink) }
+            if let eat = scene.eat { part("eat", title: "Eating out", symbol: "fork.knife", tint: Sketch.sage, eat) }
+            if let url = scene.sourceURL {
+                Link(destination: url) {
+                    Label("From the Wikivoyage city guide", systemImage: "book.closed")
+                        .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+                }
+            }
+        }
+    }
+
+    private func part(_ key: String, title: String, symbol: String, tint: Color, _ part: GuideScene.Part) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: symbol).font(Sketch.text(16, "Bold", relativeTo: .headline)).foregroundStyle(tint)
+            if !part.text.isEmpty {
+                let paragraphs = part.text.components(separatedBy: "\n\n")
+                let showAll = open.contains(key)
+                Text((showAll ? paragraphs : Array(paragraphs.prefix(1))).joined(separator: "\n\n"))
+                    .font(Sketch.text(14, relativeTo: .subheadline)).foregroundStyle(Sketch.ink.opacity(0.85))
+                    .lineLimit(showAll ? nil : 4)
+                    .fixedSize(horizontal: false, vertical: true)
+                if paragraphs.count > 1 || part.text.count > 220 {
+                    Button(showAll ? "Less" : "Read more") {
+                        withAnimation(.snappy) { if showAll { open.remove(key) } else { open.insert(key) } }
+                    }
+                    .font(Sketch.text(13, "Bold", relativeTo: .footnote)).foregroundStyle(tint)
+                }
+            }
+            if !part.picks.isEmpty {
+                Text("WHERE TO START").font(Sketch.eyebrow).tracking(1).foregroundStyle(Sketch.inkSoft).padding(.top, 2)
+                VStack(spacing: 0) {
+                    ForEach(Array(part.picks.enumerated()), id: \.element.id) { index, pick in
+                        pickRow(pick, tint: tint)
+                        if index < part.picks.count - 1 { Divider().overlay(Sketch.rule) }
+                    }
+                }
+            }
+        }
+        .sketchCard(padding: 14)
+    }
+
+    private func pickRow(_ pick: GuideScene.Pick, tint: Color) -> some View {
+        let place = ctx.model.places[pick.placeID]
+        return HStack(alignment: .top, spacing: 12) {
+            Group {
+                if let place { PlacePhoto(place: place, tint: tint) } else { Rectangle().fill(tint.opacity(0.12)) }
+            }
+            .frame(width: 54, height: 54).clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(pick.name).font(Sketch.text(15, "Bold", relativeTo: .subheadline)).lineLimit(1)
+                    if pick.planned {
+                        Text("In your plan").font(Sketch.text(11, "Bold", relativeTo: .caption2)).foregroundStyle(tint)
+                            .padding(.horizontal, 6).padding(.vertical, 2).background(Capsule().fill(tint.opacity(0.12)))
+                    }
+                }
+                if !pick.reason.isEmpty {
+                    Text(pick.reason).font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                        .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .combine)
+    }
+}

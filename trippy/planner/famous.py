@@ -28,6 +28,7 @@ SKIP = {  # settlements, districts, institutions, events, transport, people's or
     'Q3918', 'Q875538', 'Q902104', 'Q38058796', 'Q3624078', 'Q6256', 'Q43229', 'Q4830453', 'Q178706', 'Q1656682',
     'Q131569', 'Q4022', 'Q35657', 'Q107390', 'Q532', 'Q486972', 'Q7930989', 'Q1248784', 'Q55488', 'Q928830',
     'Q11032', 'Q1907114', 'Q16917', 'Q7075', 'Q22806', 'Q2085381',
+    'Q483110', 'Q1154710', 'Q1339195', 'Q18543139', 'Q1793804', 'Q12819564',  # stadiums, stations
 }
 MUSEUMS = {'Q33506', 'Q207694', 'Q16735822', 'Q3329412', 'Q588140', 'Q1007870', 'Q2668072', 'Q1970365', 'Q17431399', 'Q2772772'}
 NATURE = {'Q22698', 'Q22746', 'Q1107656', 'Q167346', 'Q6017969', 'Q54050', 'Q40080', 'Q8502', 'Q46169'}
@@ -47,14 +48,23 @@ def metres(a_lat, a_lon, b_lat, b_lon):
     return math.hypot(dx, dy)
 
 
+# A "whole" groups sights into one visit only when it is itself a visitable place
+# (an archaeological park, a palace, a museum, a square), never a district, a
+# group of hills or a pilgrims' route.
+WHOLE_TYPES = VISITABLE | MUSEUMS | NATURE | {'Q3363945', 'Q21752084', 'Q133444874', 'Q1062780', 'Q839954', 'Q16560', 'Q2651004'}
+WHOLE_VALUES = ' '.join('wd:' + q for q in sorted(WHOLE_TYPES))
+
+
 def query_wikidata(latitude, longitude):
     query = f"""
-    SELECT ?item ?itemLabel ?loc ?links (GROUP_CONCAT(DISTINCT ?t) AS ?types) (COUNT(?built) AS ?builtSignals) WHERE {{
+    SELECT ?item ?itemLabel ?loc ?links (GROUP_CONCAT(DISTINCT ?t) AS ?types) (GROUP_CONCAT(DISTINCT ?whole) AS ?wholes)
+           (COUNT(?built) AS ?builtSignals) WHERE {{
       SERVICE wikibase:around {{ ?item wdt:P625 ?loc . bd:serviceParam wikibase:center "Point({longitude} {latitude})"^^geo:wktLiteral .
                                 bd:serviceParam wikibase:radius "{RADIUS_KM}" . }}
       ?item wikibase:sitelinks ?links . FILTER(?links > {MIN_SITELINKS})
       OPTIONAL {{ ?item wdt:P31 ?t }}
       OPTIONAL {{ ?item wdt:P1435|wdt:P84|wdt:P149 ?built }}
+      OPTIONAL {{ ?item wdt:P361|wdt:P276 ?whole . ?whole wdt:P31 ?wholeType . VALUES ?wholeType {{ {WHOLE_VALUES} }} }}
       SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
     }} GROUP BY ?item ?itemLabel ?loc ?links ORDER BY DESC(?links) LIMIT 90"""
     url = 'https://query.wikidata.org/sparql?' + urllib.parse.urlencode({'query': query})
@@ -73,13 +83,16 @@ def query_wikidata(latitude, longitude):
         if not built and not types & (VISITABLE | MUSEUMS | NATURE): continue
         lon, lat = (float(x) for x in loc.replace('Point(', '').replace(')', '').split())
         category = 'museum' if types & MUSEUMS else 'nature' if types & NATURE else 'attraction'
+        # "Part of" / "located in": the Sistine Chapel is part of the Apostolic Palace,
+        # so the planner can make them one visit.
+        wholes = sorted({w.rsplit('/', 1)[-1] for w in (value('wholes') or '').split()})
         items.append({'qid': qid, 'name': name, 'latitude': lat, 'longitude': lon,
-                      'sitelinks': int(value('links') or 0), 'category': category})
+                      'sitelinks': int(value('links') or 0), 'category': category, 'within': wholes})
     return items
 
 
 def famous_items(root, destination, latitude, longitude, *, fetch=query_wikidata, log=lambda *a: None):
-    cache = Path(root) / '.local/famous' / f'{city_slug(destination)}.json'
+    cache = Path(root) / '.local/famous' / f'{city_slug(destination)}-v3.json'
     try:
         if cache.is_file() and time.time() - cache.stat().st_mtime < CACHE_DAYS * 86400:
             return json.loads(cache.read_text())
@@ -111,9 +124,14 @@ def enrich(batches, items, categories):
         match = next((p for p in existing if metres(item['latitude'], item['longitude'], p['coordinates']['latitude'],
                                                      p['coordinates']['longitude']) < 300
                       and len(key) >= 4 and (key in fold(p['name']) or fold(p['name']) in key)), None)
-        tag = f"notable:{item['sitelinks']}"
+        tags = [f"notable:{item['sitelinks']}", f"wd:{item['qid']}"] + [f'within:{w}' for w in item.get('within', [])]
         if match:
-            if tag not in match['tags']: match['tags'] = sorted(set(match['tags'] + [tag]))
+            match['tags'] = sorted(set(match['tags'] + tags))
+            # A must-see picked in the app keeps the user's pick but takes Wikidata's
+            # kind (the Pantheon is a sight, not a park, whatever list it came from).
+            personal = not any(str(sid).startswith(('google-', 'wikidata-', 'osm-')) for sid in match.get('source_ids', []))
+            if personal and match['category'] in {'attraction', 'museum', 'nature'}:
+                match['category'] = item['category']
             continue
         if item['category'] not in categories or len(places) >= MAX_NEW or too_close(item): continue
         sid = 'wikidata-' + item['qid']
@@ -122,7 +140,7 @@ def enrich(batches, items, categories):
         places.append({'id': 'wd-' + item['qid'], 'name': item['name'], 'category': item['category'],
             'description': '', 'why_recommended': '', 'address': None, 'official_url': None, 'source_ids': [sid],
             'coordinates': {'latitude': item['latitude'], 'longitude': item['longitude'], 'source_ids': [sid]},
-            'identity_status': 'source_matched', 'tags': [tag, 'wikidata_famous'],
+            'identity_status': 'source_matched', 'tags': tags + ['wikidata_famous'],
             'price': {'min': None, 'max': None, 'currency': None, 'basis': 'unknown'}, 'price_source_ids': [],
             'cuisine': None, 'dietary_options': [], 'best_for': [], 'best_time': None, 'reservation_required': None,
             'image_url': None, 'image_source_url': None, 'image_attribution': None,

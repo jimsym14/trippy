@@ -86,8 +86,19 @@ def cluster(places, wanted_tags=()):
         top = max(area['members'], key=lambda p: (strength(p), p['id']))
         result.append({'id': f'area-{index + 1}', 'latitude': round(area['center'][0], 6), 'longitude': round(area['center'][1], 6),
                        'place_ids': sorted(p['id'] for p in area['members']), 'importance': round(importance(area['members'], weight), 1),
+                       'minutes': load(area['members']), 'saved': any(p.get('personal_priority') for p in area['members']),
                        'anchor_place_id': top['id'], 'anchor_name': top['name'], 'name': None})
     return result
+
+
+def load(members):
+    """Minutes the area's worthwhile sights take (saved or well known), with walks between them."""
+    from .visits import minutes
+    worth = [p for p in members if p.get('personal_priority') or fame(p) >= 40]
+    return sum(minutes(p) + 15 for p in worth)
+
+
+DAY_MINUTES = 420  # sightseeing in a full day, 9:30 to 19:00 less lunch, coffee and walks
 
 
 def importance(members, weight=None):
@@ -113,8 +124,23 @@ def assign(areas, dates, *, base=None, partial_first=False, partial_last=False):
 
     full = [d for i, d in enumerate(dates) if not (i == 0 and partial_first) and not (i == len(dates) - 1 and partial_last)]
     edges = ([dates[0]] if partial_first else []) + ([dates[-1]] if partial_last and len(dates) > 1 else [])
-    # The most important areas go to full days; short first/last days then take what's
-    # left closest to the base (or, without a base, the next most important).
+    # Short first/last days choose first, among the areas the full days won't need:
+    # the best one close to the base (importance discounted by distance), so the
+    # arrival afternoon is a good nearby walk, not a leftover corner of town.
+    reserved = set(left[:len(full)])
+    for date in edges:
+        pool = [i for i in left if i not in reserved] or list(left)
+        if not pool: break
+        if base_point:
+            pick = max(pool, key=lambda i: (by_id[i]['importance'] / (1 + metres(center(by_id[i]), base_point) / 1500), i))
+        else:
+            pick = pool[0]
+        take(pick, date)
+    def reserved_for_later(date):
+        # The main areas of the full days still to come stay theirs.
+        later = [d for d in full if d > date and not plan[d]]
+        return set(left[:len(later)])
+    # The most important areas go to full days.
     for date in full:
         if not left: break
         main = left[0]; take(main, date)
@@ -125,18 +151,27 @@ def assign(areas, dates, *, base=None, partial_first=False, partial_last=False):
             near = [i for i in left if metres(center(by_id[main]), center(by_id[i])) < PAIR_METRES]
             friend = max(near, key=lambda i: by_id[i]['importance'], default=None)
             close = friend is not None
-            if close and (len(by_id[main]['place_ids']) < 4 or by_id[friend]['importance'] >= 0.5 * by_id[main]['importance']):
+            # ...but never two areas that each fill a day (Ancient Rome and the centre).
+            fits = by_id[main].get('minutes', 0) + by_id[friend].get('minutes', 0) <= DAY_MINUTES if close else False
+            if close and fits and (len(by_id[main]['place_ids']) < 4 or by_id[friend]['importance'] >= 0.5 * by_id[main]['importance']):
                 take(friend, date)
-    for date in edges:
-        if not left: break
-        take(nearest_to(base_point, left) if base_point else left[0], date)
+        # A day that its areas can't fill takes the most important area within a short ride.
+        while left and sum(by_id[a].get('minutes', 0) for a in plan[date]) < 0.6 * DAY_MINUTES:
+            reach = [i for i in left if i not in reserved_for_later(date)
+                     and min(metres(center(by_id[i]), center(by_id[a])) for a in plan[date]) < 2800]
+            if not reach: break
+            take(max(reach, key=lambda i: by_id[i]['importance']), date)
     # Left over areas that are close to a planned day ride along with it.
     for area_id in list(left):
         # Only full days have room for a third area; a short day keeps its one.
         best = min(((d, min(metres(center(by_id[area_id]), center(by_id[a])) for a in ids)) for d, ids in plan.items() if ids and d in full),
                    key=lambda x: x[1], default=None)
-        # Only small areas ride along; an important one is better left for its own trip.
-        if best and best[1] < 1200 and len(plan[best[0]]) < 3 and len(by_id[area_id]['place_ids']) <= 2: take(area_id, best[0])
+        # Small areas ride along with a close day that has room; the day keeps what fits.
+        if best and best[1] < 2500 and len(plan[best[0]]) < 3 and len(by_id[area_id]['place_ids']) <= 3:
+            room = DAY_MINUTES - sum(by_id[a].get('minutes', 0) for a in plan[best[0]])
+            # A saved must-see always gets a chance on the closest day; the day's
+            # timing then decides between it and the optional sights.
+            if room >= min(by_id[area_id].get('minutes', 0), 120) or by_id[area_id].get('saved'): take(area_id, best[0])
     return plan, left
 
 

@@ -212,6 +212,32 @@ def parse_listing(kind, body):
             'content': _clean(fields.get('content', '') or fields.get('description', ''))[:MAX_CONTENT_CHARS] or None}
 
 
+SCENE_SECTIONS = ('Eat', 'Drink')
+SCENE_CHARS = 1100
+
+
+def scene_text(wikitext, section):
+    """The prose of a page's ==Eat== or ==Drink== section: how the city eats and goes out.
+
+    Listings, comments, maps and sub-headings are dropped; paragraphs are kept
+    in order up to ~1100 characters (Wikivoyage, CC BY-SA, credited by the app).
+    """
+    match = re.search(r'^==\s*' + section + r'\s*==\s*$(.*?)(?=^==[^=]|\Z)', wikitext, re.M | re.S)
+    if not match: return None
+    body = re.sub(r'<!--.*?-->', '', match.group(1), flags=re.S)
+    body = re.sub(r'\{\{\s*(see|do|eat|drink|buy|sleep|listing)\s*\|.*?\}\}', '', body, flags=re.S | re.I)
+    paragraphs = []
+    for block in re.split(r'\n\s*\n', body):
+        lines = [l for l in block.strip().splitlines() if l.strip() and not l.lstrip().startswith(('=', '*', '#', '{{', '}}', '|', '[[File', '[[Image'))]
+        text = _clean(' '.join(lines))
+        if len(text) >= 40: paragraphs.append(text)
+    out, total = [], 0
+    for p in paragraphs:
+        if total + len(p) > SCENE_CHARS and out: break
+        out.append(p[:SCENE_CHARS]); total += len(p)
+    return '\n\n'.join(out) or None
+
+
 def collect_wikivoyage(fetcher, city, max_pages=40):
     titles, seen, pages = [city], set(), []
     while titles and len(pages) < max_pages:
@@ -227,7 +253,8 @@ def collect_wikivoyage(fetcher, city, max_pages=40):
         for listing in listings:
             listing['page'] = real
         pages.append({'title': real, 'url': 'https://en.wikivoyage.org/wiki/' + real.replace(' ', '_'),
-                      'revid': data['parse'].get('revid'), 'listings': listings})
+                      'revid': data['parse'].get('revid'), 'listings': listings,
+                      'scene': {k.lower(): scene_text(text, k) for k in SCENE_SECTIONS}})
         # District articles are sub-pages ("Barcelona/Ciutat Vella").
         titles += sorted({m for m in re.findall(r'\[\[(' + re.escape(real) + r'/[^\]|#]+)', text)} - seen)
     return {'pages': pages, 'licence': 'CC BY-SA 4.0 (Wikivoyage); keep attribution to page URL'}

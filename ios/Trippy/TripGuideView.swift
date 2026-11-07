@@ -34,7 +34,7 @@ struct TripGuideView: View {
             ScrollView {
                 let ctx = self.ctx
                 VStack(alignment: .leading, spacing: 36) {
-                    GuideHeader(ctx: ctx, tint: tint, showFacts: $showFacts)
+                    GuideHeader(ctx: ctx, tint: tint, flight: $edits.flight, showFacts: $showFacts)
                     ForEach(blocks(ctx), id: \.self) { block in
                         switch block {
                         case .section(let section): sectionView(section, ctx: ctx)
@@ -61,7 +61,12 @@ struct TripGuideView: View {
                 .scrollTargetLayout()
                 .padding(.horizontal, 20).padding(.top, 4)
                 .frame(maxWidth: 680).frame(maxWidth: .infinity)
+                // The page is exactly as wide as the screen: no child can widen it
+                // and make it drift sideways while scrolling.
+                .containerRelativeFrame(.horizontal)
+                .clipped()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .scrollPosition(id: $scrolledID, anchor: scrollAnchor)
             .scrollDismissesKeyboard(.interactively)
             .overlay(alignment: .bottom) { undoBar }
@@ -201,7 +206,9 @@ struct TripGuideView: View {
             case .book: BookSection(ctx: ctx, edits: $edits)
             case .tickets: TicketsSection(ctx: ctx, edits: $edits)
             case .transport: TransportSection(ctx: ctx, edits: $edits)
-            case .food: FoodSection(ctx: ctx)
+            case .food:
+                if !ctx.model.scene.isEmpty { SceneSection(scene: ctx.model.scene, ctx: ctx) }
+                FoodSection(ctx: ctx)
             case .budget: BudgetSection(ctx: ctx, edits: $edits, tint: tint)
             case .checklist: ChecklistSection(ctx: ctx, edits: $edits)
             case .unknowns: UnknownsSection(ctx: ctx)
@@ -215,9 +222,13 @@ struct TripGuideView: View {
 private struct GuideHeader: View {
     let ctx: GuideContext
     let tint: Color
+    @Binding var flight: GuideFlight
     @Binding var showFacts: Bool
+    @FocusState private var focus: Field?
+    enum Field: Hashable { case arrive, leave, stay }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("\(ctx.days.count) DAYS · \(ctx.people) \(ctx.people == 1 ? "TRAVELER" : "TRAVELERS")")
@@ -233,44 +244,60 @@ private struct GuideHeader: View {
                 DoodleView(doodle: .suggested(title: ctx.input.title, city: ctx.input.destination), tint: tint)
                     .frame(width: 76, height: 76)
             }
-            Button { showFacts = true } label: { facts }.buttonStyle(SketchPressStyle())
-                .accessibilityHint("Edit flights and stay")
+            essentials
+        }
+        .onChange(of: focus) { old, _ in
+            // "12" becomes "12:00" when the field is left, not while typing.
+            if old == .arrive { flight.arrivalTime = TimeShorthand.normalize(flight.arrivalTime) }
+            if old == .leave { flight.departureTime = TimeShorthand.normalize(flight.departureTime) }
         }
     }
 
-    private var facts: some View {
-        let f = ctx.edits.flight
-        let empty = f.outbound.isEmpty && f.inbound.isEmpty && f.stayName.isEmpty && f.arrivalTime.isEmpty && f.departureTime.isEmpty
-        return VStack(alignment: .leading, spacing: 0) {
-            if empty {
-                HStack(spacing: 12) {
-                    TrippyIconView(icon: .plane, size: 20).foregroundStyle(tint)
-                    Text("Add flights and stay").font(Sketch.text(15, "SemiBold", relativeTo: .body))
-                    Spacer()
-                    Image(systemName: "plus").foregroundStyle(Sketch.inkFaint)
-                }
-                .frame(minHeight: 28)
-            } else {
-                factRow(.plane, title: "Arrive", value: f.outbound.isEmpty ? f.arrivalTime : f.outbound)
-                Divider().overlay(Sketch.rule).padding(.vertical, 10)
-                factRow(.plane, title: "Leave", value: f.inbound.isEmpty ? f.departureTime : f.inbound)
-                Divider().overlay(Sketch.rule).padding(.vertical, 10)
-                factRow(.bed, title: "Stay", value: [f.stayName, f.stayAddress].filter { !$0.isEmpty }.joined(separator: ", "))
+    /// The two times that shape the first and last day, and where every day starts: typed in place.
+    private var essentials: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                timeField("Land", symbol: "airplane.arrival", text: $flight.arrivalTime, field: .arrive)
+                timeField("Leave", symbol: "airplane.departure", text: $flight.departureTime, field: .leave)
+            }
+            HStack(spacing: 10) {
+                Image(systemName: "bed.double.fill").font(.system(size: 15, weight: .semibold)).foregroundStyle(tint)
+                    .frame(width: 22)
+                TextField("Where are you staying?", text: $flight.stayName)
+                    .font(Sketch.text(15, "SemiBold", relativeTo: .body)).focused($focus, equals: .stay)
+                    .submitLabel(.done).textContentType(.addressCityAndState)
+            }
+            .padding(.horizontal, 14).frame(minHeight: 48)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Sketch.card))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(focus == .stay ? tint : Sketch.rule, lineWidth: focus == .stay ? 1.5 : 0.7))
+            Button { showFacts = true } label: {
+                Label(flight.outbound.isEmpty && flight.inbound.isEmpty ? "Flights, stay map & booking" : "Flight details & booking",
+                      systemImage: "slider.horizontal.3")
+                    .font(Sketch.text(13, "Bold", relativeTo: .footnote)).foregroundStyle(tint)
+                    .padding(.horizontal, 12).frame(minHeight: 34)
+                    .background(Capsule().fill(tint.opacity(0.1)))
+            }
+            .buttonStyle(SketchPressStyle())
+        }
+    }
+
+    private func timeField(_ title: String, symbol: String, text: Binding<String>, field: Field) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol).font(.system(size: 15, weight: .semibold)).foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title.uppercased()).font(Sketch.eyebrow).tracking(0.8).foregroundStyle(Sketch.inkSoft)
+                TextField("--:--", text: text)
+                    .font(Sketch.text(18, "Bold", relativeTo: .title3)).monospacedDigit()
+                    .keyboardType(.numbersAndPunctuation).focused($focus, equals: field).submitLabel(.done)
             }
         }
-        .foregroundStyle(Sketch.ink)
-        .sketchCard()
-    }
-
-    private func factRow(_ icon: TrippyIcon, title: String, value: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            TrippyIconView(icon: icon, size: 18).foregroundStyle(tint)
-            Text(title).font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
-                .frame(width: 46, alignment: .leading).padding(.top, 1)
-            Text(value.isEmpty ? "Add" : value).font(Sketch.text(15, value.isEmpty ? "Regular" : "SemiBold", relativeTo: .body))
-                .foregroundStyle(value.isEmpty ? Sketch.inkFaint : Sketch.ink).multilineTextAlignment(.leading)
-            Spacer(minLength: 0)
-        }
+        .padding(.horizontal, 14).frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Sketch.card))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(focus == field ? tint : Sketch.rule, lineWidth: focus == field ? 1.5 : 0.7))
+        .contentShape(Rectangle())
+        .onTapGesture { focus = field }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title) time")
     }
 }
 
@@ -502,6 +529,9 @@ private struct DayView: View {
             }
             if editing {
                 SuggestionStrip(suggestions: ctx.suggestions(for: day), tint: color, apply: apply)
+            } else if !day.stops.contains(where: { $0.slot == nil && !$0.place.isFood }) {
+                // Free day: easy ideas to pick from, nothing forced.
+                SuggestionStrip(suggestions: ctx.freeDayIdeas(for: day), tint: color, apply: apply)
             }
             VStack(alignment: .leading, spacing: 0) {
                 if day.stops.isEmpty {
@@ -656,8 +686,16 @@ private struct StopRow: View {
                 .buttonStyle(.plain)
                 .accessibilityHint(expanded ? "Show less" : "Show more")
                 Text(meta).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+                if !stop.includes.isEmpty {
+                    Label("With " + ListFormatter.localizedString(byJoining: stop.includes), systemImage: "square.stack.3d.up")
+                        .font(Sketch.text(13, "Medium", relativeTo: .footnote)).foregroundStyle(color)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if !stop.why.isEmpty {
                     Text(stop.why).font(Sketch.text(14, relativeTo: .subheadline)).foregroundStyle(Sketch.ink.opacity(0.82))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !stop.place.reason.isEmpty {
+                    Text(stop.place.reason).font(Sketch.text(14, relativeTo: .subheadline)).foregroundStyle(Sketch.inkSoft)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !stop.tip.isEmpty {
