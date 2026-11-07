@@ -218,7 +218,7 @@ class Controls:
     JSON file). Read on every guarded request from memory; written only by admins.
     """
     DEFAULTS = {'blocked': [], 'client_caps': {}, 'default_google_cap': 60, 'global_google_cap': 200,
-                'paid_research': True, 'notes': {}}
+                'paid_research': True, 'notes': {}, 'free_plans_per_month': 3, 'free_videos_per_month': 20}
 
     def __init__(self, usage):
         self.usage = usage
@@ -254,6 +254,9 @@ class Controls:
                 if not isinstance(value, dict) or len(value) > 5000: raise ValueError(key)
                 clean[key] = {clean_client(c): int(n) for c, n in value.items()
                               if clean_client(c) != ANONYMOUS and n is not None and 0 <= int(n) <= 100000}
+            elif key in {'free_plans_per_month', 'free_videos_per_month'}:
+                if not isinstance(value, int) or not -1 <= value <= 100000: raise ValueError(key)
+                clean[key] = value
             elif key in {'default_google_cap', 'global_google_cap'}:
                 if value is not None and (not isinstance(value, int) or not 0 <= value <= 1_000_000): raise ValueError(key)
                 clean[key] = value
@@ -289,6 +292,32 @@ class Controls:
             if cap is not None and client != ANONYMOUS and self.usage.count_today('google', client) >= cap: return 'daily_limit_reached'
             if v['global_google_cap'] is not None and self.usage.count_today('google') >= v['global_google_cap']: return 'service_daily_limit_reached'
         return None
+
+
+CREDITS = [('plans', 'Plans', 'credit:plan', 'free_plans_per_month'), ('videos', 'Video reads', 'credit:video', 'free_videos_per_month')]
+
+
+def credits(usage, controls, user_id, *, admin=False):
+    """This month's credits for an account: the frame plans and subscriptions will extend.
+
+    Limits come from the admin controls (-1 = unlimited); use is counted per account id.
+    """
+    month = today()[:7]
+    values = controls.snapshot()
+    used = {metric: 0 for _, _, metric, _ in CREDITS}
+    try:
+        for day, metric, client, count, _ in usage.rows(31):
+            if client == user_id and day.startswith(month) and metric in used: used[metric] += count
+    except Exception:  # noqa: BLE001 - an unreadable store must not lock people out
+        pass
+    items = [{'id': key, 'label': label, 'used': used[metric], 'limit': -1 if admin else int(values.get(setting, -1))}
+             for key, label, metric, setting in CREDITS]
+    return {'plan': 'admin' if admin else 'free', 'month': month, 'items': items}
+
+
+def credit_left(summary, key):
+    item = next((i for i in summary['items'] if i['id'] == key), None)
+    return item is None or item['limit'] < 0 or item['used'] < item['limit']
 
 
 # The process-wide recorder. Planner modules call `hit` without knowing who set it up.

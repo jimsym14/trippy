@@ -66,6 +66,39 @@ struct AdminView: View {
                     }
                 }
 
+                if let cap = s.capacity {
+                    Section {
+                        LabeledContent("Active users on free calls", value: "\(cap.freeUsers)")
+                        LabeledContent("One plan / one video", value: String(format: "$%.2f / $%.2f", cap.planUSD, cap.videoUSD))
+                        ForEach(cap.scenarios) { row in
+                            LabeledContent("\(row.users) active user\(row.users == 1 ? "" : "s")",
+                                           value: String(format: "$%.0f a month · $%.2f each", row.total, row.perUser))
+                        }
+                    } header: { Text("Costs") } footer: { Text("Tightest free limit: \(cap.tightest). Estimates; full analysis in docs/BUSINESS_AND_LIMITS.md.") }
+
+                    Section("Bottlenecks") {
+                        ForEach(cap.bottlenecks) { item in
+                            DisclosureGroup {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Free: \(item.freeLimit)")
+                                    Text("One user: \(item.oneUser)")
+                                    Text("Many users: \(item.scale)")
+                                    Text("Upgrade: \(item.upgrade)\(item.code ? " (needs code)" : " (no code)")")
+                                    Text("Paid: \(item.paid)").foregroundStyle(.secondary)
+                                }
+                                .font(.caption)
+                            } label: {
+                                HStack {
+                                    Text(item.service).font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Text(item.severityLabel).font(.caption.bold())
+                                        .foregroundStyle(item.severity == "now" ? .red : item.severity == "soon" ? .orange : .secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Section {
                     ForEach(s.installs.filter { $0.client != "unknown" }) { install in
                         let blocked = s.controls.blocked.contains(install.client)
@@ -156,7 +189,18 @@ struct AdminSummary {
         var plans: Int; var google: Int; var device: String?; var appVersion: String?
     }
     struct Controls { var paidResearch = true; var defaultCap: Int?; var globalCap: Int?; var blocked: [String] = []; var caps: [String: Int] = [:]; var notes: [String: String] = [:] }
+    struct Capacity {
+        struct Scenario: Identifiable { var id: Int { users }; var users: Int; var total: Double; var perUser: Double }
+        struct Bottleneck: Identifiable {
+            var id: String; var service: String; var severity: String; var freeLimit: String; var oneUser: String
+            var scale: String; var upgrade: String; var paid: String; var code: Bool
+            var severityLabel: String { ["now": "Now", "soon": "Soon"][severity] ?? "At scale" }
+        }
+        var freeUsers = 0; var tightest = ""; var planUSD = 0.0; var videoUSD = 0.0
+        var scenarios: [Scenario] = []; var bottlenecks: [Bottleneck] = []
+    }
     var totals = Totals(); var apis: [API] = []; var installs: [Install] = []; var controls = Controls(); var build = ""; var storage = ""
+    var capacity: Capacity?
 
     init(data: Data) throws {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw URLError(.cannotParseResponse) }
@@ -179,6 +223,24 @@ struct AdminSummary {
                             blocked: c["blocked"] as? [String] ?? [],
                             caps: (c["client_caps"] as? [String: Any] ?? [:]).compactMapValues { int($0) },
                             notes: c["notes"] as? [String: String] ?? [:])
+        if let cap = root["capacity"] as? [String: Any], cap["error"] == nil {
+            var c = Capacity()
+            let free = cap["free_capacity"] as? [String: Any] ?? [:]
+            c.freeUsers = int(free["active_users"]) ?? 0; c.tightest = free["tightest"] as? String ?? ""
+            for action in cap["actions"] as? [[String: Any]] ?? [] {
+                if action["id"] as? String == "plan" { c.planUSD = dbl(action["usd"]) ?? 0 }
+                if action["id"] as? String == "video" { c.videoUSD = dbl(action["usd"]) ?? 0 }
+            }
+            c.scenarios = (cap["scenarios"] as? [[String: Any]] ?? []).map {
+                .init(users: int($0["active_users"]) ?? 0, total: dbl($0["total_usd"]) ?? 0, perUser: dbl($0["per_user_usd"]) ?? 0)
+            }
+            c.bottlenecks = (cap["bottlenecks"] as? [[String: Any]] ?? []).map {
+                .init(id: $0["id"] as? String ?? UUID().uuidString, service: $0["service"] as? String ?? "", severity: $0["severity"] as? String ?? "",
+                      freeLimit: $0["free_limit"] as? String ?? "", oneUser: $0["one_user"] as? String ?? "", scale: $0["scale"] as? String ?? "",
+                      upgrade: $0["upgrade"] as? String ?? "", paid: $0["paid"] as? String ?? "", code: $0["code"] as? Bool ?? false)
+            }
+            capacity = c
+        }
         let h = root["health"] as? [String: Any] ?? [:]
         build = h["build"] as? String ?? ""; storage = h["storage"] as? String ?? ""
     }

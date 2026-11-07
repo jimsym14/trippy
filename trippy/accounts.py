@@ -109,6 +109,22 @@ class Accounts:
         return self._session(self._call('POST', '/auth/v1/token?grant_type=id_token',
                                         {'provider': 'apple', 'id_token': id_token, 'nonce': nonce}))
 
+    CALLBACK = 'trippy://auth-callback'
+
+    def google_url(self, code_challenge, redirect_to):
+        """Where the phone's browser sheet starts a Google sign-in (Supabase OAuth with PKCE)."""
+        if not self.configured: raise AccountError(503, 'accounts_not_configured')
+        if redirect_to != self.CALLBACK: raise AccountError(422, 'invalid_redirect')
+        if not isinstance(code_challenge, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43,128}', code_challenge):
+            raise AccountError(422, 'invalid_challenge')
+        return {'url': f"{self.url}/auth/v1/authorize?provider=google&redirect_to={quote(redirect_to, safe='')}"
+                       f"&code_challenge={code_challenge}&code_challenge_method=s256"}
+
+    def exchange(self, code, verifier):
+        if not isinstance(code, str) or not 8 < len(code) < 400 or not isinstance(verifier, str) or not 43 <= len(verifier) <= 128:
+            raise AccountError(422, 'invalid_code')
+        return self._session(self._call('POST', '/auth/v1/token?grant_type=pkce', {'auth_code': code, 'code_verifier': verifier}))
+
     def refresh(self, refresh_token):
         if not isinstance(refresh_token, str) or not 8 < len(refresh_token) < 4000: raise AccountError(422, 'invalid_session')
         return self._session(self._call('POST', '/auth/v1/token?grant_type=refresh_token', {'refresh_token': refresh_token}))

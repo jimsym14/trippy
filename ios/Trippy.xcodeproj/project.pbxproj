@@ -12,6 +12,7 @@
 		C70000000000000000000015 /* CityFacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000015 /* CityFacts.swift */; };
 		C70000000000000000000014 /* StayHeatmap.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000014 /* StayHeatmap.swift */; };
         A30000000000000000000001 /* statlas-city-snapshot.json in Resources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000001; };
+        A30000000000000000000002 /* globe-earth.jpg in Resources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000002; };
 		A20000000000000000000001 /* WorldExplorer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* WorldExplorer.swift */; };
 		A20000000000000000000002 /* Statlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Statlas.swift */; };
 		A20000000000000000000005 /* BeenGlobeMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* BeenGlobeMap.swift */; };
@@ -42,6 +43,8 @@
 		C700000000000000000000B5 /* AdminView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000B5 /* AdminView.swift */; };
 		C700000000000000000000B6 /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000B6 /* Onboarding.swift */; };
 		C700000000000000000000B7 /* Account.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000B7 /* Account.swift */; };
+		C700000000000000000000B8 /* BriefDemos.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000B8 /* BriefDemos.swift */; };
+		C700000000000000000000B9 /* AccountData.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000B9 /* AccountData.swift */; };
 		C70000000000000000000003 /* TripGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000003 /* TripGuideView.swift */; };
 		C70000000000000000000004 /* TripShelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000004 /* TripShelf.swift */; };
 		C70000000000000000000005 /* TripComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000005 /* TripComposer.swift */; };
@@ -85,6 +88,7 @@
 		C80000000000000000000015 /* CityFacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CityFacts.swift"; sourceTree = "<group>"; };
 		C80000000000000000000014 /* StayHeatmap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StayHeatmap.swift"; sourceTree = "<group>"; };
         B30000000000000000000001 /* statlas-city-snapshot.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "statlas-city-snapshot.json"; sourceTree = "<group>"; };
+        B30000000000000000000002 /* globe-earth.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "globe-earth.jpg"; sourceTree = "<group>"; };
 		B20000000000000000000001 /* WorldExplorer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldExplorer.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* Statlas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Statlas.swift; sourceTree = "<group>"; };
 		B20000000000000000000005 /* BeenGlobeMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeenGlobeMap.swift; sourceTree = "<group>"; };
@@ -116,6 +120,8 @@
 		C800000000000000000000B5 /* AdminView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminView.swift; sourceTree = "<group>"; };
 		C800000000000000000000B6 /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		C800000000000000000000B7 /* Account.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Account.swift; sourceTree = "<group>"; };
+		C800000000000000000000B8 /* BriefDemos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BriefDemos.swift; sourceTree = "<group>"; };
+		C800000000000000000000B9 /* AccountData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountData.swift; sourceTree = "<group>"; };
 		C80000000000000000000003 /* TripGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripGuideView.swift; sourceTree = "<group>"; };
 		C80000000000000000000004 /* TripShelf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripShelf.swift; sourceTree = "<group>"; };
 		C80000000000000000000005 /* TripComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripComposer.swift; sourceTree = "<group>"; };
@@ -196,6 +202,8 @@
 				C800000000000000000000B5 /* AdminView.swift */,
 				C800000000000000000000B6 /* Onboarding.swift */,
 				C800000000000000000000B7 /* Account.swift */,
+				C800000000000000000000B8 /* BriefDemos.swift */,
+				C800000000000000000000B9 /* AccountData.swift */,
 				C80000000000000000000001 /* TripGuideModel.swift */,
 				C80000000000000000000000 /* SketchKit.swift */,
 				B20000000000000000000005 /* BeenGlobeMap.swift */,
@@ -228,6 +236,7 @@
 				B10000000000000000000014 /* PlusJakartaSans-ExtraBold.ttf */,
 				B10000000000000000000015 /* PlusJakartaSans-OFL.txt */,
                 B30000000000000000000001 /* statlas-city-snapshot.json */,
+                B30000000000000000000002 /* globe-earth.jpg */,
 				C80000000000000000000017 /* stay-grid-barcelona.json */,
 			);
 			path = Resources;
@@ -314,6 +323,7 @@
 				A10000000000000000000012 /* PlusJakartaSans-ExtraBold.ttf in Resources */,
 				A10000000000000000000013 /* PlusJakartaSans-OFL.txt in Resources */,
                 A30000000000000000000001 /* statlas-city-snapshot.json in Resources */,
+                A30000000000000000000002 /* globe-earth.jpg in Resources */,
 				C70000000000000000000017 /* stay-grid-barcelona.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -361,6 +371,8 @@
 				C700000000000000000000B5 /* AdminView.swift in Sources */,
 				C700000000000000000000B6 /* Onboarding.swift in Sources */,
 				C700000000000000000000B7 /* Account.swift in Sources */,
+				C700000000000000000000B8 /* BriefDemos.swift in Sources */,
+				C700000000000000000000B9 /* AccountData.swift in Sources */,
 				C70000000000000000000001 /* TripGuideModel.swift in Sources */,
 				C70000000000000000000000 /* SketchKit.swift in Sources */,
 				A20000000000000000000005 /* BeenGlobeMap.swift in Sources */,

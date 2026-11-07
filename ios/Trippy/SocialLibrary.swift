@@ -110,11 +110,16 @@ enum SocialExtractionClient {
         var body: [String: Any] = ["source_id": source.id.uuidString, "url": source.envelope.sourceURL ?? "",
                                    "author": post?.authorHandle ?? "", "evidence": evidence]
         body["images"] = await Task.detached(priority: .utility) { slideImages(source) }.value
-        if let post, !post.isSlideshow, (post.transcript ?? "").isEmpty, (post.durationSeconds ?? 0) > 0,
-           let audio = await audioTrack(for: post) {
-            body["audio"] = ["mime": "audio/mp4", "data": audio.base64EncodedString()]
+        // Videos go as a shrunken copy (1 fps, 540 px, mono audio) so Gemini can read place names drawn on the
+        // frames, not just the speech. If that fails, fall back to audio only (when there is no transcript).
+        if let post, !post.isSlideshow, (post.durationSeconds ?? 0) > 0,
+           let media = await videoMedia(for: post, audioFallback: (post.transcript ?? "").isEmpty) {
+            switch media {
+            case .video(let data): body["video"] = ["mime": "video/mp4", "data": data.base64EncodedString()]
+            case .audio(let data): body["audio"] = ["mime": "audio/mp4", "data": data.base64EncodedString()]
+            }
         }
-        var request = URLRequest(url: url, timeoutInterval: 60)
+        var request = URLRequest(url: url, timeoutInterval: 120)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
@@ -145,12 +150,15 @@ enum SocialExtractionClient {
         return try JSONDecoder().decode(SocialExtractionJob.self, from: data)
     }
 
-    /// Slides go to Gemini as images (it reads stylised on-image text better than OCR). Max 12, 1280 px JPEG.
+    /// Slides go to Gemini as images (it reads stylised on-image text better than OCR). All of them, up to
+    /// TikTok's 35; long slideshows drop to 1024 px so the request stays well under Gemini's 20 MB inline limit.
     private static func slideImages(_ source: ImportedSocialSource) -> [[String: String]] {
-        source.envelope.attachments.filter { $0.kind == "image" }.sorted { $0.order < $1.order }.prefix(12).compactMap { attachment in
+        let slides = source.envelope.attachments.filter { $0.kind == "image" }.sorted { $0.order < $1.order }.prefix(35)
+        let edge: CGFloat = slides.count > 12 ? 1024 : 1280
+        return slides.compactMap { attachment in
             guard let url = SharedInbox.attachmentURL(sourceID: source.id, attachment: attachment),
                   let image = UIImage(contentsOfFile: url.path) else { return nil }
-            let scale = min(1, 1280 / max(image.size.width, image.size.height))
+            let scale = min(1, edge / max(image.size.width, image.size.height))
             let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
             let format = UIGraphicsImageRendererFormat(); format.scale = 1
             let data = UIGraphicsImageRenderer(size: size, format: format).jpegData(withCompressionQuality: 0.78) { _ in
@@ -160,13 +168,90 @@ enum SocialExtractionClient {
         }
     }
 
-    /// Fresh read (signed URLs expire), download the video with that session's cookies,
-    /// keep only an AAC audio track, delete the video. Up to five minutes.
-    private static func audioTrack(for post: TikTokPostSnapshot) async -> Data? {
+    enum PostMedia { case video(Data), audio(Data) }
+
+    /// Fresh read (signed URLs expire), download the video with that session's cookies, shrink it for Gemini,
+    /// delete the original. Falls back to the audio track alone when shrinking fails. Up to five minutes.
+    private static func videoMedia(for post: TikTokPostSnapshot, audioFallback: Bool) async -> PostMedia? {
         guard (post.durationSeconds ?? 0) <= 300, let link = URL(string: post.canonicalURL) else { return nil }
         let reader = TikTokPageReader()
         guard (try? await reader.read(link, into: nil)) != nil, let video = try? await reader.downloadVideo() else { return nil }
         defer { try? FileManager.default.removeItem(at: video) }
+        if let small = await shrunkenVideo(video) { return .video(small) }
+        guard audioFallback, let audio = await audioTrack(of: video) else { return nil }
+        return .audio(audio)
+    }
+
+    /// 1 fps (Gemini samples video at 1 fps anyway), at most 540 px wide, H.264 + mono AAC, under ~8 MB so the
+    /// request stays inside Gemini's inline limit. Text drawn on the frames stays readable; a 30 s post is ~1 MB.
+    private static func shrunkenVideo(_ source: URL, budgetBytes: Double = 8_000_000) async -> Data? {
+        let asset = AVURLAsset(url: source)
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let (natural, transform) = try? await track.load(.naturalSize, .preferredTransform),
+              let duration = try? await asset.load(.duration).seconds, duration > 0, natural.width > 0 else { return nil }
+        let sound = try? await asset.loadTracks(withMediaType: .audio).first
+        let scale = min(1, 540 / natural.width)
+        let width = Int(natural.width * scale / 2) * 2, height = Int(natural.height * scale / 2) * 2
+        let bitrate = max(120_000, min(450_000, Int(budgetBytes * 8 / duration) - 32_000))
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        defer { try? FileManager.default.removeItem(at: output) }
+        guard let reader = try? AVAssetReader(asset: asset),
+              let writer = try? AVAssetWriter(outputURL: output, fileType: .mp4) else { return nil }
+
+        let frames = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height])
+        frames.alwaysCopiesSampleData = false
+        let frameInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
+            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: bitrate, AVVideoMaxKeyFrameIntervalKey: 10,
+                                              AVVideoExpectedSourceFrameRateKey: 1]])
+        frameInput.transform = transform
+        frameInput.expectsMediaDataInRealTime = false
+        guard reader.canAdd(frames), writer.canAdd(frameInput) else { return nil }
+        reader.add(frames); writer.add(frameInput)
+
+        var samples: AVAssetReaderTrackOutput?, sampleInput: AVAssetWriterInput?
+        if let sound {
+            let out = AVAssetReaderTrackOutput(track: sound, outputSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 22_050, AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false])
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 22_050, AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 32_000])
+            input.expectsMediaDataInRealTime = false
+            if reader.canAdd(out), writer.canAdd(input) { reader.add(out); writer.add(input); samples = out; sampleInput = input }
+        }
+        guard reader.startReading(), writer.startWriting() else { return nil }
+        writer.startSession(atSourceTime: .zero)
+
+        // Pull both tracks in turn (the writer stalls one input until the other catches up), keeping one frame per second.
+        var framesDone = false, samplesDone = samples == nil, nextFrame = 0.0
+        while !(framesDone && samplesDone) {
+            var moved = false
+            if !framesDone, frameInput.isReadyForMoreMediaData {
+                moved = true
+                if let buffer = frames.copyNextSampleBuffer() {
+                    let time = CMSampleBufferGetPresentationTimeStamp(buffer).seconds
+                    if time >= nextFrame { guard frameInput.append(buffer) else { break }; nextFrame = time + 1 }
+                } else { frameInput.markAsFinished(); framesDone = true }
+            }
+            if !samplesDone, let samples, let sampleInput, sampleInput.isReadyForMoreMediaData {
+                moved = true
+                if let buffer = samples.copyNextSampleBuffer() { guard sampleInput.append(buffer) else { break } }
+                else { sampleInput.markAsFinished(); samplesDone = true }
+            }
+            if reader.status == .failed || writer.status == .failed { break }
+            if !moved { try? await Task.sleep(nanoseconds: 2_000_000) }
+        }
+        guard framesDone, samplesDone, reader.status == .completed else { reader.cancelReading(); writer.cancelWriting(); return nil }
+        await writer.finishWriting()
+        guard writer.status == .completed, let data = try? Data(contentsOf: output), Double(data.count) <= budgetBytes * 1.2 else { return nil }
+        return data
+    }
+
+    /// Keep only an AAC audio track of a downloaded video.
+    private static func audioTrack(of video: URL) async -> Data? {
         let output = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
         defer { try? FileManager.default.removeItem(at: output) }
         guard let export = AVAssetExportSession(asset: AVURLAsset(url: video), presetName: AVAssetExportPresetAppleM4A) else { return nil }

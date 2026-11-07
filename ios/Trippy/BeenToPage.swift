@@ -143,13 +143,14 @@ struct WorldGlobeView: View {
                     .contentTransition(.numericText())
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            BeenAddVisitButton { showAdd = true }
+            // Adding a visit lives on the bar's + button; the view switch takes this spot.
+            SegmentedPill(options: [("map", "Map", "map"), ("globe", "Globe", "globe")], selection: $viewMode)
+                .fixedSize()
         }
     }
 
     private var controls: some View {
         HStack(spacing: 10) {
-            SegmentedPill(options: [("map", "Map", "map"), ("globe", "Globe", "globe")], selection: $viewMode)
             Spacer()
             RaisedIconButton(symbol: filtered || fillMode != .visited ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle",
                              title: "Filters and map style") { showFilters = true }

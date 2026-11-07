@@ -1,7 +1,8 @@
 """Turn a shared post's evidence into Mio-style place cards, then pin them via Google Places.
 
-Evidence: caption, on-screen text stickers, TikTok auto-captions, slide images and
-(when there is no transcript) the audio track. Gemini sees all of it in one request.
+Evidence: caption, on-screen text stickers, TikTok auto-captions, slide images and, for videos, a
+shrunken copy of the video itself (frames + speech; audio-only when the video could not be prepared).
+Gemini sees all of it in one request.
 """
 from __future__ import annotations
 
@@ -17,10 +18,11 @@ CATEGORIES = ["Sights", "Food", "Coffee", "Brunch", "Bars", "Groceries", "Metro"
               "Burger", "Seafood", "Vegan", "Shopping", "Local shops", "Parks", "Clubs"]
 
 SYSTEM = """You turn a travel/food social post into place cards for a personal travel map.
-Work only from the evidence given (caption, on-screen text, transcript, slide images, audio).
+Work only from the evidence given (caption, on-screen text, transcript, slide images, video, audio).
 Every place the post recommends or names as a venue gets its own card, in the order it appears
 (slideshows usually show one place per slide; the place name is often drawn on the image or
-pinned with 📍). Do not invent places, dishes, prices or facts that the evidence does not support.
+pinned with 📍; in videos, read the text drawn over the frames as carefully as you listen to the speech).
+Do not invent places, dishes, prices or facts that the evidence does not support.
 Write card text in English, short and concrete, like a friend's notes. Keep proper names in their
 original spelling; add the Latin-script name if the original is Greek or another script."""
 
@@ -40,10 +42,11 @@ For each place:
 - must_try: specific dishes/drinks named or shown.
 - why_go: the reasons the creator gives.
 - price_hint: e.g. "€10–15" only if stated.
-- evidence: which inputs support this card, e.g. ["slide 3", "caption", "transcript", "on-screen text", "audio"].
+- evidence: which inputs support this card, e.g. ["slide 3", "caption", "transcript", "on-screen text", "video 0:12", "audio"]
+  (for text read off a video frame, give its timestamp as "video m:ss").
 - confidence: 0–1 that this is a real, findable venue.
 Leave a list empty rather than guessing. Also return post_title (short), post_summary (one sentence),
-transcript (verbatim speech in its original language if audio was provided, else ""), and
+transcript (verbatim speech in its original language if audio or video was provided, else ""), and
 unresolved: names mentioned that you could not confirm as venues.
 
 Post URL: {url}
@@ -77,7 +80,7 @@ SCHEMA = {
 
 
 def build_parts(source):
-    """source: {url, author, evidence:[{origin,text}], images:[bytes jpeg], audio:(mime, bytes)|None}"""
+    """source: {url, author, evidence:[{origin,text}], images:[bytes jpeg], video:(mime, bytes)|None, audio:(mime, bytes)|None}"""
     lines = []
     for block in source.get("evidence", []):
         text = (block.get("text") or "").strip()
@@ -88,13 +91,19 @@ def build_parts(source):
     images = source.get("images") or []
     if images:
         lines.append(f"\n[{len(images)} slide images follow, in order: slide 1 … slide {len(images)}]")
-    if source.get("audio"):
+    if source.get("video"):
+        lines.append("\n[Video follows (1 frame per second, with sound) — read every place name, 📍 pin, address or price"
+                     " drawn on the frames, and transcribe and use what is said]")
+    elif source.get("audio"):
         lines.append("\n[Audio track follows — transcribe it and use what is said]")
     parts = [{"text": PROMPT.format(categories=", ".join(CATEGORIES), url=source.get("url") or "unknown",
                                     author=source.get("author") or "unknown", evidence="".join(lines) or "(no text)")}]
-    for index, image in enumerate(images[:12], 1):
+    for index, image in enumerate(images[:35], 1):
         parts += [{"text": f"slide {index}"}, inline(image[0], image[1]) if isinstance(image, tuple) else inline("image/jpeg", image)]
-    if source.get("audio"):
+    if source.get("video"):
+        mime, data = source["video"]
+        parts.append(inline(mime, data))
+    elif source.get("audio"):
         mime, data = source["audio"]
         parts.append(inline(mime, data))
     return parts

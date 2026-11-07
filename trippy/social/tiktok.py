@@ -41,7 +41,7 @@ class Reader:
         item = (detail.get("itemInfo") or {}).get("itemStruct") or {}
         return (item if item.get("id") else None), final
 
-    def read(self, url, max_slides=12):
+    def read(self, url, max_slides=35):
         item, final = self._item(url)
         if item is None:
             for a, b in (("/video/", "/photo/"), ("/photo/", "/video/")):
@@ -80,6 +80,22 @@ class Reader:
             "mentions": [e.get("userUniqueId") for e in extras if e.get("userUniqueId")],
             "likes": stats.get("diggCount"), "saves": stats.get("collectCount"), "slides": slides,
         }
+
+    def video(self, max_bytes=9_000_000, max_seconds=300):
+        """Download the video and shrink it for Gemini: 1 fps (Gemini samples at 1 fps anyway), 540 px wide,
+        mono 32k audio. On-screen place names survive; a 60 s post comes out around 1 MB."""
+        if not self.video_url:
+            return None
+        _, _, data = self._get(self.video_url, "*/*", referer="https://www.tiktok.com/")
+        with tempfile.TemporaryDirectory() as folder:
+            source, target = Path(folder, "v.mp4"), Path(folder, "small.mp4")
+            source.write_bytes(data)
+            subprocess.run(["ffmpeg", "-v", "error", "-i", str(source), "-t", str(max_seconds),
+                            "-vf", "fps=1,scale='min(540,iw)':-2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                            "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1", "-ar", "16000", "-b:a", "32k",
+                            "-movflags", "+faststart", str(target)], check=True)
+            small = target.read_bytes()
+            return ("video/mp4", small) if len(small) <= max_bytes else None
 
     def audio(self, bitrate="32k"):
         """Download the video with this session's cookies and keep only a small mono AAC track."""

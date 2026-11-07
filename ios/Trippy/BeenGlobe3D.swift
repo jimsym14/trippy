@@ -17,10 +17,10 @@ struct GlobeTextureKey: Hashable {
 actor GlobeTextureBuilder {
     static let shared = GlobeTextureBuilder()
     /// A world snapshot plus the linear map from map points to its pixels.
-    struct Base { let image: CGImage; let ax: Double; let bx: Double; let ay: Double; let by: Double }
+    struct Base { let image: CGImage; let ax: Double; let bx: Double; let ay: Double; let by: Double; var equirect = false }
     private var bases: [String: Base] = [:]
     private var textures: [GlobeTextureKey: UIImage] = [:]
-    private let side = 2048
+    private let side = 4096
 
     func texture(key: GlobeTextureKey, shapes: CountryShapesOverlay?, visits: [VisitedPlace]) async -> UIImage? {
         if let cached = textures[key] { return cached }
@@ -31,7 +31,40 @@ actor GlobeTextureBuilder {
         return image
     }
 
+    /// NASA's Blue Marble (public domain, bundled as globe-earth.jpg): already equirectangular, so
+    /// nothing is stretched at the poles. Realistic as it is, or toned to a black-and-grey atlas
+    /// that lets visited countries carry the colour.
+    private func earthImage(dark: Bool, realistic: Bool) -> Base? {
+        let name = "earth-\(realistic ? "real" : "mono")-\(dark ? "dark" : "light")"
+        if let cached = bases[name] { return cached }
+        guard let url = Bundle.main.url(forResource: "globe-earth", withExtension: "jpg"),
+              let source = UIImage(contentsOfFile: url.path)?.cgImage else { return nil }
+        let image = realistic ? (Self.realisticTone(source) ?? source) : (Self.monoTone(source, dark: dark) ?? source)
+        let base = Base(image: image, ax: 0, bx: 0, ay: 0, by: 0, equirect: true)
+        bases[name] = base
+        return base
+    }
+
+    /// A touch more contrast and warmth than the raw photo.
+    static func realisticTone(_ image: CGImage) -> CGImage? {
+        let input = CIImage(cgImage: image)
+        let out = input.applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 1.12, kCIInputContrastKey: 1.08, kCIInputBrightnessKey: 0.02])
+        return CIContext().createCGImage(out, from: input.extent)
+    }
+
+    /// Black seas, grey land with its relief: a calm base for coloured countries.
+    static func monoTone(_ image: CGImage, dark: Bool) -> CGImage? {
+        let input = CIImage(cgImage: image)
+        let sea = dark ? CIColor(red: 0.06, green: 0.065, blue: 0.075) : CIColor(red: 0.16, green: 0.17, blue: 0.19)
+        let land = dark ? CIColor(red: 0.62, green: 0.62, blue: 0.6) : CIColor(red: 0.9, green: 0.89, blue: 0.86)
+        let toned = input.applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0, kCIInputContrastKey: 1.6, kCIInputBrightnessKey: 0.08])
+            .applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.75])
+            .applyingFilter("CIFalseColor", parameters: ["inputColor0": sea, "inputColor1": land])
+        return CIContext().createCGImage(toned, from: input.extent)
+    }
+
     private func baseImage(dark: Bool, satellite: Bool) async -> Base? {
+        if let earth = earthImage(dark: dark, realistic: satellite) { return earth }
         let name = "globe-base-\(dark ? "dark" : "light")-\(satellite ? "sat" : "atlas")-v7"
         if let cached = bases[name] { return cached }
         let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -88,7 +121,17 @@ actor GlobeTextureBuilder {
         let canvas = UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format).image { renderer in
             let ctx = renderer.cgContext
             ocean.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            if let base { Self.reproject(base, into: ctx, width: width, height: height) }
+            if let base {
+                if base.equirect {
+                    // CoreGraphics draws images bottom-up; flip so north stays up.
+                    ctx.saveGState(); ctx.translateBy(x: 0, y: CGFloat(height)); ctx.scaleBy(x: 1, y: -1)
+                    ctx.interpolationQuality = .high
+                    ctx.draw(base.image, in: CGRect(x: 0, y: 0, width: width, height: height))
+                    ctx.restoreGState()
+                } else {
+                    Self.reproject(base, into: ctx, width: width, height: height)
+                }
+            }
             if let shapes {
                 // Country paths are in map points; convert each vertex to lon/lat.
                 for entry in shapes.entries {
@@ -150,16 +193,20 @@ struct BeenGlobe3DView: UIViewRepresentable {
     let focusID: UUID
     let dark: Bool
     let reduceMotion: Bool
+    /// Tapping the globe reports the place under the finger (for picking countries).
+    var onTap: ((CLLocationCoordinate2D) -> Void)? = nil
 
     func makeCoordinator() -> GlobeSceneController { GlobeSceneController() }
     func makeUIView(context: Context) -> SCNView {
         let view = context.coordinator.makeView(dark: dark)
+        context.coordinator.onTap = onTap
         context.coordinator.update(texture: texture, dark: dark)
         context.coordinator.focus(on: focus ?? .init(latitude: 35, longitude: 15), animated: false)
         return view
     }
     func updateUIView(_ view: SCNView, context: Context) {
         context.coordinator.reduceMotion = reduceMotion
+        context.coordinator.onTap = onTap
         context.coordinator.update(texture: texture, dark: dark)
         if context.coordinator.lastFocus != focusID {
             context.coordinator.lastFocus = focusID
@@ -176,6 +223,7 @@ final class GlobeSceneController: NSObject {
     let cameraNode = SCNNode()
     var lastFocus: UUID?
     var reduceMotion = false
+    var onTap: ((CLLocationCoordinate2D) -> Void)?
     private weak var texture: UIImage?
     private var yaw: Float = 0
     private var pitch: Float = 0
@@ -193,11 +241,28 @@ final class GlobeSceneController: NSObject {
         let sphere = SCNSphere(radius: 1)
         sphere.segmentCount = 120
         let material = SCNMaterial()
-        material.lightingModel = .lambert
+        material.lightingModel = .blinn
         material.diffuse.mipFilter = .linear
         material.diffuse.wrapS = .repeat
+        material.specular.contents = UIColor(white: 0.18, alpha: 1)   // a soft sheen, not plastic
+        material.shininess = 0.25
         sphere.firstMaterial = material
         globe.geometry = sphere
+        // A thin atmosphere: brighter at the rim (Fresnel), invisible facing the camera.
+        let air = SCNSphere(radius: 1.035); air.segmentCount = 96
+        let glow = SCNMaterial()
+        glow.lightingModel = .constant
+        glow.diffuse.contents = UIColor(red: 0.55, green: 0.75, blue: 1, alpha: 1)
+        glow.isDoubleSided = false
+        glow.writesToDepthBuffer = false
+        glow.blendMode = .add
+        glow.shaderModifiers = [.fragment: """
+        float rim = 1.0 - max(dot(normalize(_surface.normal), normalize(_surface.view)), 0.0);
+        _output.color.rgb *= pow(rim, 3.0) * 0.9;
+        """]
+        air.firstMaterial = glow
+        let atmosphere = SCNNode(geometry: air)
+        tilt.addChildNode(atmosphere)
         // SceneKit's sphere starts its texture at -X; this turns longitude 0 to face +Z.
         globe.eulerAngles.y = -.pi / 2
         spin.addChildNode(globe); tilt.addChildNode(spin); scene.rootNode.addChildNode(tilt)
@@ -210,6 +275,7 @@ final class GlobeSceneController: NSObject {
         scene.rootNode.addChildNode(fill)
         view.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(pan(_:))))
         view.addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(pinch(_:))))
+        view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tap(_:))))
         let link = CADisplayLink(target: WeakTick(self), selector: #selector(WeakTick.fire))
         link.add(to: .main, forMode: .common); displayLink = link
         return view
@@ -245,6 +311,17 @@ final class GlobeSceneController: NSObject {
         spin.eulerAngles.y = yaw; tilt.eulerAngles.x = pitch
         lastInteraction = Date()
         if gesture.state == .ended { velocity = gesture.velocity(in: gesture.view) } else { velocity = .zero }
+    }
+
+    /// The texture is equirectangular, so the hit's texture coordinate is longitude and latitude.
+    @objc private func tap(_ gesture: UITapGestureRecognizer) {
+        guard let onTap, let view = gesture.view as? SCNView else { return }
+        let hits = view.hitTest(gesture.location(in: view), options: [.searchMode: SCNHitTestSearchMode.closest.rawValue])
+        guard let hit = hits.first(where: { $0.node === globe }) else { return }
+        let uv = hit.textureCoordinates(withMappingChannel: 0)
+        let longitude = Double(uv.x) * 360 - 180, latitude = 90 - Double(uv.y) * 180
+        lastInteraction = Date(); velocity = .zero
+        onTap(CLLocationCoordinate2D(latitude: latitude, longitude: longitude))
     }
 
     @objc private func pinch(_ gesture: UIPinchGestureRecognizer) {

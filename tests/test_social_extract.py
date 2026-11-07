@@ -84,6 +84,11 @@ class ExtractTests(unittest.TestCase):
         self.assertIn("[Caption]", parts[0]["text"])
         self.assertEqual([p["inline_data"]["mime_type"] for p in parts if "inline_data" in p], ["image/jpeg", "image/webp", "audio/mp4"])
 
+    def test_video_replaces_audio_and_asks_for_frame_text(self):
+        parts = ex.build_parts({"url": "u", "evidence": [], "images": [], "video": ("video/mp4", b"v"), "audio": ("audio/mp4", b"a")})
+        self.assertIn("drawn on the frames", parts[0]["text"])
+        self.assertEqual([p["inline_data"]["mime_type"] for p in parts if "inline_data" in p], ["video/mp4"])
+
     def test_enrich_rejects_wrong_country(self):
         result = ex.clean(json.loads(json.dumps(RESULT)))
         ex.enrich(result, lambda q: [{"placeID": "x", "name": "Easy Peasy NYC", "countryCode": "US", "latitude": 1, "longitude": 2}])

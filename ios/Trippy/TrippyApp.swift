@@ -1551,6 +1551,9 @@ private struct TripFlowView: View {
     @State private var initialLogoDidLoad = false
     @State private var bridgeToken = ""
     @State private var showOnboarding = OnboardingStore.shouldShow
+    @State private var showAccountHub = false
+    @State private var showWelcome = false
+    @Namespace private var libraryTabSpace
     @State private var tripGreeting: TripGreeting?
     @State private var trips: [Trip] = []
     @State private var cachedGeneralTripPins: [WorkspaceMapPin] = []
@@ -1731,6 +1734,32 @@ private struct TripFlowView: View {
             if didBootstrap {
                 appContent
                     .fullScreenCover(isPresented: $showOnboarding) { OnboardingFlow { showOnboarding = false } }
+                    .background {
+                        Color.clear.fullScreenCover(isPresented: $showWelcome) { WelcomeAfterSignIn { showWelcome = false } }
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: .accountSignedIn)) { _ in
+                        // During first-launch setup the tour comes at its end anyway.
+                        guard !showOnboarding else { return }
+                        showAccountHub = false
+                        Task { try? await Task.sleep(for: .milliseconds(700)); showWelcome = true }
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: .replayOnboarding)) { _ in
+                        UserDefaults.standard.removeObject(forKey: "trippy.onboarding.v1.done")
+                        showAccountHub = false
+                        Task { try? await Task.sleep(for: .milliseconds(600)); showOnboarding = true }
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: .accountDataApplied)) { _ in
+                        // An account's things just landed on this phone: show them.
+                        let stored = TripFlowStoredState.load()
+                        trips = stored.trips; savedPlaces = stored.savedPlaces; cityCoordinates = stored.cityCoordinates
+                        socialSources = stored.socialLibrary.sources; socialPlaces = stored.socialLibrary.places; travelNotes = stored.socialLibrary.notes
+                        cachedGeneralTripPins = makeGeneralTripPins()
+                    }
+                    .sheet(isPresented: $showAccountHub) {
+                        AccountHub(onConnections: {
+                            Task { try? await Task.sleep(for: .milliseconds(450)); showPlacesSettings = true }
+                        })
+                    }
                     .overlay(alignment: .top) {
                         if let tripGreeting { TripGreetingBanner(greeting: tripGreeting) { self.tripGreeting = nil }.padding(.top, 54) }
                     }
@@ -1802,6 +1831,7 @@ private struct TripFlowView: View {
                 }
             case "been": rootTab = "library"; libraryHasMounted = true; librarySection = "World"
             case "pins": rootTab = "library"; libraryHasMounted = true; librarySection = "Pins"
+            case "account": Task { @MainActor in try? await Task.sleep(for: .seconds(1.5)); showAccountHub = true }
             case "research": brief.destination = PlanningLive.demo == nil ? "Barcelona" : "Rome"; liveResearchStep = 2; isResearching = true
                 researchOperations = [ResearchOperation(step: 1, detail: "Connected")]
                 if let demo = PlanningLive.demo {
@@ -1875,9 +1905,22 @@ private struct TripFlowView: View {
             .environment(\.locale, Locale(identifier: "en"))
             if stage != .brief {
                 TrippyTabBar(selection: $rootTab, action: bottomBarAction)
+                    .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.82), value: rootTab)
                     .frame(maxHeight: .infinity, alignment: .bottom)
                     .ignoresSafeArea(.keyboard)
                     .zIndex(0.5)
+                if rootTab == "library" {
+                    // You: bottom-left, level with the bar.
+                    Button { showAccountHub = true } label: {
+                        ProfileAvatar(size: 40).padding(3).background(Circle().fill(Sketch.card).shadow(color: .black.opacity(0.12), radius: 12, y: 5))
+                    }
+                    .buttonStyle(QuietPressStyle()).accessibilityLabel("Account and settings")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .padding(.leading, 12).padding(.bottom, 13)
+                    .ignoresSafeArea(.keyboard)
+                    .transition(.scale(scale: 0.7).combined(with: .opacity))
+                    .zIndex(0.5)
+                }
             }
             if stage == .brief {
                 TrippyScreen { briefScreen }
@@ -4766,6 +4809,20 @@ private struct TripFlowView: View {
                     return
                 }
 
+                // Plans cost credits: no account, or this month's free plans used, gets a clear next step.
+                if let http = response as? HTTPURLResponse, [401, 429].contains(http.statusCode),
+                   let code = (try? JSONSerialization.jsonObject(with: startData) as? [String: Any])?["error"] as? String,
+                   ["account_required", "access_token_required", "credits_used"].contains(code) {
+                    await MainActor.run {
+                        liveResearchError = code != "credits_used"
+                            ? "Plans need a free Trippy account. Sign in from Settings → Account, then try again."
+                            : "You’ve used this month’s free plans. They renew on the 1st."
+                        liveResearchDiagnostic = "start: HTTP \(http.statusCode), \(code)"
+                        isResearching = false
+                    }
+                    return
+                }
+
                 let started = try ResearchTransport.checkedJSON(startData, response: response, stage: .start)
                 guard
                       let createdJobID = started["job_id"] as? String, UUID(uuidString: createdJobID) != nil else {
@@ -6625,7 +6682,7 @@ private extension TripFlowView {
             routes: [], savedPlaces: $savedPlaces, destination: "", fallback: HomeProfileStore.load()?.coordinate,
             categories: Set(MapPlaceCategory.allCases),
             placesBaseURL: bridgeBaseURL, placesAccessToken: bridgeToken,
-            onPlacesSettings: { showPlacesSettings = true },
+            onPlacesSettings: { showAccountHub = true },
             onCity: { city in libraryMapFilter = nil; libraryCity = city; librarySection = "Trips"; rootTab = "library" },
             onCityLayer: { filter in
                 libraryMapFilter = filter
@@ -6798,11 +6855,9 @@ private extension TripFlowView {
         }.tint(libraryAccent).environment(\.locale, Locale(identifier: "en"))
     }
     private var libraryHeader: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 14) {
-                Text("Library")
-                    .font(Sketch.display(.largeTitle, weight: .bold)).frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityAddTraits(.isHeader)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                libraryTabs
                 if librarySection != "World" {
                     if librarySection == "Pins" {
                         Menu {
@@ -6826,32 +6881,44 @@ private extension TripFlowView {
                     }
                 }
             }
-            ScrollView(.horizontal) {
-                HStack(spacing: 20) {
-                    ForEach(["Trips", "Pins", "Videos", "Notes", "Been to"], id: \.self) { section in
-                        Button {
-                            let selection = section == "Been to" ? "World" : section
-                            withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { libraryMapFilter = nil; librarySection = selection; libraryQuery = ""; librarySearchVisible = false }
-                        } label: {
-                            VStack(spacing: 10) {
-                                let selection = section == "Been to" ? "World" : section
-                                HStack(spacing: 6) {
-                                    Image(systemName: libraryTabSymbol(section))
-                                        .symbolVariant(librarySection == selection ? .fill : .none)
-                                        .symbolEffect(.bounce.up.byLayer, value: librarySection == selection)
-                                        .symbolEffect(.pulse, options: .repeating, isActive: librarySection == selection && section == "Videos")
-                                        .contentTransition(.symbolEffect(.replace))
-                                        .scaleEffect(librarySection == selection ? 1.12 : 1)
-                                    Text(section)
-                                }.font(.system(size: 14, weight: .semibold)).foregroundStyle(librarySection == selection ? AppPalette.ink : AppPalette.secondaryInk)
-                                Capsule().fill(librarySection == selection ? AppPalette.ink : .clear).frame(height: 3)
-                            }.frame(minHeight: 44)
-                        }.buttonStyle(QuietPressStyle()).accessibilityAddTraits(librarySection == (section == "Been to" ? "World" : section) ? .isSelected : [])
-                    }
-                }
-            }.scrollIndicators(.hidden)
-        }.padding(.horizontal, 22).padding(.top, 16).padding(.bottom, 12)
+        }.padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 6)
             .frame(maxWidth: 720).frame(maxWidth: .infinity).foregroundStyle(libraryInk)
+    }
+    /// Your sections as pills, the same language as the bottom bar: the open one is an ink
+    /// capsule with its name, the others are quiet icons with names.
+    private var libraryTabs: some View {
+        ScrollViewReader { proxy in
+        ScrollView(.horizontal) {
+            HStack(spacing: 4) {
+                ForEach(["Trips", "Pins", "Videos", "Notes", "Been to"], id: \.self) { section in
+                    let selection = section == "Been to" ? "World" : section
+                    let selected = librarySection == selection
+                    Button {
+                        withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.82)) {
+                            libraryMapFilter = nil; librarySection = selection; libraryQuery = ""; librarySearchVisible = false
+                        }
+                        withAnimation { proxy.scrollTo(section, anchor: .center) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: libraryTabSymbol(section)).symbolVariant(selected ? .fill : .none)
+                                .symbolEffect(.bounce.up.byLayer, value: selected)
+                            Text(section)
+                        }
+                        .font(.custom("PlusJakartaSans-Bold", size: 14, relativeTo: .subheadline))
+                        .foregroundStyle(selected ? Sketch.paper : AppPalette.secondaryInk)
+                        .padding(.horizontal, 14).frame(minHeight: 40)
+                        .background { if selected { Capsule().fill(Sketch.ink).matchedGeometryEffect(id: "libraryTab", in: libraryTabSpace) } }
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(QuietPressStyle()).id(section)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+            .padding(4)
+            .background(Capsule().fill(Sketch.card).shadow(color: .black.opacity(0.06), radius: 8, y: 3))
+        }
+        .scrollIndicators(.hidden)
+        }
     }
     private func libraryCountryCode(_ city: String) -> String? {
         let key = MapCityGrouping.key(LibraryGrouping.cityTitle(city))
@@ -7081,8 +7148,8 @@ private extension TripFlowView {
         }
     }
     /// Bottom-bar action for the visible page: Map and Library trips make a trip; other Library pages add their own thing.
-    var bottomBarAction: TabBarAction {
-        guard rootTab == "library" else { return .newTrip { startNewTrip() } }
+    var bottomBarAction: TabBarAction? {
+        guard rootTab == "library" else { return nil }
         switch librarySection {
         case "Trips": return .newTrip { startNewTrip() }
         case "Pins": return TabBarAction(id: "pin", label: "Add a pin", symbol: nil, run: performLibraryAdd)
@@ -7517,7 +7584,7 @@ private extension TripFlowView {
                         savedPlaces: $savedPlaces, destination: brief.destination,
                         fallback: cityCoordinates[brief.destination]?.coordinate, categories: mapCategories,
                         placesBaseURL: bridgeBaseURL, placesAccessToken: bridgeToken,
-                        onPlacesSettings: { showPlacesSettings = true }, onCity: { _ in }, onPlanPin: { pin in
+                        onPlacesSettings: { showAccountHub = true }, onCity: { _ in }, onPlanPin: { pin in
             if pin.layer == "recommended", let place = placeRecords.first(where: { recordValue($0, keys: ["id", "place_id"]) == pin.id }), !dayRecords.isEmpty {
                 let index = selectedMapDay ?? 0
                 if dayRecords.indices.contains(index) { addPlaceToDay(place, date: scheduleDateKey(dayRecords[index], index: index)) }
@@ -9404,7 +9471,7 @@ private struct TrippyMapCanvas<Header: View>: View {
             if appearance != .smallDot { expandedMapSummaries = [] }
         }
         .onChange(of: markerFilterKey) { _, _ in refreshMarkerGroups(proxy: mapProxy) }
-        .task(id: openNowOnly ? "hours:\(Int((visibleRegion?.center.latitude ?? 0) * 100)):\(Int((visibleRegion?.center.longitude ?? 0) * 100)):\(pins.count)" : "hours:off") {
+        .task(id: openNowOnly ? "hours:\(Int((visibleRegion?.center.latitude ?? 0) * 10)):\(Int((visibleRegion?.center.longitude ?? 0) * 10)):\(pins.count / 40)" : "hours:off") {
             // Look hours up only while "Open now" is on, for what's in view.
             guard openNowOnly else { return }
             try? await Task.sleep(for: .milliseconds(400))
@@ -9528,16 +9595,18 @@ private struct TrippyMapCanvas<Header: View>: View {
                     .accessibilityLabel("Show all places")
                 }
                 .padding(.trailing, 16)
-                .padding(.bottom, destination.isEmpty ? (filtersOpen ? 262 : 76) : 52)
+                .padding(.bottom, destination.isEmpty ? (!homeFiltersVisible ? 18 : (filtersOpen ? 262 : 76)) : 52)
                 .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: filtersOpen)
+                .animation(reduceMotion ? nil : .spring(response: 0.45, dampingFraction: 0.85), value: homeFiltersVisible)
             }
         }
         .overlay(alignment: .bottom) {
-            // Home map: filters sit just above the tab bar and fold away.
-            if destination.isEmpty && !showMapSearch {
+            // Home map: filters and Open now appear once you're in a city, centred above the bar.
+            if destination.isEmpty && !showMapSearch && homeFiltersVisible {
                 filterDrawer(layers: false, opensUp: true)
                     .padding(.horizontal, 16).padding(.bottom, 12)
                     .frame(maxWidth: 720)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         // Draw expanded cards after the map controls so they cover those controls.
@@ -9668,10 +9737,30 @@ private struct TrippyMapCanvas<Header: View>: View {
     private var activeFilterCount: Int { quickFilters.count + (openNowOnly ? 1 : 0) }
     /// A folded filter drawer: one small button, and when open a card of toggles in a
     /// two-row carousel. Inside a trip it also switches suggestions and your saves/pins.
+    /// City zoom: shops, cafés and sights are what's on screen, so filtering them makes sense.
+    private var homeFiltersVisible: Bool { (visibleRegion?.span.latitudeDelta ?? 1) < 0.3 }
+    /// Open now, as its own pill beside Filters on the home map.
+    private var openNowPill: some View {
+        Button { withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { openNowOnly.toggle() } } label: {
+            HStack(spacing: 6) {
+                Image(systemName: hoursStore.loading && openNowOnly ? "hourglass" : "clock.fill").font(.system(size: 12, weight: .bold))
+                Text("Open now").font(.custom("PlusJakartaSans-Bold", size: 14, relativeTo: .subheadline))
+            }
+            .foregroundStyle(openNowOnly ? .white : AppPalette.ink)
+            .padding(.horizontal, 14).frame(minHeight: 40)
+            .background(openNowOnly ? Color(hex: "3F8F5F") : Sketch.card.opacity(0.97), in: Capsule())
+            .overlay(Capsule().strokeBorder(openNowOnly ? .clear : Sketch.rule, lineWidth: 0.7))
+            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+            .frame(minHeight: 44).contentShape(Capsule())
+        }
+        .buttonStyle(QuietPressStyle())
+        .accessibilityLabel("Open now").accessibilityAddTraits(openNowOnly ? .isSelected : [])
+    }
     private func filterDrawer(layers: Bool, opensUp: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: opensUp ? .center : .leading, spacing: 8) {
             if opensUp && filtersOpen { filterCard(layers: layers).transition(.move(edge: .bottom).combined(with: .opacity)) }
             HStack(spacing: 8) {
+                if opensUp { Spacer(minLength: 0) }
                 Button {
                     withAnimation(reduceMotion ? nil : .snappy(duration: 0.28)) { filtersOpen.toggle() }
                 } label: {
@@ -9697,8 +9786,9 @@ private struct TrippyMapCanvas<Header: View>: View {
                 .accessibilityLabel("Filters")
                 .accessibilityValue(activeFilterCount > 0 ? "\(activeFilterCount) on" : "None on")
                 .accessibilityHint(filtersOpen ? "Hides the filters" : "Shows the filters")
+                if opensUp { openNowPill }
                 // While folded, what's on stays visible as a short summary.
-                if !filtersOpen && activeFilterCount > 0 {
+                if !opensUp && !filtersOpen && activeFilterCount > 0 {
                     Text(activeFilterSummary).font(.custom("PlusJakartaSans-SemiBold", size: 12, relativeTo: .caption))
                         .foregroundStyle(AppPalette.ink).lineLimit(1)
                         .padding(.horizontal, 10).frame(minHeight: 30)
@@ -9745,10 +9835,12 @@ private struct TrippyMapCanvas<Header: View>: View {
             ScrollView(.horizontal) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
+                        if layers {
                         MapQuickChip(title: "Open now", symbol: hoursStore.loading && openNowOnly ? "hourglass" : "clock.fill",
                                      tint: Color(hex: "3F8F5F"), on: openNowOnly,
                                      count: openNowOnly ? pins.filter { $0.layer != "city" && openState($0) == true }.count : nil) {
                             withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { openNowOnly.toggle() }
+                        }
                         }
                         ForEach([MapQuickFilter.food, .coffee, .bars, .clubs, .brunch, .streetFood, .vegan, .markets]) { quickChip($0, chosen: chosen, counts: layers) }
                     }
@@ -9761,10 +9853,6 @@ private struct TrippyMapCanvas<Header: View>: View {
             .contentMargins(.horizontal, 12, for: .scrollContent)
             .padding(.horizontal, -12)
             HStack {
-                Text(openNowOnly ? "Open now uses Google and OpenStreetMap hours; Apple's places hide while it's on."
-                                 : "Pick any to show only those. Nothing picked shows everything.")
-                    .font(.custom("PlusJakartaSans-Medium", size: 11, relativeTo: .caption2)).foregroundStyle(AppPalette.secondaryInk)
-                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 6)
                 if activeFilterCount > 0 || !tripShowsSuggestions || !showSaves || !showPins {
                     Button("Reset") {
@@ -10468,14 +10556,13 @@ private struct TrippyMapCanvas<Header: View>: View {
                 .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(0.6), lineWidth: 1))
         }.buttonStyle(QuietPressStyle()).accessibilityLabel("Map appearance: \(theme), choose a theme")
     }
+    /// You: profile photo → Account (plan, settings, admin). Replaces the old settings gear.
     private var mapOptionsMenu: some View {
-        Menu {
-            Button(darkMode ? "Light appearance" : "Dark appearance", systemImage: darkMode ? "sun.max" : "moon") { darkMode.toggle() }
-            Button("Google Places", systemImage: "magnifyingglass") { onPlacesSettings?() }
-        } label: {
-            Image(systemName: "gearshape").font(.system(size: 18, weight: .medium))
-                .foregroundStyle(AppPalette.ink).frame(width: 52, height: 52).modifier(MapRaisedCircle())
-        }.accessibilityLabel("Map settings")
+        Button { onPlacesSettings?() } label: {
+            ProfileAvatar(size: 44).frame(width: 52, height: 52).modifier(MapRaisedCircle())
+        }
+        .buttonStyle(QuietPressStyle())
+        .accessibilityLabel("Account and settings")
     }
     func pinButton(_ pin: WorkspaceMapPin) -> some View {
         let span = visibleRegion?.span.latitudeDelta ?? 0
@@ -14572,7 +14659,7 @@ private extension TripFlowView {
                     placesConnectionFeedback
                 }
                 Section {
-                    NavigationLink { AccountView() } label: { Label("Account", systemImage: "person.crop.circle") }
+                    NavigationLink { AccountHub() } label: { Label("Account", systemImage: "person.crop.circle") }
                 } footer: {
                     Text("Sign in, where you live, and the admin dashboard for admin accounts.")
                 }

@@ -66,6 +66,7 @@ def main():
     parser.add_argument("urls", nargs="+")
     parser.add_argument("--no-gemini", action="store_true")
     parser.add_argument("--audio", choices=["auto", "always", "never"], default="auto")
+    parser.add_argument("--video", choices=["auto", "never"], default="auto", help="send a shrunken video (frames + sound) for video posts")
     parser.add_argument("--models", default="")
     args = parser.parse_args()
     env = read_environment(ROOT / ".env")
@@ -79,18 +80,20 @@ def main():
         started = time.time()
         reader = tiktok.Reader()
         post = reader.read(url)
-        audio = None
+        audio = video = None
+        if args.video == "auto" and not post["slideshow"] and (post["duration"] or 0) > 0:
+            video = reader.video()
         wants_audio = args.audio == "always" or (args.audio == "auto" and not post["slideshow"] and not post["transcript"] and (post["duration"] or 0) > 0)
-        if wants_audio and args.audio != "never":
+        if wants_audio and args.audio != "never" and not video:
             audio = reader.audio()
         print(f"\n===== {post['author']} · {post['id']} · {'slideshow' if post['slideshow'] else 'video'} {post['duration']}s")
         print(f"  caption: {post['caption'][:160]!r}")
         print(f"  slideshow title: {post['slideshow_title']!r}   slides: {len(post['slides'])}   on-screen text: {len(post['on_screen_text'])}"
-              f"   transcript: {(post['transcript_language'] or '—')} {len(post['transcript'] or '')} chars   audio: {len(audio[1]) // 1024 if audio else 0} KB")
+              f"   transcript: {(post['transcript_language'] or '—')} {len(post['transcript'] or '')} chars   audio: {len(audio[1]) // 1024 if audio else 0} KB   video: {len(video[1]) // 1024 if video else 0} KB")
         record = {k: v for k, v in post.items() if k != "slides"}
         record["fetch_seconds"] = round(time.time() - started, 1)
         if pool:
-            source = {"url": post["url"], "author": post["author"], "evidence": tiktok.evidence(post), "images": post["slides"], "audio": audio}
+            source = {"url": post["url"], "author": post["author"], "evidence": tiktok.evidence(post), "images": post["slides"], "video": video, "audio": audio}
             t = time.time()
             result = extract(pool, source)
             if search:

@@ -124,6 +124,8 @@ enum PlaceCatalog {
 
 // MARK: - Flow
 
+/// Welcome → how you'd like to use Trippy (account or just this phone) → where you live →
+/// where you've been → the briefing. Everything after the welcome can be skipped.
 struct OnboardingFlow: View {
     let onFinish: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -131,66 +133,70 @@ struct OnboardingFlow: View {
     @State private var step = UserDefaults.standard.integer(forKey: "TrippyOnboardingStep")
     @State private var home = HomeProfileStore.load() ?? HomeProfile()
     @AppStorage("trippy.native.visitedPlaces.v1") private var visitedStorage = "[]"
+    @ObservedObject private var account = AccountSession.shared
 
-    /// welcome, three cards, home, been, account
-    private let steps = 7
-    private var isCard: Bool { (1...3).contains(step) }
+    private enum Step: Int { case welcome, access, home, been, brief1, brief2, brief3 }
+    private let last = Step.brief3.rawValue
+    private var current: Step { Step(rawValue: step) ?? .welcome }
+    private var isBrief: Bool { step >= Step.brief1.rawValue }
 
     var body: some View {
         ZStack {
             OnboardingBackdrop(step: step)
             VStack(spacing: 0) {
-                topBar
+                if current != .welcome { topBar }
                 Group {
-                    switch step {
-                    case 0: WelcomeStep(next: next, signIn: { go(6) })
-                    case 1, 2, 3: FeatureCardStep(card: FeatureCard.all[step - 1]).id(step)
-                    case 4: HomeStep(home: $home)
-                    case 5: BeenStep(home: home, storage: $visitedStorage)
-                    default: AccountStep(onDone: finish)
+                    switch current {
+                    case .welcome: WelcomeStep(next: { go(1) }, signIn: { go(1) })
+                    case .access: AccessStep(onContinue: { go(2) })
+                    case .home: HomeStep(home: $home)
+                    case .been: BeenStep(home: home, storage: $visitedStorage)
+                    case .brief1, .brief2, .brief3: BriefCardStep(card: BriefCard.all[step - Step.brief1.rawValue]).id(step)
                     }
                 }
                 .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if step > 0 && step < 6 { bottomBar }
+                if current != .welcome && current != .access { bottomBar }
             }
         }
         .gesture(DragGesture(minimumDistance: 30).onEnded { value in
-            guard isCard else { return }
-            if value.translation.width < -60 { next() } else if value.translation.width > 60 { back() }
+            guard isBrief else { return }
+            if value.translation.width < -60 { next() } else if value.translation.width > 60 && step > Step.brief1.rawValue { back() }
         })
     }
 
     private var topBar: some View {
         HStack {
-            if step > 0 {
-                Button { back() } label: { Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold)).frame(width: 44, height: 44) }
-                    .accessibilityLabel("Back")
-            } else { Color.clear.frame(width: 44, height: 44) }
+            Button { back() } label: { Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold)).frame(width: 44, height: 44) }
+                .accessibilityLabel("Back")
             Spacer()
-            if step > 0 {
-                HStack(spacing: 6) {
-                    ForEach(1..<steps, id: \.self) { i in
-                        Capsule().fill(i <= step ? Sketch.ink : Sketch.ink.opacity(0.15)).frame(width: i == step ? 18 : 6, height: 6)
-                    }
+            HStack(spacing: 6) {
+                ForEach(1...last, id: \.self) { i in
+                    Capsule().fill(i <= step ? Sketch.ink : Sketch.ink.opacity(0.15)).frame(width: i == step ? 18 : 6, height: 6)
                 }
-                .animation(.snappy, value: step)
-                .accessibilityElement().accessibilityLabel("Step \(step) of \(steps - 1)")
             }
+            .animation(.snappy, value: step)
+            .accessibilityElement().accessibilityLabel("Step \(step) of \(last)")
             Spacer()
-            if isCard {
-                Button("Skip") { go(4) }.font(Sketch.text(15, "SemiBold", relativeTo: .body)).frame(minWidth: 44, minHeight: 44)
-            } else { Color.clear.frame(width: 44, height: 44) }
+            if isBrief {
+                Button { finish() } label: {
+                    Text("Skip").font(Sketch.text(14, "SemiBold", relativeTo: .subheadline)).foregroundStyle(Sketch.inkSoft)
+                        .padding(.horizontal, 14).frame(height: 32)
+                        .background(Capsule().fill(Sketch.ink.opacity(0.06)))
+                }
+                .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                .accessibilityHint("Skips the tour")
+            } else { Color.clear.frame(width: 64, height: 44) }
         }
         .foregroundStyle(Sketch.ink)
         .padding(.horizontal, 12)
     }
 
     private var bottomBar: some View {
-        let label: String = switch step {
-        case 3: "Set up my map"
-        case 4: home.isEmpty ? "Skip for now" : "Continue"
-        case 5: "Continue"
+        let label: String = switch current {
+        case .home: home.isEmpty ? "Skip for now" : "Continue"
+        case .been: VisitedPlace.decode(visitedStorage).isEmpty ? "Skip for now" : "Continue"
+        case .brief3: "Start exploring"
         default: "Next"
         }
         return Button(action: next) {
@@ -203,10 +209,10 @@ struct OnboardingFlow: View {
     }
 
     private func go(_ target: Int) {
-        if step == 4 { HomeProfileStore.save(home) }
+        if current == .home { HomeProfileStore.save(home) }
         withAnimation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 0.86)) { step = target }
     }
-    private func next() { go(min(step + 1, steps - 1)) }
+    private func next() { step >= last ? finish() : go(step + 1) }
     private func back() { go(max(step - 1, 0)) }
     private func finish() {
         HomeProfileStore.save(home)
@@ -215,8 +221,9 @@ struct OnboardingFlow: View {
     }
 }
 
+
 /// Paper with slow-drifting watercolour blobs that change hue per step.
-private struct OnboardingBackdrop: View {
+struct OnboardingBackdrop: View {
     let step: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var tints: [Color] {
@@ -308,7 +315,7 @@ private struct WelcomeStep: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .task {
-            let key = GlobeTextureKey(dark: scheme == .dark, satellite: false, style: "onboarding")
+            let key = GlobeTextureKey(dark: scheme == .dark, satellite: true, style: "onboarding-real")
             texture = await GlobeTextureBuilder.shared.texture(key: key, shapes: nil, visits: [])
         }
         .onAppear {
@@ -334,176 +341,82 @@ private struct FlightArcs: Shape {
     }
 }
 
-// MARK: - Feature cards
+// MARK: - Briefing
 
-/// A card shows a real screen of the app (re-shot by scripts/render_onboarding_shots.sh)
-/// with hand-drawn marks animating on top, at positions given as fractions of the screen.
-struct FeatureCard: Hashable {
-    enum Mark: Hashable {
-        case circle(CGRect)                  // ring around a part of the screen
-        case arrow(from: CGPoint, to: CGPoint)
-        case underline(CGRect)
-        case route([CGPoint])
-        case sparkle(CGPoint)
-    }
-    let image: String
+/// The killer features, last, once the map is set up. Each card is a short looping demo
+/// (BriefDemos.swift) that ends on the app's most useful output for that feature.
+struct BriefCard: Hashable {
+    enum Demo: Hashable { case share, plan, world }
+    let demo: Demo
     let eyebrow: String
     let title: String
     let body: String
     let tint: Color
-    let marks: [Mark]
-    let note: String?
-    let notePoint: CGPoint
 
-    // Positions are fractions of the screenshot; re-check them after re-shooting (scripts/render_onboarding_shots.sh).
-    static let all: [FeatureCard] = [
-        FeatureCard(image: "OnboardingVideos", eyebrow: "SAVE FROM TIKTOK", title: "Share a video, get the places",
-                    body: "Send any travel TikTok to Trippy. It reads the caption, the text on screen and the voice, and pins every café, bar and sight.",
-                    tint: Sketch.coral,
-                    marks: [.circle(.init(x: 0.03, y: 0.285, width: 0.94, height: 0.15)),
-                            .arrow(from: .init(x: 0.74, y: 0.62), to: .init(x: 0.56, y: 0.78)),
-                            .sparkle(.init(x: 0.13, y: 0.30))],
-                    note: "8 places from 6 videos", notePoint: .init(x: 0.66, y: 0.58)),
-        FeatureCard(image: "OnboardingPlan", eyebrow: "PLANS THAT FIT", title: "A plan that actually works",
-                    body: "Days grouped by area, starting where you stay, with lunch and drinks close by. Every stop is a choice you can swap.",
-                    tint: Sketch.sky,
-                    marks: [.underline(.init(x: 0.07, y: 0.452, width: 0.66, height: 0.01)),
-                            .route([.init(x: 0.36, y: 0.585), .init(x: 0.46, y: 0.56), .init(x: 0.53, y: 0.55), .init(x: 0.62, y: 0.585)]),
-                            .circle(.init(x: 0.12, y: 0.89, width: 0.6, height: 0.07))],
-                    note: "one visit, not three", notePoint: .init(x: 0.62, y: 0.68)),
-        FeatureCard(image: "OnboardingBeen", eyebrow: "YOUR WORLD", title: "Every place you’ve been",
-                    body: "Tap the countries and cities you know. Your map fills in colour, and Trippy shows what’s left to see.",
-                    tint: Sketch.sage,
-                    marks: [.circle(.init(x: 0.18, y: 0.32, width: 0.56, height: 0.24)), .sparkle(.init(x: 0.76, y: 0.33)), .sparkle(.init(x: 0.2, y: 0.58))],
-                    note: "yours, in colour", notePoint: .init(x: 0.68, y: 0.62)),
+    static let all: [BriefCard] = [
+        BriefCard(demo: .share, eyebrow: "FROM TIKTOK", title: "Share it.\nWe’ll map it.",
+                  body: "Videos or slides. Every spot, pinned.", tint: Sketch.coral),
+        BriefCard(demo: .plan, eyebrow: "PLANS", title: "Days that\njust work.",
+                  body: "Built around your stay. Swap anything.", tint: Sketch.sky),
+        BriefCard(demo: .world, eyebrow: "YOUR WORLD", title: "Everywhere\nyou’ve been.",
+                  body: "Watch your map fill in.", tint: Sketch.sage),
     ]
 }
 
-private struct FeatureCardStep: View {
-    let card: FeatureCard
+struct BriefCardStep: View {
+    let card: BriefCard
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appear = false
-    @State private var draw: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 18) {
             GeometryReader { proxy in
-                let aspect = UIImage(named: card.image).map { $0.size.height / max($0.size.width, 1) } ?? 2.17
-                let height = proxy.size.height, width = min(proxy.size.width - 64, height / aspect)
-                ZStack {
-                    phone(width: width, height: width * aspect)
-                        .rotation3DEffect(.degrees(appear ? -6 : -24), axis: (x: 0.2, y: 1, z: 0), perspective: 0.6)
-                        .scaleEffect(appear ? 1 : 0.9)
-                        .offset(y: appear ? 0 : 30)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                let aspect: CGFloat = 2.05
+                let width = min(proxy.size.width - 96, (proxy.size.height - 8) / aspect)
+                phone(width: width, height: width * aspect)
+                    .scaleEffect(appear ? 1 : 0.94).offset(y: appear ? 0 : 20)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            VStack(spacing: 8) {
-                Text(card.eyebrow).font(Sketch.eyebrow).tracking(1.4).foregroundStyle(card.tint)
-                Text(card.title).font(Sketch.display(.title, weight: .bold)).multilineTextAlignment(.center).foregroundStyle(Sketch.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(card.body).font(Sketch.text(16, relativeTo: .body)).multilineTextAlignment(.center).foregroundStyle(Sketch.inkSoft)
+            VStack(spacing: 10) {
+                Text(card.eyebrow).font(Sketch.eyebrow).tracking(1.6).foregroundStyle(card.tint)
+                Text(card.title).font(Sketch.display(.largeTitle, weight: .bold)).multilineTextAlignment(.center).foregroundStyle(Sketch.ink)
+                    .lineSpacing(-2).fixedSize(horizontal: false, vertical: true)
+                Text(card.body).font(Sketch.text(17, "Medium", relativeTo: .body)).multilineTextAlignment(.center).foregroundStyle(Sketch.inkSoft)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.horizontal, 28)
-            .opacity(appear ? 1 : 0)
+            .padding(.horizontal, 32)
             .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+            .opacity(appear ? 1 : 0)
         }
         .padding(.bottom, 8)
-        .onAppear {
-            withAnimation(reduceMotion ? nil : .spring(response: 0.7, dampingFraction: 0.8)) { appear = true }
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: 1.4).delay(0.45)) { draw = 1 }
-            if reduceMotion { appear = true; draw = 1 }
-        }
         .accessibilityElement(children: .combine)
+        .onAppear {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.7, dampingFraction: 0.82)) { appear = true }
+            if reduceMotion { appear = true }
+        }
     }
 
     private func phone(width: CGFloat, height: CGFloat) -> some View {
-        ZStack {
-            Group {
-                if UIImage(named: card.image) != nil {
-                    Image(card.image).resizable().scaledToFit()
-                } else {
-                    LinearGradient(colors: [card.tint.opacity(0.3), Sketch.paperDeep], startPoint: .top, endPoint: .bottom)
-                }
-            }
-            .frame(width: width, height: height, alignment: .top)
-            .clipShape(RoundedRectangle(cornerRadius: width * 0.13, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: width * 0.13, style: .continuous).strokeBorder(Sketch.ink.opacity(0.9), lineWidth: 5))
-            .shadow(color: .black.opacity(0.22), radius: 24, y: 18)
-            .accessibilityHidden(true)
-            // Hand-drawn marks on top of the real screen.
-            ForEach(Array(card.marks.enumerated()), id: \.offset) { index, mark in
-                SketchMarkShape(mark: mark).trim(from: 0, to: max(0, min(1, draw * 1.3 - CGFloat(index) * 0.15)))
-                    .stroke(card.tint, style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
-                    .frame(width: width, height: height)
-            }
-            if let note = card.note {
-                Text(note).font(Sketch.hand(.headline)).foregroundStyle(card.tint).lineLimit(1)
-                    .dynamicTypeSize(...DynamicTypeSize.large)   // a drawing on the screenshot, not reading text
-                    .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(Capsule().fill(Sketch.card).shadow(color: .black.opacity(0.12), radius: 6, y: 3))
-                    .rotationEffect(.degrees(-4))
-                    .position(x: card.notePoint.x * width, y: card.notePoint.y * height)
-                    .frame(width: width, height: height)
-                    .opacity(draw > 0.6 ? 1 : 0).scaleEffect(draw > 0.6 ? 1 : 0.7)
-                    .animation(.spring(response: 0.4, dampingFraction: 0.6), value: draw > 0.6)
-                    .accessibilityHidden(true)
+        let corner = width * 0.14
+        return Group {
+            switch card.demo {
+            case .share: ShareStage(tint: card.tint, width: width, height: height)
+            case .plan: PlanDayDemo(tint: card.tint).clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous).strokeBorder(Sketch.ink, lineWidth: 4))
+            case .world: WorldDemo(tint: card.tint).clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous).strokeBorder(Sketch.ink, lineWidth: 4))
             }
         }
         .frame(width: width, height: height)
-    }
-}
-
-/// The hand-drawn marks: slightly wobbly, like a pen over a screenshot.
-private struct SketchMarkShape: Shape {
-    let mark: FeatureCard.Mark
-    func path(in rect: CGRect) -> Path {
-        func p(_ u: CGPoint) -> CGPoint { .init(x: rect.minX + u.x * rect.width, y: rect.minY + u.y * rect.height) }
-        var path = Path()
-        switch mark {
-        case .circle(let r):
-            // An ellipse drawn in one stroke that overshoots its start, as by hand.
-            let c = CGPoint(x: r.midX, y: r.midY), rx = r.width / 2, ry = r.height / 2
-            for i in 0...64 {
-                let a = Double(i) / 64 * 2.15 * .pi - 0.4
-                let wobble = 1 + 0.035 * sin(a * 3)
-                let point = p(.init(x: c.x + rx * wobble * cos(a), y: c.y + ry * wobble * sin(a)))
-                if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
-            }
-        case .arrow(let from, let to):
-            let a = p(from), b = p(to)
-            let control = CGPoint(x: (a.x + b.x) / 2 + (b.y - a.y) * 0.3, y: (a.y + b.y) / 2 - (b.x - a.x) * 0.3)
-            path.move(to: a); path.addQuadCurve(to: b, control: control)
-            let angle = atan2(b.y - control.y, b.x - control.x)
-            for side in [-1.0, 1.0] {
-                path.move(to: b)
-                path.addLine(to: CGPoint(x: b.x - 14 * cos(angle + side * 0.5), y: b.y - 14 * sin(angle + side * 0.5)))
-            }
-        case .underline(let r):
-            let a = p(.init(x: r.minX, y: r.midY)), b = p(.init(x: r.maxX, y: r.midY))
-            path.move(to: a)
-            path.addCurve(to: b, control1: .init(x: a.x + (b.x - a.x) / 3, y: a.y + 5), control2: .init(x: a.x + 2 * (b.x - a.x) / 3, y: a.y - 4))
-        case .route(let points):
-            guard let first = points.first else { break }
-            path.move(to: p(first))
-            for (i, point) in points.dropFirst().enumerated() {
-                let previous = p(points[i]), next = p(point)
-                path.addQuadCurve(to: next, control: .init(x: (previous.x + next.x) / 2, y: min(previous.y, next.y) - 18))
-            }
-        case .sparkle(let u):
-            let c = p(u)
-            for angle in stride(from: 0.0, to: .pi * 2, by: .pi / 3) {
-                path.move(to: .init(x: c.x + 5 * cos(angle), y: c.y + 5 * sin(angle)))
-                path.addLine(to: .init(x: c.x + 13 * cos(angle), y: c.y + 13 * sin(angle)))
-            }
-        }
-        return path
+        .shadow(color: .black.opacity(card.demo == .share ? 0 : 0.18), radius: 22, y: 14)
+        .accessibilityHidden(true)
     }
 }
 
 // MARK: - Where you live
 
+/// One search field that narrows as you go: country, then city, then area. Each level is optional;
+/// the trail above it ("Greece › Athens › Koukaki") is what the map will use.
 struct HomeStep: View {
     @Binding var home: HomeProfile
     @State private var query = ""
@@ -515,126 +428,138 @@ struct HomeStep: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Where do you live?").font(Sketch.display(.largeTitle, weight: .bold)).foregroundStyle(Sketch.ink)
-                    Text("Only as much as you like. Your map opens there and your home is marked. You can change it any time.")
-                        .font(Sketch.text(16, relativeTo: .body)).foregroundStyle(Sketch.inkSoft).fixedSize(horizontal: false, vertical: true)
+                    Text("Where’s home?").font(Sketch.display(.largeTitle, weight: .bold)).foregroundStyle(Sketch.ink)
+                    Text("Optional. Your map starts here.")
+                        .font(Sketch.text(17, "Medium", relativeTo: .body)).foregroundStyle(Sketch.inkSoft)
                 }
-                chosen
-                if level != .area || home.area == nil { picker }
+                if !home.isEmpty { trail }
+                if !(level == .area && home.area != nil) { field; results }
             }
-            .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 24)
+            .padding(.horizontal, 24).padding(.top, 6).padding(.bottom, 24)
+            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: home)
         }
         .scrollDismissesKeyboard(.interactively)
         .onChange(of: query) { _, value in search.update(value, level: level == .area ? .area : .city, around: home.coordinate) }
     }
 
-    /// The chosen country / city / area as removable bubbles, most general first.
-    private var chosen: some View {
-        FlowLayout(spacing: 8) {
-            if let code = home.countryCode {
-                Bubble(text: "\(WorldGlobeView.flag(code)) \(home.countryName ?? code)", tint: Sketch.coral, selected: true) {
-                    withAnimation(.snappy) { home = HomeProfile() }
-                }
+    /// Greece › Athens › Koukaki, each part tappable to go back to it.
+    private var trail: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "house.fill").foregroundStyle(Sketch.sage)
+            ViewThatFits(in: .horizontal) {
+                trailText.lineLimit(1)
+                trailText.lineLimit(2)
             }
-            if let city = home.city {
-                Bubble(text: city, tint: Sketch.sky, selected: true, symbol: "building.2") {
-                    withAnimation(.snappy) { home.city = nil; home.cityLatitude = nil; home.cityLongitude = nil; home.area = nil; home.areaLatitude = nil; home.areaLongitude = nil }
-                }
+            Spacer(minLength: 0)
+            Button { withAnimation { home = HomeProfile(); query = "" } } label: {
+                Image(systemName: "xmark.circle.fill").font(.system(size: 20)).foregroundStyle(Sketch.inkFaint)
             }
-            if let area = home.area {
-                Bubble(text: area, tint: Sketch.sage, selected: true, symbol: "house") {
-                    withAnimation(.snappy) { home.area = nil; home.areaLatitude = nil; home.areaLongitude = nil }
+            .accessibilityLabel("Clear home")
+        }
+        .padding(.horizontal, 16).frame(minHeight: 56)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Sketch.card))
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    private var trailText: some View {
+        let parts = [home.countryCode.map { "\(WorldGlobeView.flag($0)) \(home.countryName ?? $0)" }, home.city, home.area].compactMap { $0 }
+        return Text(parts.joined(separator: "  ›  ")).font(Sketch.text(17, "SemiBold", relativeTo: .body)).foregroundStyle(Sketch.ink)
+    }
+
+    private var field: some View {
+        VStack(alignment: .leading, spacing: 6) {
+        Text(level == .country ? "COUNTRY" : level == .city ? "CITY · OPTIONAL" : "NEIGHBOURHOOD · OPTIONAL")
+            .font(Sketch.eyebrow).tracking(1.2).foregroundStyle(Sketch.inkFaint)
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass").foregroundStyle(Sketch.inkFaint)
+            TextField(prompt, text: $query).font(Sketch.text(17, relativeTo: .body)).focused($focused)
+                .autocorrectionDisabled().submitLabel(.done)
+            if search.loading { ProgressView().controlSize(.small) }
+        }
+        .padding(.horizontal, 16).frame(minHeight: 52)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Sketch.card))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(focused ? Sketch.ink : .clear, lineWidth: 1.5))
+        }
+    }
+
+    private var prompt: String {
+        switch level {
+        case .country: "Country"
+        case .city: "City"
+        case .area: "Neighbourhood"
+        }
+    }
+
+    @ViewBuilder private var results: some View {
+        VStack(spacing: 0) {
+            switch level {
+            case .country:
+                ForEach(countryOptions) { country in row("\(country.flag)  \(country.name)", detail: nil) { pick(country) } }
+            case .city:
+                ForEach(cityOptions) { city in row(city.name, detail: nil, symbol: "building.2") { pick(city) } }
+                ForEach(search.results.prefix(5)) { r in row(r.title, detail: r.subtitle, symbol: "mappin") { Task { await pickCity(r) } } }
+            case .area:
+                ForEach(search.results.prefix(6)) { r in row(r.title, detail: r.subtitle, symbol: "house") { Task { await pickArea(r) } } }
+                if query.isEmpty {
+                    Text("For an exact home pin.").font(Sketch.text(14, relativeTo: .footnote)).foregroundStyle(Sketch.inkFaint)
+                        .padding(.top, 10).padding(.leading, 16).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
     }
 
-    @ViewBuilder private var picker: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(level == .country ? "COUNTRY" : level == .city ? "CITY · OPTIONAL" : "AREA · OPTIONAL")
-                .font(Sketch.eyebrow).tracking(1).foregroundStyle(Sketch.inkSoft)
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Sketch.inkFaint)
-                TextField(level == .country ? "Search countries" : level == .city ? "Search cities" : "Neighbourhood, e.g. Koukaki", text: $query)
-                    .font(Sketch.text(16, relativeTo: .body)).focused($focused).autocorrectionDisabled().submitLabel(.done)
-                if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Sketch.inkFaint) }.accessibilityLabel("Clear") }
-            }
-            .padding(.horizontal, 14).frame(minHeight: 48)
-            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Sketch.card))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(focused ? Sketch.ink : Sketch.rule, lineWidth: focused ? 1.5 : 0.7))
-            FlowLayout(spacing: 8) {
-                switch level {
-                case .country:
-                    ForEach(countryOptions) { country in
-                        Bubble(text: "\(country.flag) \(country.name)", tint: Sketch.coral, selected: false) { pick(country) }
-                    }
-                case .city:
-                    ForEach(cityOptions) { city in
-                        Bubble(text: city.name, tint: Sketch.sky, selected: false, symbol: "building.2") { pick(city) }
-                    }
-                    ForEach(search.results.prefix(6)) { result in
-                        Bubble(text: result.title, tint: Sketch.sky, selected: false, symbol: "magnifyingglass") { Task { await pickCity(result) } }
-                    }
-                case .area:
-                    ForEach(search.results.prefix(8)) { result in
-                        Bubble(text: result.title, tint: Sketch.sage, selected: false, symbol: "house") { Task { await pickArea(result) } }
-                    }
+    private func row(_ title: String, detail: String?, symbol: String? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                if let symbol { Image(systemName: symbol).foregroundStyle(Sketch.inkFaint).frame(width: 22) }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(Sketch.text(17, relativeTo: .body)).foregroundStyle(Sketch.ink)
+                    if let detail, !detail.isEmpty { Text(detail).font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkFaint) }
                 }
+                Spacer()
             }
-            if search.loading { ProgressView().padding(.top, 4) }
-            if level == .area && query.isEmpty {
-                Text("Type your neighbourhood for a home pin on the map, or leave it at the city.")
-                    .font(Sketch.hand(.footnote)).foregroundStyle(Sketch.inkFaint)
-            }
+            .padding(.horizontal, 16).frame(minHeight: 50).contentShape(Rectangle())
         }
-        .animation(.snappy, value: level == .country)
+        .buttonStyle(.plain)
+        .overlay(alignment: .bottom) { Rectangle().fill(Sketch.rule.opacity(0.7)).frame(height: 0.5).padding(.leading, 16) }
     }
 
     private var countryOptions: [CountryEntry] {
-        let all = PlaceCatalog.countries
         if query.isEmpty {
-            // The phone's own region first, then well-travelled countries.
+            // The phone's region first, then a few common ones.
             let device = PlaceCatalog.deviceCountry.flatMap(PlaceCatalog.country)
-            let popular = ["GR", "IT", "ES", "FR", "GB", "DE", "US", "PT", "NL", "CY"].compactMap(PlaceCatalog.country)
-            return ([device].compactMap { $0 } + popular).reduce(into: [CountryEntry]()) { if !$0.contains($1) { $0.append($1) } }
+            let common = ["GR", "IT", "ES", "GB", "DE", "FR", "US"].compactMap(PlaceCatalog.country)
+            return ([device].compactMap { $0 } + common).reduce(into: [CountryEntry]()) { if !$0.contains($1) { $0.append($1) } }.prefix(6).map { $0 }
         }
-        return Array(all.filter { $0.name.localizedCaseInsensitiveContains(query) }.prefix(12))
+        return Array(PlaceCatalog.countries.filter { $0.name.localizedCaseInsensitiveContains(query) }.prefix(8))
     }
     private var cityOptions: [CityEntry] {
         guard let code = home.countryCode else { return [] }
         let cities = PlaceCatalog.cities(in: code)
-        return Array((query.isEmpty ? cities : cities.filter { $0.name.localizedCaseInsensitiveContains(query) }).prefix(10))
+        return Array((query.isEmpty ? cities : cities.filter { $0.name.localizedCaseInsensitiveContains(query) }).prefix(query.isEmpty ? 5 : 8))
     }
 
     private func pick(_ country: CountryEntry) {
-        withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) {
-            home = HomeProfile(countryCode: country.code, countryLatitude: country.latitude, countryLongitude: country.longitude)
-            query = ""
-        }
-        UISelectionFeedbackGenerator().selectionChanged()
+        home = HomeProfile(countryCode: country.code, countryLatitude: country.latitude, countryLongitude: country.longitude)
+        query = ""; UISelectionFeedbackGenerator().selectionChanged()
     }
     private func pick(_ city: CityEntry) {
-        withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) {
-            home.city = city.name; home.cityLatitude = city.latitude; home.cityLongitude = city.longitude; query = ""
-        }
-        UISelectionFeedbackGenerator().selectionChanged()
+        home.city = city.name; home.cityLatitude = city.latitude; home.cityLongitude = city.longitude
+        query = ""; UISelectionFeedbackGenerator().selectionChanged()
     }
     private func pickCity(_ result: LocalSearch.Result) async {
         guard let place = await search.resolve(result) else { return }
-        withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) {
-            home.city = place.name; home.cityLatitude = place.latitude; home.cityLongitude = place.longitude; query = ""
-        }
+        home.city = place.name; home.cityLatitude = place.latitude; home.cityLongitude = place.longitude; query = ""
     }
     private func pickArea(_ result: LocalSearch.Result) async {
         guard let place = await search.resolve(result) else { return }
-        withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) {
-            home.area = place.name; home.areaLatitude = place.latitude; home.areaLongitude = place.longitude; query = ""
-        }
+        home.area = result.title; home.areaLatitude = place.latitude; home.areaLongitude = place.longitude; query = ""
         focused = false
     }
 }
+
 
 /// Apple Maps search completions, for cities and neighbourhoods outside the bundled list.
 @MainActor final class LocalSearch: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
@@ -678,166 +603,278 @@ struct HomeStep: View {
 
 // MARK: - Been to
 
-private struct BeenStep: View {
+/// Tap countries on the globe and they fill in. A small card after each tap offers "When?"
+/// (month and year, optional) and undo. Search is there for small countries and for speed.
+struct BeenStep: View {
     let home: HomeProfile
     @Binding var storage: String
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var continent = "Europe"
-    @State private var query = ""
     @State private var focus: CLLocationCoordinate2D?
     @State private var focusID = UUID()
     @State private var texture: UIImage?
-    @State private var lived: [CityEntry] = []
-    @State private var pop: String?
+    @State private var geometries: [CountryGeometry] = []
+    @State private var last: CountryEntry?
+    @State private var lastWasAdd = true
+    @State private var query = ""
+    @State private var showCities = false
     @State private var cityQuery = ""
+    @State private var looking = false
+    @FocusState private var searching: Bool
 
     private var visits: [VisitedPlace] { VisitedPlace.decode(storage) }
-    private var visitedCodes: Set<String> { Set(visits.compactMap { $0.countryCode?.uppercased() }) }
-    private let continents = ["Europe", "Asia", "North America", "South America", "Africa", "Oceania"]
+    private var codes: [String] {
+        var seen = Set<String>()
+        return visits.compactMap { $0.countryCode?.uppercased() }.filter { seen.insert($0).inserted }
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .center, spacing: 14) {
-                    BeenGlobe3DView(texture: texture, focus: focus ?? home.coordinate ?? .init(latitude: 46, longitude: 14), focusID: focusID,
-                                    dark: scheme == .dark, reduceMotion: reduceMotion)
-                        .frame(width: 118, height: 118).accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Where have you been?").font(Sketch.display(.title, weight: .bold)).foregroundStyle(Sketch.ink)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(visitedCodes.isEmpty ? "Tap what you know. Skip if you like." : "\(visitedCodes.count) \(visitedCodes.count == 1 ? "country" : "countries") · \(Int((Double(visitedCodes.count) / 195 * 100).rounded()))% of the world")
-                            .font(Sketch.text(15, "SemiBold", relativeTo: .subheadline)).foregroundStyle(Sketch.inkSoft)
-                            .contentTransition(.numericText())
-                    }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Where have you been?").font(Sketch.display(.largeTitle, weight: .bold)).foregroundStyle(Sketch.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(codes.isEmpty ? "Tap the countries you know. Drag to turn the globe." : summary)
+                        .font(Sketch.text(16, relativeTo: .body)).foregroundStyle(Sketch.inkSoft)
+                        .contentTransition(.numericText()).animation(.snappy, value: codes.count)
                 }
-                livedSection
-                Divider().overlay(Sketch.rule)
-                countriesSection
+                globe
+                if !codes.isEmpty { flags }
+                searchField
+                if !query.isEmpty { searchResults }
+                livedCities
             }
             .padding(.horizontal, 24).padding(.bottom, 24)
         }
-        .task(id: visitedCodes.count) {
-            let key = GlobeTextureKey(dark: scheme == .dark, satellite: false, style: "onboarding-been-\(visits.count)")
-            texture = await GlobeTextureBuilder.shared.texture(key: key, shapes: nil, visits: visits)
-        }
+        .scrollDismissesKeyboard(.interactively)
+        .task(id: codes.joined()) { await redraw() }
     }
 
-    /// "Where have you lived?" — cities, which also count as been.
-    private var livedSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("CITIES YOU’VE LIVED IN").font(Sketch.eyebrow).tracking(1).foregroundStyle(Sketch.inkSoft)
+    private var summary: String {
+        let percent = Int((Double(codes.count) / 195 * 100).rounded())
+        return "\(codes.count) \(codes.count == 1 ? "country" : "countries") · \(percent)% of the world"
+    }
+
+    private var globe: some View {
+        ZStack(alignment: .bottom) {
+            BeenGlobe3DView(texture: texture, focus: focus ?? home.coordinate ?? .init(latitude: 42, longitude: 15), focusID: focusID,
+                            dark: scheme == .dark, reduceMotion: reduceMotion) { tapped in Task { await toggle(at: tapped) } }
+                .frame(height: 320)
+                .accessibilityLabel("Globe. Tap a country to add it.")
+            if looking { ProgressView().padding(.bottom, 12) }
+            if let last { lastCard(last).padding(.bottom, 4).transition(.move(edge: .bottom).combined(with: .opacity)) }
+        }
+        .animation(.spring(response: 0.45, dampingFraction: 0.8), value: last)
+    }
+
+    /// "Italy added · When?" with an optional month and year, and undo.
+    private func lastCard(_ country: CountryEntry) -> some View {
+        HStack(spacing: 10) {
+            Text(country.flag).font(.system(size: 26))
+            VStack(alignment: .leading, spacing: 0) {
+                Text(country.name).font(Sketch.text(15, "Bold", relativeTo: .subheadline)).lineLimit(1)
+                Text(lastWasAdd ? "Added" : "Removed").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+            }
+            Spacer(minLength: 4)
+            if lastWasAdd { WhenMenu(date: Binding(get: { date(for: country.code) }, set: { setDate($0, for: country.code) })) }
+            Button(lastWasAdd ? "Undo" : "Add back") { toggle(country) }
+                .font(Sketch.text(13, "Bold", relativeTo: .footnote)).foregroundStyle(Sketch.coral).frame(minHeight: 44)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .background(Capsule().fill(.regularMaterial))
+        .overlay(Capsule().strokeBorder(Sketch.rule, lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 6)
+    }
+
+    /// The chosen countries as a row of flags; tap one to set when, long-press to remove.
+    private var flags: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Sketch.inkFaint)
-                TextField("Add a city", text: $cityQuery).font(Sketch.text(16, relativeTo: .body)).autocorrectionDisabled()
-            }
-            .padding(.horizontal, 14).frame(minHeight: 44)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Sketch.card))
-            FlowLayout(spacing: 8) {
-                ForEach(livedSuggestions) { city in
-                    let chosen = lived.contains(city)
-                    Bubble(text: city.name, tint: Sketch.plum, selected: chosen, symbol: chosen ? "checkmark" : "house") { toggle(lived: city) }
-                }
-            }
-        }
-    }
-
-    private var livedSuggestions: [CityEntry] {
-        // Matches for what's typed; otherwise the home country's cities, then the chosen ones.
-        let query = cityQuery.trimmingCharacters(in: .whitespaces)
-        let base = query.count >= 2 ? PlaceCatalog.cities.filter { $0.name.localizedCaseInsensitiveContains(query) }
-            : home.countryCode.map(PlaceCatalog.cities(in:)) ?? []
-        return (lived + base).reduce(into: [CityEntry]()) { if !$0.contains($1) { $0.append($1) } }.prefix(12).map { $0 }
-    }
-
-    private var countriesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("COUNTRIES").font(Sketch.eyebrow).tracking(1).foregroundStyle(Sketch.inkSoft)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(continents, id: \.self) { name in
-                        let count = PlaceCatalog.countries.filter { $0.continent == name && visitedCodes.contains($0.code) }.count
-                        Button { withAnimation(.snappy) { continent = name } } label: {
-                            Text(count > 0 ? "\(name) · \(count)" : name).font(Sketch.text(14, "Bold", relativeTo: .subheadline))
-                                .foregroundStyle(continent == name ? Sketch.paper : Sketch.ink)
-                                .padding(.horizontal, 14).frame(minHeight: 38)
-                                .background(Capsule().fill(continent == name ? Sketch.ink : Sketch.card))
-                                .overlay(Capsule().strokeBorder(Sketch.rule, lineWidth: continent == name ? 0 : 0.7))
+                ForEach(codes, id: \.self) { code in
+                    if let country = PlaceCatalog.country(code) {
+                        Menu {
+                            Section(country.name) {
+                                WhenMenu.items(date: Binding(get: { date(for: code) }, set: { setDate($0, for: code) }))
+                                Button("Remove", systemImage: "trash", role: .destructive) { toggle(country) }
+                            }
+                        } label: {
+                            Text(country.flag).font(.system(size: 26)).frame(width: 46, height: 46)
+                                .background(Circle().fill(Sketch.card)).overlay(Circle().strokeBorder(Sketch.rule, lineWidth: 0.7))
                         }
-                        .buttonStyle(.plain)
+                        .accessibilityLabel(country.name)
+                        .transition(.scale.combined(with: .opacity))
                     }
                 }
             }
-            .scrollBounceBehavior(.basedOnSize)
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Sketch.inkFaint)
-                TextField("Find a country", text: $query).font(Sketch.text(16, relativeTo: .body)).autocorrectionDisabled()
+            .animation(.spring(response: 0.4, dampingFraction: 0.7), value: codes)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass").foregroundStyle(Sketch.inkFaint)
+            TextField("Or type a country", text: $query).font(Sketch.text(17, relativeTo: .body)).focused($searching).autocorrectionDisabled()
+        }
+        .padding(.horizontal, 4).frame(minHeight: 48)
+        .overlay(alignment: .bottom) { Rectangle().fill(searching ? Sketch.ink : Sketch.rule).frame(height: searching ? 2 : 1) }
+    }
+
+    private var searchResults: some View {
+        VStack(spacing: 0) {
+            ForEach(PlaceCatalog.countries.filter { $0.name.localizedCaseInsensitiveContains(query) }.prefix(6)) { country in
+                let chosen = codes.contains(country.code)
+                Button { toggle(country); query = "" } label: {
+                    HStack {
+                        Text("\(country.flag)  \(country.name)").font(Sketch.text(17, relativeTo: .body)).foregroundStyle(Sketch.ink)
+                        Spacer()
+                        Image(systemName: chosen ? "checkmark.circle.fill" : "plus.circle").foregroundStyle(chosen ? Sketch.sage : Sketch.inkFaint)
+                    }
+                    .frame(minHeight: 50).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .overlay(alignment: .bottom) { Rectangle().fill(Sketch.rule).frame(height: 0.5) }
             }
-            .padding(.horizontal, 14).frame(minHeight: 44)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Sketch.card))
-            FlowLayout(spacing: 8) {
-                ForEach(countryList) { country in
-                    let chosen = visitedCodes.contains(country.code)
-                    Bubble(text: "\(country.flag) \(country.name)", tint: WorldContinentCatalog.colors[country.continent] ?? Sketch.sky,
-                           selected: chosen, popping: pop == country.code) { toggle(country) }
+        }
+    }
+
+    private var livedCities: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button { withAnimation(.snappy) { showCities.toggle() } } label: {
+                HStack {
+                    Label("Cities you’ve lived in", systemImage: "house").font(Sketch.text(16, "SemiBold", relativeTo: .body))
+                    Spacer()
+                    Image(systemName: showCities ? "chevron.up" : "chevron.down").font(.system(size: 13, weight: .bold))
+                }
+                .foregroundStyle(Sketch.ink).frame(minHeight: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if showCities {
+                TextField("City", text: $cityQuery).font(Sketch.text(17, relativeTo: .body)).autocorrectionDisabled()
+                    .frame(minHeight: 44).overlay(alignment: .bottom) { Rectangle().fill(Sketch.rule).frame(height: 1) }
+                let typed = cityQuery.trimmingCharacters(in: .whitespaces)
+                let matches = typed.count >= 2 ? PlaceCatalog.cities.filter { $0.name.localizedCaseInsensitiveContains(typed) }.prefix(5).map { $0 }
+                    : (home.countryCode.map(PlaceCatalog.cities(in:)) ?? []).prefix(4).map { $0 }
+                FlowLayout(spacing: 8) {
+                    ForEach(matches) { city in
+                        let chosen = visits.contains { $0.name == city.name && $0.countryCode?.uppercased() == city.countryCode }
+                        Bubble(text: city.name, tint: Sketch.plum, selected: chosen, symbol: chosen ? "checkmark" : "plus") { toggle(city: city) }
+                    }
                 }
             }
         }
     }
 
-    private var countryList: [CountryEntry] {
-        let list = PlaceCatalog.countries
-        if !query.isEmpty { return list.filter { $0.name.localizedCaseInsensitiveContains(query) } }
-        return list.filter { $0.continent == continent }
+    // MARK: Changes
+
+    private func toggle(at coordinate: CLLocationCoordinate2D) async {
+        looking = true; defer { looking = false }
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        guard let code = try? await CLGeocoder().reverseGeocodeLocation(location).first?.isoCountryCode,
+              let country = PlaceCatalog.country(code) else { return }
+        toggle(country, at: coordinate)
     }
 
-    private func toggle(_ country: CountryEntry) {
+    private func toggle(_ country: CountryEntry, at tapped: CLLocationCoordinate2D? = nil) {
         var records = visits
-        if visitedCodes.contains(country.code) {
-            records.removeAll { $0.countryCode?.uppercased() == country.code && $0.name == country.name }
+        let adding = !codes.contains(country.code)
+        if adding {
+            let point = country.latitude.flatMap { lat in country.longitude.map { CLLocationCoordinate2D(latitude: lat, longitude: $0) } } ?? tapped
+            guard let point else { return }
+            records = VisitedPlace.adding(VisitedPlace(name: country.name, countryCode: country.code, latitude: point.latitude, longitude: point.longitude), to: records)
+            focus = point; focusID = UUID()
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         } else {
-            guard let lat = country.latitude, let lon = country.longitude else {
-                Task { await addByGeocoding(country) }; return
-            }
-            records = VisitedPlace.adding(VisitedPlace(name: country.name, countryCode: country.code, latitude: lat, longitude: lon), to: records)
-            focus = .init(latitude: lat, longitude: lon); focusID = UUID()
+            records.removeAll { $0.countryCode?.uppercased() == country.code }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.55)) { storage = VisitedPlace.encode(records); pop = country.code }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        Task { try? await Task.sleep(for: .milliseconds(350)); pop = nil }
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) { storage = VisitedPlace.encode(records); last = country; lastWasAdd = adding }
     }
 
-    private func addByGeocoding(_ country: CountryEntry) async {
-        guard let found = try? await CLGeocoder().geocodeAddressString(country.name).first?.location?.coordinate else { return }
+    private func toggle(city: CityEntry) {
         var records = visits
-        records = VisitedPlace.adding(VisitedPlace(name: country.name, countryCode: country.code, latitude: found.latitude, longitude: found.longitude), to: records)
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.55)) { storage = VisitedPlace.encode(records) }
-        focus = found; focusID = UUID()
-    }
-
-    private func toggle(lived city: CityEntry) {
-        var records = visits
-        if let index = lived.firstIndex(of: city) {
-            lived.remove(at: index)
+        if records.contains(where: { $0.name == city.name && $0.countryCode?.uppercased() == city.countryCode }) {
             records.removeAll { $0.name == city.name && $0.countryCode?.uppercased() == city.countryCode }
         } else {
-            lived.append(city)
             records = VisitedPlace.adding(VisitedPlace(name: city.name, countryCode: city.countryCode, latitude: city.latitude, longitude: city.longitude), to: records)
             focus = .init(latitude: city.latitude, longitude: city.longitude); focusID = UUID()
         }
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.6)) { storage = VisitedPlace.encode(records) }
+        withAnimation(.snappy) { storage = VisitedPlace.encode(records) }
         UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    /// nil = "any time" (stored as the moment it was added, as the Been page always has).
+    private func date(for code: String) -> Date? {
+        let dates = visits.filter { $0.countryCode?.uppercased() == code }.map(\.visitedAt)
+        guard let first = dates.min(), Calendar.current.component(.day, from: first) == 1,
+              Calendar.current.component(.hour, from: first) == 12 else { return nil }
+        return first
+    }
+    private func setDate(_ date: Date?, for code: String) {
+        var records = visits
+        for i in records.indices where records[i].countryCode?.uppercased() == code { records[i].visitedAt = date ?? .now }
+        storage = VisitedPlace.encode(records)
+    }
+
+    /// Visited countries drawn on the monochrome globe.
+    private func redraw() async {
+        let snapshot = BeenPassportSnapshot(visits)
+        let requests = snapshot.countries.compactMap { group -> CountryShapeStore.Request? in
+            guard let code = group.countryCode else { return nil }
+            return .init(code: code, latitude: group.coordinate.latitude, longitude: group.coordinate.longitude)
+        }
+        let key = { GlobeTextureKey(dark: scheme == .dark, satellite: false, style: "been-step-\(codes.joined())-\(geometries.count)") }
+        texture = await GlobeTextureBuilder.shared.texture(key: key(), shapes: nil, visits: visits)
+        geometries = await CountryShapeStore.shared.geometries(for: requests).shapes
+        guard !geometries.isEmpty, !Task.isCancelled else { return }
+        let shapes = CountryShapesOverlay(geometries: geometries, stats: snapshot.countryStats,
+                                          style: CountryShapeStyle(fill: true, outlines: true, hatching: false, mode: .visited, dark: scheme == .dark))
+        texture = await GlobeTextureBuilder.shared.texture(key: key(), shapes: shapes, visits: visits)
     }
 }
 
-// MARK: - Account
+/// "When?" — any time, or a month and year.
+struct WhenMenu: View {
+    @Binding var date: Date?
+    var body: some View {
+        Menu { Self.items(date: $date) } label: {
+            Label(date.map { $0.formatted(.dateTime.month(.abbreviated).year()) } ?? "When?", systemImage: "calendar")
+                .font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).foregroundStyle(Sketch.ink)
+                .padding(.horizontal, 10).frame(minHeight: 34).background(Capsule().fill(Sketch.card))
+        }
+        .accessibilityLabel(date.map { "Visited \($0.formatted(.dateTime.month(.wide).year()))" } ?? "When did you go?")
+    }
 
-struct AccountStep: View {
-    let onDone: () -> Void
+    @ViewBuilder static func items(date: Binding<Date?>) -> some View {
+        Button("Any time", systemImage: date.wrappedValue == nil ? "checkmark" : "") { date.wrappedValue = nil }
+        let year = Calendar.current.component(.year, from: .now)
+        ForEach(Array(stride(from: year, through: year - 30, by: -1)), id: \.self) { y in
+            Menu(String(y)) {
+                ForEach(1...12, id: \.self) { m in
+                    Button(Calendar.current.monthSymbols[m - 1]) {
+                        date.wrappedValue = Calendar.current.date(from: DateComponents(year: y, month: m, day: 1, hour: 12))
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// MARK: - Account or just this phone
+
+/// The one real choice in onboarding. Both paths get the same setup afterwards; an account adds
+/// what costs us to run (plans, reading videos) with free monthly credits.
+struct AccessStep: View {
+    let onContinue: () -> Void
+    var offerLocal = true
     @ObservedObject private var account = AccountSession.shared
+    @Environment(\.webAuthenticationSession) private var webAuthentication
     @State private var email = ""
     @State private var code = ""
     @State private var sentTo: String?
+    @State private var showEmail = false
+    @State private var showPerks = false
     @State private var working = false
     @State private var error: String?
     @State private var nonce = AccountSession.makeNonce()
@@ -846,61 +883,133 @@ struct AccountStep: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 18) {
-                Image(systemName: account.isSignedIn ? "checkmark.seal.fill" : "person.crop.circle.badge.plus")
-                    .font(.system(size: 54, weight: .semibold)).foregroundStyle(account.isSignedIn ? Sketch.sage : Sketch.ink)
-                    .symbolEffect(.bounce, value: account.isSignedIn)
-                    .padding(.top, 20)
-                Text(account.isSignedIn ? "You’re in" : "Keep your trips safe").font(Sketch.display(.largeTitle, weight: .bold))
-                    .multilineTextAlignment(.center)
-                Text(account.isSignedIn ? (account.email ?? "Signed in") : "An account backs up your trips and saves and lets you use Trippy on a new phone. Everything works without one.")
-                    .font(Sketch.text(16, relativeTo: .body)).foregroundStyle(Sketch.inkSoft).multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                if account.isSignedIn {
-                    primary("Start exploring", action: onDone).padding(.top, 8)
-                } else {
-                    SignInWithAppleButton(.continue) { request in
-                        nonce = AccountSession.makeNonce()
-                        request.requestedScopes = [.email]
-                        request.nonce = AccountSession.sha256(nonce)
-                    } onCompletion: { result in
-                        Task { await apple(result) }
-                    }
-                    .signInWithAppleButtonStyle(.black)
-                    .frame(height: 52).clipShape(Capsule())
-                    emailForm
-                    Button("Not now", action: onDone).font(Sketch.text(16, "SemiBold", relativeTo: .body))
-                        .foregroundStyle(Sketch.inkSoft).frame(minHeight: 44)
+            VStack(alignment: .leading, spacing: 22) {
+                if account.isSignedIn { signedIn } else { choose }
+                if let error {
+                    Label(error, systemImage: "exclamationmark.circle").font(Sketch.text(14, relativeTo: .footnote)).foregroundStyle(Sketch.coral)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                if let error { Text(error).font(Sketch.text(14, relativeTo: .footnote)).foregroundStyle(Sketch.coral).multilineTextAlignment(.center) }
             }
-            .padding(.horizontal, 24).padding(.bottom, 24)
+            .padding(.horizontal, 24).padding(.top, 6).padding(.bottom, 24)
         }
         .scrollDismissesKeyboard(.interactively)
         .disabled(working)
         .overlay { if working { ProgressView().controlSize(.large) } }
     }
 
+    private var signedIn: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Image(systemName: "checkmark.seal.fill").font(.system(size: 44)).foregroundStyle(Sketch.sage)
+                .symbolEffect(.bounce, value: account.isSignedIn)
+            Text("You’re in").font(Sketch.display(.largeTitle, weight: .bold))
+            Text(account.email ?? "Signed in").font(Sketch.text(16, relativeTo: .body)).foregroundStyle(Sketch.inkSoft)
+            if let credits = account.credits { CreditsStrip(credits: credits) }
+            primary("Continue", action: onContinue).padding(.top, 6)
+        }
+    }
+
+    private var choose: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(offerLocal ? "Make it yours." : "Sign in").font(Sketch.display(.largeTitle, weight: .bold))
+                HStack(spacing: 6) {
+                    Text("Plans, video reading and free credits.").font(Sketch.text(17, "Medium", relativeTo: .body)).foregroundStyle(Sketch.inkSoft)
+                    Button { showPerks = true } label: { Image(systemName: "info.circle").foregroundStyle(Sketch.inkFaint) }
+                        .accessibilityLabel("What an account includes")
+                }
+            }
+            VStack(spacing: 10) {
+                providerButton("Continue with Google", image: "GoogleSearchGlyph", system: nil, dark: true) { Task { await google() } }
+                if AccountFeatures.appleSignIn {
+                    providerButton("Continue with Apple", image: nil, system: "apple.logo", dark: true) { }
+                        .overlay { appleOverlay }
+                }
+                if showEmail { emailForm } else {
+                    providerButton("Continue with email", image: nil, system: "envelope", dark: false) {
+                        withAnimation(.snappy) { showEmail = true }; field = .email
+                    }
+                }
+            }
+            if offerLocal {
+                VStack(spacing: 4) {
+                    Button("Continue without an account", action: onContinue)
+                        .font(Sketch.text(16, "SemiBold", relativeTo: .body)).foregroundStyle(Sketch.ink).frame(minHeight: 44)
+                    Text("Map, saves and places work on this phone.").font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkFaint)
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(.top, 24)
+        .sheet(isPresented: $showPerks) { perksSheet }
+    }
+
+    /// The details, one tap away instead of on the page.
+    private var perksSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("With an account").font(Sketch.display(.title2, weight: .bold))
+            perk("sparkles", "Plans made for you, and TikToks read into places")
+            perk("gift", "Free credits every month")
+            perk("iphone.and.arrow.forward", "Your account on a new phone")
+            perk("link", "Google and email with the same address are one account")
+            Divider().overlay(Sketch.rule)
+            perk("iphone", "Without one, your map, saves and places still work on this phone")
+        }
+        .padding(24)
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(Sketch.paper)
+    }
+
+    private func perk(_ symbol: String, _ text: String) -> some View {
+        Label { Text(text).font(Sketch.text(16, relativeTo: .body)).foregroundStyle(Sketch.ink).fixedSize(horizontal: false, vertical: true) }
+            icon: { Image(systemName: symbol).foregroundStyle(Sketch.coral).frame(width: 22) }
+    }
+
+    private func providerButton(_ title: String, image: String?, system: String?, dark: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                if let image { Image(image).resizable().scaledToFit().frame(width: 18, height: 18) }
+                if let system { Image(systemName: system).font(.system(size: 16, weight: .semibold)) }
+                Text(title).font(Sketch.text(16, "Bold", relativeTo: .body))
+            }
+            .foregroundStyle(dark ? Sketch.paper : Sketch.ink)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .background(Capsule().fill(dark ? Sketch.ink : Sketch.paper))
+            .overlay(Capsule().strokeBorder(dark ? .clear : Sketch.rule, lineWidth: 1))
+        }
+        .buttonStyle(SketchPressStyle())
+    }
+
+    /// Apple's own button, invisible over ours, so the system sheet and its rules apply.
+    private var appleOverlay: some View {
+        SignInWithAppleButton(.continue) { request in
+            nonce = AccountSession.makeNonce()
+            request.requestedScopes = [.email]
+            request.nonce = AccountSession.sha256(nonce)
+        } onCompletion: { result in Task { await apple(result) } }
+        .opacity(0.02)
+    }
+
     @ViewBuilder private var emailForm: some View {
         VStack(spacing: 10) {
             if let address = sentTo {
-                Text("We sent a 6-digit code to \(address).").font(Sketch.text(14, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                Text("Enter the 6-digit code we sent to \(address).").font(Sketch.text(14, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
                 TextField("123456", text: $code).textContentType(.oneTimeCode).keyboardType(.numberPad).focused($field, equals: .code)
-                    .font(Sketch.text(24, "Bold", relativeTo: .title2)).multilineTextAlignment(.center).monospacedDigit()
-                    .frame(minHeight: 54).background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Sketch.card))
+                    .font(Sketch.text(26, "Bold", relativeTo: .title2)).multilineTextAlignment(.center).monospacedDigit()
+                    .frame(minHeight: 54).background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Sketch.paper))
                     .onChange(of: code) { _, value in if value.filter(\.isNumber).count == 6 { Task { await verify() } } }
                 Button("Use another email") { sentTo = nil; code = "" }.font(Sketch.text(14, "SemiBold", relativeTo: .footnote)).frame(minHeight: 44)
             } else {
-                TextField("Email", text: $email).textContentType(.emailAddress).keyboardType(.emailAddress)
+                TextField("you@example.com", text: $email).textContentType(.emailAddress).keyboardType(.emailAddress)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().focused($field, equals: .email).submitLabel(.send)
                     .onSubmit { Task { await sendCode() } }
-                    .font(Sketch.text(17, relativeTo: .body)).padding(.horizontal, 16).frame(minHeight: 52)
-                    .background(Capsule().fill(Sketch.card)).overlay(Capsule().strokeBorder(Sketch.rule, lineWidth: 0.7))
-                primary("Continue with email") { Task { await sendCode() } }
-                    .disabled(!email.contains("@"))
-                    .opacity(email.contains("@") ? 1 : 0.5)
+                    .font(Sketch.text(17, relativeTo: .body)).padding(.horizontal, 16).frame(minHeight: 50)
+                    .background(Capsule().fill(Sketch.paper)).overlay(Capsule().strokeBorder(Sketch.rule, lineWidth: 1))
+                primary("Send me a code") { Task { await sendCode() } }
+                    .disabled(!email.contains("@")).opacity(email.contains("@") ? 1 : 0.45)
             }
         }
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     private func primary(_ title: String, action: @escaping () -> Void) -> some View {
@@ -911,18 +1020,25 @@ struct AccountStep: View {
         .buttonStyle(SketchPressStyle())
     }
 
+    private func run(_ work: () async throws -> Void) async {
+        working = true; defer { working = false }
+        do { try await work(); error = nil } catch { self.error = error.localizedDescription }
+    }
     private func sendCode() async {
         let address = email.trimmingCharacters(in: .whitespaces).lowercased()
         guard address.contains("@") else { return }
-        working = true; defer { working = false }
-        do { try await account.sendEmailCode(address); sentTo = address; error = nil; field = .code }
-        catch { self.error = error.localizedDescription }
+        await run { try await account.sendEmailCode(address); sentTo = address; field = .code }
     }
     private func verify() async {
         guard let sentTo else { return }
+        await run { try await account.verifyEmail(sentTo, code: String(code.filter(\.isNumber).prefix(6))) }
+        if !account.isSignedIn { code = "" }
+    }
+    private func google() async {
         working = true; defer { working = false }
-        do { try await account.verifyEmail(sentTo, code: String(code.filter(\.isNumber).prefix(6))); error = nil }
-        catch { self.error = error.localizedDescription; code = "" }
+        do { try await account.signInWithGoogle(using: webAuthentication); error = nil }
+        catch let failure as AccountSession.AccountError where failure.code == "cancelled" { error = nil }
+        catch { self.error = error.localizedDescription }
     }
     private func apple(_ result: Result<ASAuthorization, Error>) async {
         switch result {
@@ -932,11 +1048,47 @@ struct AccountStep: View {
         case .success(let authorization):
             guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
                   let data = credential.identityToken, let token = String(data: data, encoding: .utf8) else { error = "Apple didn’t return a sign-in token."; return }
-            working = true; defer { working = false }
-            do { try await account.signInWithApple(idToken: token, nonce: nonce); error = nil }
-            catch { self.error = error.localizedDescription }
+            await run { try await account.signInWithApple(idToken: token, nonce: nonce) }
         }
     }
+}
+
+/// Settings uses the same sign-in, without the "just this phone" option.
+struct AccountStep: View {
+    let onDone: () -> Void
+    @ObservedObject private var account = AccountSession.shared
+    var body: some View {
+        AccessStep(onContinue: onDone, offerLocal: false)
+            .onChange(of: account.isSignedIn) { _, signedIn in if signedIn { onDone() } }
+    }
+}
+
+/// What an account has left this month: the frame later subscriptions build on.
+struct CreditsStrip: View {
+    let credits: AccountSession.Credits
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(credits.items) { item in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.unlimited ? "∞" : "\(max(0, item.limit - item.used))").font(Sketch.display(.title2, weight: .bold)).monospacedDigit()
+                    Text(item.label).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+                    if !item.unlimited {
+                        ProgressView(value: Double(min(item.used, item.limit)), total: Double(max(item.limit, 1))).tint(Sketch.sage)
+                    }
+                }
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Sketch.card))
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+
+/// Sign in with Apple needs a paid Apple Developer Program team (a Personal Team can't sign
+/// that capability). Turn this on, and add the "Sign in with Apple" capability in Xcode, after joining.
+enum AccountFeatures {
+    static let appleSignIn = false
 }
 
 // MARK: - Bubbles

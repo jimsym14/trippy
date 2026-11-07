@@ -141,6 +141,19 @@ td.n, th.n { text-align: right; }
       <div class="scroll" id="apis"></div>
     </section>
 
+    <section class="card" id="capacityCard">
+      <h2>Limits, costs and bottlenecks</h2>
+      <p class="small muted" style="margin-top:-6px" id="capacityIntro"></p>
+      <div class="grid kpis" id="capacityKpis"></div>
+      <h2 style="margin-top:6px">Google free calls · this month, by billing SKU</h2>
+      <div class="scroll" id="capacitySkus"></div>
+      <h2 style="margin-top:18px">Bottlenecks · every part of the app</h2>
+      <div class="scroll" id="capacityBottlenecks"></div>
+      <h2 style="margin-top:18px">Monthly cost at 1, 100 and 1,000 active users</h2>
+      <div class="scroll" id="capacityScenarios"></div>
+      <p class="small muted">An active user here makes one plan, reads four videos and browses for a month. Estimates from list prices checked in November 2026 and call counts read from the code; full analysis in <span class="id">docs/BUSINESS_AND_LIMITS.md</span>.</p>
+    </section>
+
     <section class="card">
       <h2>Installs</h2>
       <p class="small muted" style="margin-top:-6px">Anonymous app installs. Storage and trips are what each phone reports on launch; calls are counted here.</p>
@@ -238,6 +251,8 @@ td.n, th.n { text-align: right; }
       }).join('')}</tbody></table>
       <p class="small muted">Rate limits on this server: ${data.rate_limits.map(([k, v]) => esc(k) + ' ' + esc(v)).join(' · ')}. Google’s free caps are per SKU per month; check the exact numbers and billing in Google Cloud Console.</p>`;
 
+    renderCapacity(data.capacity);
+
     const models = data.models || [];
     $('models').innerHTML = models.length ? `<table><tbody>${models.map((m) => {
       const name = m.model || m.name || m.id || 'model';
@@ -268,6 +283,30 @@ td.n, th.n { text-align: right; }
       <tr><td>Host</td><td class="small">${esc(h.host)}</td></tr>
       ${h.issues.length ? `<tr><td>Issues</td><td class="small">${h.issues.map(esc).join(', ')}</td></tr>` : ''}</tbody></table>
       <p class="small muted">Values are never shown here; only whether each key is set.</p>`;
+  }
+
+  function renderCapacity(cap) {
+    if (!cap || cap.error) { $('capacityCard').classList.add('hidden'); return; }
+    $('capacityCard').classList.remove('hidden');
+    const usd = (v) => v == null ? '—' : '$' + num(v, v < 10 ? 2 : 0);
+    const fc = cap.free_capacity, acct = cap.free_credit_account, ex = cap.exposure;
+    $('capacityIntro').textContent = `Prices checked ${cap.checked}. Free calls are per billing SKU, shared by every feature that uses it.`;
+    const k = [
+      ['Active users on free calls', num(fc.active_users), 'limited by ' + fc.tightest],
+      ['One plan', usd(cap.actions.find((a) => a.id === 'plan').usd), 'once free calls are spent'],
+      ['One video read', usd(cap.actions.find((a) => a.id === 'video').usd), '~5 places matched and polished'],
+      ['Maxed free account', usd(acct.usd) + ' / mo', `${num(acct.plans)} plans + ${num(acct.videos)} videos · ${num(acct.accounts_in_free_tier)} fit in free calls`],
+    ];
+    if (ex) k.push(['Paid Google the caps allow', `${usd(ex.low_usd)}–${usd(ex.high_usd)} / mo`, `${num(ex.cap_per_day)} calls a day ≈ ${num(ex.calls_per_month)} a month; ~${num(ex.free_calls)} are free`]);
+    $('capacityKpis').innerHTML = k.map(([l, v, sub]) => `<div class="card kpi"><div class="l">${esc(l)}</div><div class="v">${esc(v)}</div><div class="s">${esc(sub)}</div></div>`).join('');
+    $('capacitySkus').innerHTML = `<table><thead><tr><th>SKU</th><th>Used / free</th><th class="n">Per 1,000 after</th><th class="n">Spent so far</th></tr></thead><tbody>${
+      cap.skus.map((x) => { const level = x.share >= 1 ? 'bad' : x.share >= .7 ? 'warn' : 'good';
+        return `<tr><td>${esc(x.label)}</td><td><span class="pill ${level}">${num(x.used)} / ${num(x.free)}</span><div class="bar"><i style="width:${Math.min(100, x.share * 100)}%;background:var(--${level})"></i></div></td><td class="n">${usd(x.price_per_1000)}</td><td class="n">${usd(x.overage_usd)}</td></tr>`; }).join('')}</tbody></table>`;
+    const sev = { now: ['bad', 'Now'], soon: ['warn', 'Soon'], scale: ['', 'At scale'] };
+    $('capacityBottlenecks').innerHTML = `<table style="min-width:1000px"><thead><tr><th>Part</th><th>When</th><th>Free limit</th><th>One user</th><th>Many users</th><th>Upgrade</th><th>Paid</th></tr></thead><tbody>${
+      cap.bottlenecks.map((b) => `<tr><td><strong>${esc(b.service)}</strong><div class="small muted">${esc(b.used_by)}</div></td><td><span class="pill ${sev[b.severity][0]}">${sev[b.severity][1]}</span></td><td class="small">${esc(b.free_limit)}</td><td class="small">${esc(b.one_user)}</td><td class="small">${esc(b.scale)}</td><td class="small">${esc(b.upgrade)}${b.code ? ' <span class="pill">needs code</span>' : ' <span class="pill good">no code</span>'}</td><td class="small muted">${esc(b.paid)}</td></tr>`).join('')}</tbody></table>`;
+    $('capacityScenarios').innerHTML = `<table><thead><tr><th class="n">Active users</th><th>Setup</th><th class="n">Google</th><th class="n">AI</th><th class="n">Fixed</th><th class="n">Total / month</th><th class="n">Per user</th></tr></thead><tbody>${
+      cap.scenarios.map((x) => `<tr><td class="n">${num(x.active_users)}</td><td class="small">${esc(cap.fixed[x.stage].map((f) => f.item).join(', '))}</td><td class="n">${usd(x.google_usd)}</td><td class="n">${usd(x.ai_usd)}</td><td class="n">${usd(x.fixed_usd)}</td><td class="n"><strong>${usd(x.total_usd)}</strong></td><td class="n">${usd(x.per_user_usd)}</td></tr>`).join('')}</tbody></table>`;
   }
 
   function renderChart() {

@@ -8,12 +8,15 @@ struct TabBarAction {
     let label: String
     var symbol: String?      // nil = the app's own plus
     let run: () -> Void
+    /// Amber only on the Been page, where adding a visit is the page's whole point.
+    var warm: Bool { id == "visit" }
     static func newTrip(_ run: @escaping () -> Void) -> Self { .init(id: "trip", label: "New trip", symbol: nil, run: run) }
 }
 
 struct TrippyTabBar: View {
     @Binding var selection: String
-    var action: TabBarAction
+    /// nil on the map: the map has no add action of its own.
+    var action: TabBarAction?
     @Namespace private var pill
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -56,6 +59,7 @@ struct TrippyTabBar: View {
             .padding(5)
             .background(BarSurface(shape: Capsule()))
 
+            if let action {
             Button {
                 action.run()
             } label: {
@@ -68,15 +72,30 @@ struct TrippyTabBar: View {
                             .transition(.scale(scale: 0.4).combined(with: .opacity))
                     }
                 }
-                .foregroundStyle(Sketch.ink)
+                .foregroundStyle(action.warm ? Color(red: 0.25, green: 0.16, blue: 0.06) : Sketch.ink)
                 .frame(width: 58, height: 58)
-                .background(BarSurface(shape: Circle()))
+                .background { if action.warm { ActionSurface() } else { BarSurface(shape: Circle()) } }
             }
             .buttonStyle(SketchPressStyle())
             .animation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.7), value: action.symbol)
             .accessibilityLabel(action.label)
+            .transition(.scale(scale: 0.6).combined(with: .opacity))
+            }
         }
         .padding(.bottom, 6)
+    }
+}
+
+/// The one action, warm and raised (amber, like the Been page's add button it replaces).
+private struct ActionSurface: View {
+    @Environment(\.colorScheme) private var scheme
+    var body: some View {
+        Circle()
+            .fill(LinearGradient(colors: [Color(red: 1, green: 0.81, blue: 0.5), Color(red: 0.94, green: 0.57, blue: 0.18)],
+                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+            .overlay(Circle().strokeBorder(Color.white.opacity(0.45), lineWidth: 1))
+            .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.16), radius: 8, x: 3, y: 5)
+            .shadow(color: .white.opacity(scheme == .dark ? 0.05 : 0.7), radius: 5, x: -3, y: -3)
     }
 }
 

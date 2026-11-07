@@ -53,6 +53,8 @@ _env_at_start=read_environment(Path(__file__).resolve().parent/'.env')
 recorder=Usage(Path(__file__).resolve().parent/'.local/usage/usage.json', _env_at_start.get('TRIPPY_STATS_DATABASE_URL'))
 usage.install(recorder)
 controls=Controls(recorder)
+from trippy.user_data import UserData, UserDataError
+user_data=UserData(recorder,Path(__file__).resolve().parent/'.local/user-data')
 
 from trippy.accounts import Accounts, AccountError
 _accounts=None
@@ -61,6 +63,13 @@ def accounts():
     global _accounts
     if _accounts is None: _accounts=Accounts(read_environment(root()/'.env'))
     return _accounts
+
+
+def bridge_token_ok(handler):
+    expected=read_environment(root()/'.env').get('TRIPPY_BRIDGE_TOKEN','').strip()
+    supplied=handler.headers.get('Authorization','')
+    supplied=supplied[7:] if supplied.startswith('Bearer ') else ''
+    return bool(expected) and bool(supplied) and hmac.compare_digest(expected,supplied)
 
 
 def session_person(handler):
@@ -389,7 +398,7 @@ def read_job(job_id):
 KNOWN_PATHS={'/api/status','/api/research','/api/social/extract','/api/social/status','/api/places/retain',
              '/api/places/search','/api/places/details','/api/places/photo','/api/places/hours','/api/usage/report',
              '/api/admin/summary','/api/admin/controls','/admin','/api/me','/api/auth/email/start','/api/auth/email/verify',
-             '/api/auth/apple','/api/auth/refresh','/api/auth/delete'}
+             '/api/auth/apple','/api/auth/refresh','/api/auth/delete','/api/auth/google/start','/api/auth/exchange','/api/account/data'}
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -433,11 +442,27 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not 0<length<=limit: raise ValueError('invalid_length')
         return json.loads(self.rfile.read(length))
 
+    def spend_credit(self,key,metric):
+        """Accounts spend monthly credits; the shared app token (development) does not.
+
+        Called after places_access_allowed passed, so no account here means the shared token.
+        """
+        if bridge_token_ok(self): return True
+        person=session_person(self)
+        if person is None: return True
+        from trippy.usage import credits, credit_left
+        if not credit_left(credits(recorder,controls,person.user_id,admin=person.admin),key):
+            self.send_json(429,{'error':'credits_used','message':'This month’s free credits are used.'}); return False
+        usage.hit(metric,person.user_id)
+        return True
+
     def auth(self,path):
         address=(self.headers.get('X-Forwarded-For') or self.client_address[0]).split(',')[0].strip()
         kind=path.rsplit('/',1)[-1]
-        limits={'start':(5,600),'verify':(10,600),'apple':(10,600),'refresh':(60,600),'delete':(5,600)}
-        if path not in ('/api/auth/email/start','/api/auth/email/verify','/api/auth/apple','/api/auth/refresh','/api/auth/delete'):
+        limits={'start':(5,600),'verify':(10,600),'apple':(10,600),'refresh':(60,600),'delete':(5,600),'exchange':(10,600)}
+        if path=='/api/auth/google/start': kind='google'; limits['google']=(20,600)
+        if path not in ('/api/auth/email/start','/api/auth/email/verify','/api/auth/apple','/api/auth/refresh','/api/auth/delete',
+                        '/api/auth/google/start','/api/auth/exchange'):
             self.send_json(404,{'error':'not_found'}); return
         if not accounts().allow(address,kind,*limits[kind]): self.send_json(429,{'error':'too_many_requests'}); return
         try:
@@ -447,11 +472,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             elif path=='/api/auth/email/verify': result=accounts().email_verify(body.get('email'),body.get('code'))
             elif path=='/api/auth/apple': result=accounts().apple(body.get('id_token'),body.get('nonce'))
             elif path=='/api/auth/refresh': result=accounts().refresh(body.get('refresh_token'))
+            elif path=='/api/auth/google/start': result=accounts().google_url(body.get('code_challenge'),body.get('redirect_to'))
+            elif path=='/api/auth/exchange': result=accounts().exchange(body.get('code'),body.get('code_verifier'))
             else:
                 person=session_person(self)
                 if person is None: self.send_json(401,{'error':'session_expired'}); return
                 result=accounts().delete(person)
-            if path in ('/api/auth/email/verify','/api/auth/apple'): usage.hit('account:sign_in',self.client_id)
+                try: user_data.delete(person.user_id)
+                except Exception: logging.warning('Account data delete failed')
+            if path in ('/api/auth/email/verify','/api/auth/apple','/api/auth/exchange'): usage.hit('account:sign_in',self.client_id)
             self.send_json(200,result)
         except AccountError as error: self.send_json(error.status,{'error':error.code})
         except (ValueError,TypeError,json.JSONDecodeError): self.send_json(422,{'error':'invalid_request'})
@@ -481,6 +510,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as error:
                 self.send_json(503,{'error':'usage_store_unavailable','type':type(error).__name__}); return
             summary['controls']=controls.snapshot()
+            try:
+                from trippy.capacity import build as capacity
+                from trippy.usage import today
+                summary['capacity']=capacity(recorder.rows(31),summary['controls'],today=today())
+            except Exception as error: summary['capacity']={'error':type(error).__name__}
             summary['busy']={'plan_running':state.is_running}
             self.send_json(200,summary); return
         self.send_json(404,{'error':'not_found'})
@@ -668,10 +702,18 @@ class RequestHandler(BaseHTTPRequestHandler):
         if target.path=='/admin':
             self.send_html(200,(root()/'admin'/'dashboard.html').read_text()); return
         if target.path.startswith('/api/admin/'): self.admin(target,'GET'); return
+        if target.path=='/api/account/data':
+            person=session_person(self)
+            if person is None: self.send_json(401,{'error':'session_expired'}); return
+            try: self.send_json(200,user_data.load(person.user_id))
+            except Exception: self.send_json(503,{'error':'storage_unavailable'})
+            return
         if target.path=='/api/me':
             person=session_person(self)
             if person is None: self.send_json(401,{'error':'session_expired'}); return
-            self.send_json(200,{'user_id':person.user_id,'email':person.email,'admin':person.admin}); return
+            from trippy.usage import credits
+            self.send_json(200,{'user_id':person.user_id,'email':person.email,'admin':person.admin,
+                                'credits':credits(recorder,controls,person.user_id,admin=person.admin)}); return
         if target.path.startswith('/api/places/'): self.google_places(target); return
         if target.path in ('/api/social/extract','/api/social/status'):
             if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
@@ -703,6 +745,14 @@ class RequestHandler(BaseHTTPRequestHandler):
         target=urlsplit(self.path)
         if target.path.startswith('/api/admin/'): self.admin(target,'POST'); return
         if target.path.startswith('/api/auth/'): self.auth(target.path); return
+        if target.path=='/api/account/data':
+            person=session_person(self)
+            if person is None: self.send_json(401,{'error':'session_expired'}); return
+            try: self.send_json(200,user_data.save(person.user_id,self.read_json(8_500_000).get('payload')))
+            except UserDataError as error: self.send_json(error.status,{'error':error.code})
+            except (ValueError,AttributeError,json.JSONDecodeError): self.send_json(422,{'error':'invalid_data'})
+            except Exception: self.send_json(503,{'error':'storage_unavailable'})
+            return
         if target.path=='/api/usage/report':
             if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
             if self.client_id=='unknown': self.send_json(422,{'error':'install_id_required'}); return
@@ -714,6 +764,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not places_access_allowed(self): self.send_json(401, {'error': 'access_token_required'}); return
             refusal=controls.refusal(self.client_id)
             if refusal: self.refuse(refusal); return
+            if not self.spend_credit('videos','credit:video'): return
             usage.hit('social:extract',self.client_id)
             try:
                 length = int(self.headers.get('Content-Length', '0'))
@@ -726,11 +777,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                           for i in (body.get('images') or [])[:35] if isinstance(i, dict) and i.get('data')]
                 audio = body.get('audio') or None
                 audio = (str(audio.get('mime', 'audio/mp4')), base64.b64decode(audio['data'])) if isinstance(audio, dict) and audio.get('data') else None
-                if not evidence and not images and not audio: raise ValueError('no_evidence')
+                video = body.get('video') or None
+                video = ('video/mp4', base64.b64decode(video['data'])) if isinstance(video, dict) and video.get('data') else None
+                if not evidence and not images and not audio and not video: raise ValueError('no_evidence')
             except (ValueError, KeyError, TypeError, json.JSONDecodeError, base64.binascii.Error):
                 self.send_json(422, {'error': 'invalid_social_source'}); return
             source = {'url': str(body.get('url') or '')[:500], 'author': str(body.get('author') or '')[:120],
-                      'evidence': evidence, 'images': images, 'audio': audio}
+                      'evidence': evidence, 'images': images, 'video': video, 'audio': audio}
             self.send_json(202, social_queue().submit(source_id, source)); return
         if urlsplit(self.path).path == '/api/places/retain':
             if not places_access_allowed(self): self.send_json(401, {'error': 'access_token_required'}); return
@@ -760,6 +813,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_json(401,{'error':'access_token_required'}); return
             refusal=controls.refusal(self.client_id,google=True,paid=True)
             if refusal: self.refuse(refusal); return
+            if isinstance(brief,dict) and brief.get('planning_strategy')=='personal_places' and not self.spend_credit('plans','credit:plan'): return
             job_id,brief=begin_job(brief)
         except RuntimeError:
             self.send_json(409,{'error':'research_already_running'}); return

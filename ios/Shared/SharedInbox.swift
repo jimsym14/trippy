@@ -253,7 +253,7 @@ final class TikTokPageReader {
 
     /// Reads the post; downloads slides (and the cover) into `folder` when given.
     /// Returns the snapshot plus local slide filenames in order.
-    func read(_ url: URL, into folder: URL?, maxSlides: Int = 12) async throws -> (TikTokPostSnapshot, slides: [String], cover: String?) {
+    func read(_ url: URL, into folder: URL?, maxSlides: Int = 35) async throws -> (TikTokPostSnapshot, slides: [String], cover: String?) {
         guard Self.isTikTok(url) else { throw TikTokReaderError.notTikTok }
         var (item, finalURL) = try await fetchItem(url)
         if item == nil, let alternate = Self.alternatePath(finalURL) {
