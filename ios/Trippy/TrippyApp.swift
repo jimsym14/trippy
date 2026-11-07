@@ -1550,6 +1550,8 @@ private struct TripFlowView: View {
     @State private var initialMapDidRender = false
     @State private var initialLogoDidLoad = false
     @State private var bridgeToken = ""
+    @State private var showOnboarding = OnboardingStore.shouldShow
+    @State private var tripGreeting: TripGreeting?
     @State private var trips: [Trip] = []
     @State private var cachedGeneralTripPins: [WorkspaceMapPin] = []
     @State private var rootTab = "map"
@@ -1728,6 +1730,10 @@ private struct TripFlowView: View {
         ZStack {
             if didBootstrap {
                 appContent
+                    .fullScreenCover(isPresented: $showOnboarding) { OnboardingFlow { showOnboarding = false } }
+                    .overlay(alignment: .top) {
+                        if let tripGreeting { TripGreetingBanner(greeting: tripGreeting) { self.tripGreeting = nil }.padding(.top, 54) }
+                    }
                     .sheet(item: $shareSummary, onDismiss: { shareSummaryLastSeen = Date.now.timeIntervalSince1970 }) { summary in
                         ShareSummarySheet(summary: summary, onDone: { shareSummary = nil },
                                           onOpenStudio: { shareSummary = nil; librarySection = "Videos"; rootTab = "library" },
@@ -1763,6 +1769,9 @@ private struct TripFlowView: View {
                                                 savedPlaces: saved, videos: videos)
             }
             withAnimation(.easeOut(duration: 0.22)) { didBootstrap = true }
+            if !showOnboarding && !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("-Trippy") }) {
+                Task { await openCurrentTrip() }
+            }
             #if DEBUG
             // Screenshot checks: `-TrippyStartScreen library|guide|composer`.
             // `-TrippyImportResearch <path> [-TrippyImportStay Trastevere]`: load a planner result as the first trip.
@@ -4741,6 +4750,7 @@ private struct TripFlowView: View {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue("Bearer \(bridgeToken)", forHTTPHeaderField: "Authorization")
                 request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
+                if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
                 // Every day starts from the stay: send it as the plan's base.
                 var body = briefContext
                 if let base = await planningBase(destination: brief.destination) { body["base"] = base }
@@ -6612,7 +6622,7 @@ private extension TripFlowView {
                 return WorkspaceMapPin(id: "trip-city:\(trip.id)", name: city, coordinate: coordinate,
                                        layer: "city", category: .other, city: city, badge: "1", tripID: trip.id, appearance: trip.appearance)
             },
-            routes: [], savedPlaces: $savedPlaces, destination: "", fallback: nil,
+            routes: [], savedPlaces: $savedPlaces, destination: "", fallback: HomeProfileStore.load()?.coordinate,
             categories: Set(MapPlaceCategory.allCases),
             placesBaseURL: bridgeBaseURL, placesAccessToken: bridgeToken,
             onPlacesSettings: { showPlacesSettings = true },
@@ -7384,6 +7394,30 @@ private extension TripFlowView {
             selectedTravelNoteID = id
         }
     }
+    /// On a trip right now (today is within its dates, and you're there or location is off):
+    /// open its map with a greeting instead of the general map.
+    func openCurrentTrip() async {
+        let today = GuideDates.parse(Date.now)
+        guard let trip = trips.first(where: { trip in
+            trip.research != nil && !trip.brief.startDate.isEmpty && !trip.brief.endDate.isEmpty
+                && trip.brief.startDate <= today && today <= trip.brief.endDate
+        }) else { return }
+        let city = trip.brief.destination
+        var target = cityCoordinates[city].map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        if target == nil { target = try? await CLGeocoder().geocodeAddressString(city).first?.location?.coordinate }
+        let manager = CLLocationManager()
+        let allowed = [.authorizedWhenInUse, .authorizedAlways].contains(manager.authorizationStatus)
+        if allowed, let here = manager.location, let target,
+           here.distance(from: CLLocation(latitude: target.latitude, longitude: target.longitude)) > 80_000 { return }
+        try? await Task.sleep(for: .seconds(1.2))
+        selectMapTrip(trip)
+        let day = (GuideDates.daysBetween(trip.brief.startDate, today) ?? 0) + 1
+        let total = (GuideDates.daysBetween(trip.brief.startDate, trip.brief.endDate) ?? 0) + 1
+        withAnimation(.spring(response: 0.55, dampingFraction: 0.8)) {
+            tripGreeting = TripGreeting(city: city, day: day, total: total)
+        }
+    }
+
     func selectMapTrip(_ trip: Trip) {
         activeScheduleDate = nil; alternativesForItemID = nil
         selectedScheduleDayIndex = nil; selectedMapDay = nil
@@ -9289,6 +9323,10 @@ private struct TrippyMapCanvas<Header: View>: View {
             if let base {
                 Annotation(base.name, coordinate: base.coordinate, anchor: .bottom) { BasePin() }
                     .annotationTitles(.automatic)
+            } else if destination.isEmpty, let home = HomeProfileStore.load(), home.city != nil, let point = home.coordinate {
+                // Where you live, from onboarding or Settings.
+                Annotation("Home", coordinate: point, anchor: .bottom) { HomePin() }
+                    .annotationTitles(.automatic)
             }
             ForEach(routes) { leg in
                 if let route = renderedRoutes[routeKey(leg)] {
@@ -10772,6 +10810,7 @@ private struct TrippyMapCanvas<Header: View>: View {
         request.timeoutInterval = timeout
         request.setValue("Bearer \(placesAccessToken)", forHTTPHeaderField: "Authorization")
         request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
+        if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
@@ -11426,6 +11465,7 @@ private struct TrippyMapCanvas<Header: View>: View {
             request.httpMethod = "POST"
             request.setValue("Bearer \(placesAccessToken)", forHTTPHeaderField: "Authorization")
             request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
+            if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try? JSONSerialization.data(withJSONObject: ["places": Array(records[offset..<min(offset + 100, records.count)])])
             do {
@@ -11486,6 +11526,7 @@ private struct TrippyMapCanvas<Header: View>: View {
         var request = URLRequest(url: url, timeoutInterval: 90)
         request.setValue("Bearer \(placesAccessToken)", forHTTPHeaderField: "Authorization")
         request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
+        if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -13415,6 +13456,7 @@ private actor PlacePhotoPipeline {
             var request = URLRequest(url: url)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
+            if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
             request.setValue("application/json, image/*", forHTTPHeaderField: "Accept")
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { continue }
@@ -14530,9 +14572,9 @@ private extension TripFlowView {
                     placesConnectionFeedback
                 }
                 Section {
-                    NavigationLink { AdminView(baseURL: bridgeBaseURL) } label: { Label("Admin", systemImage: "lock.shield") }
+                    NavigationLink { AccountView() } label: { Label("Account", systemImage: "person.crop.circle") }
                 } footer: {
-                    Text("Usage, limits and installs. Needs the separate admin token.")
+                    Text("Sign in, where you live, and the admin dashboard for admin accounts.")
                 }
             }
             .navigationTitle("Google Places")
@@ -14599,6 +14641,7 @@ private extension TripFlowView {
         request.timeoutInterval = 25
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
+        if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)

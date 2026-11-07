@@ -35,6 +35,8 @@ SETTINGS = [
     ('TRIPPY_STATS_DATABASE_URL', 'Stats database (keeps these numbers across restarts)', False),
     ('AZURE_OPENAI_API_KEY', 'Azure OpenAI key', False), ('AZURE_OPENAI_ENDPOINT', 'Azure OpenAI endpoint', False),
     ('YOUTUBE_API_KEY', 'YouTube key', False),
+    ('SUPABASE_URL', 'Accounts: Supabase project', False), ('SUPABASE_PUBLISHABLE_KEY', 'Accounts: Supabase publishable key', False),
+    ('SUPABASE_SECRET_KEY', 'Accounts: delete-account key', False), ('TRIPPY_ADMIN_EMAILS', 'Admin accounts', False),
 ]
 PUBLIC_VALUES = ['TRIPPY_ALLOW_PAID_RESEARCH', 'TRIPPY_AI_BUDGET_AMOUNT', 'TRIPPY_AI_BUDGET_CURRENCY']
 

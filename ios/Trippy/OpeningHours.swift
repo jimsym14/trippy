@@ -241,6 +241,7 @@ struct OpeningHoursQuery: Hashable {
         var request = URLRequest(url: url, timeoutInterval: 60)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
+        if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
         guard let (data, response) = try? await URLSession.shared.data(for: request), (response as? HTTPURLResponse)?.statusCode == 200,
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let byID = root["hours"] as? [String: [String: Any]] else { return false }

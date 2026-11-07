@@ -46,3 +46,14 @@ services:
       # Postgres for the dashboard's stats and admin controls (e.g. Supabase session pooler URL).
       - key: TRIPPY_STATS_DATABASE_URL
         sync: false
+      # Accounts (Supabase Auth, called only from this server; the app holds no Supabase key).
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      # Only for "Delete account" (Supabase secret / service key).
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      # Comma-separated emails whose accounts get the admin dashboard in the app.
+      - key: TRIPPY_ADMIN_EMAILS
+        sync: false

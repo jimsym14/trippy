@@ -1,13 +1,12 @@
 import SwiftUI
 import Security
 
-/// Admin rights inside the app: the same numbers and controls as the web dashboard (/admin),
-/// unlocked with the admin token. The token lives in the Keychain on this phone only and is
-/// never the app's normal access token, so a normal install can't reach these controls.
+/// Admin rights inside the app: the same numbers and controls as the web dashboard (/admin).
+/// Only reachable from an account the server says is admin, and every call is checked again
+/// on the server with that account's session; hiding the screen is not the protection.
 struct AdminView: View {
     let baseURL: String
-    @State private var token = AdminTokenStore.load()
-    @State private var entered = ""
+    @ObservedObject private var account = AccountSession.shared
     @State private var summary: AdminSummary?
     @State private var error: String?
     @State private var loading = false
@@ -17,11 +16,12 @@ struct AdminView: View {
 
     var body: some View {
         Group {
-            if token.isEmpty { unlock } else { content }
+            if account.isAdmin { content }
+            else { ContentUnavailableView("Admin accounts only", systemImage: "lock.shield", description: Text("Sign in with an admin account to see usage and controls.")) }
         }
         .navigationTitle("Admin")
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: token) { if !token.isEmpty { await load() } }
+        .task(id: account.isAdmin) { if account.isAdmin { await load() } }
         .refreshable { await load() }
         .alert("Daily Google limit", isPresented: Binding(get: { limitFor != nil }, set: { if !$0 { limitFor = nil } })) {
             TextField("Calls per day (empty = default)", text: $limitText).keyboardType(.numberPad)
@@ -32,23 +32,6 @@ struct AdminView: View {
                             titleVisibility: .visible) {
             Button("Block", role: .destructive) { if let install = confirmBlock { Task { await setBlocked(install, true) } } }
         } message: { Text("Its maps, plans and video requests will be refused until you unblock it.") }
-    }
-
-    private var unlock: some View {
-        Form {
-            Section {
-                SecureField("Admin token", text: $entered).textContentType(.password)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("Unlock") {
-                    let value = entered.trimmingCharacters(in: .whitespacesAndNewlines)
-                    AdminTokenStore.save(value); token = value; entered = ""
-                }
-                .disabled(entered.trimmingCharacters(in: .whitespaces).count < 24)
-            } footer: {
-                Text("TRIPPY_ADMIN_TOKEN from Render. It is kept in this phone's Keychain. The same page is at \(baseURL)/admin in any browser.")
-            }
-            if let error { Section { Text(error).foregroundStyle(.red) } }
-        }
     }
 
     @ViewBuilder private var content: some View {
@@ -109,9 +92,6 @@ struct AdminView: View {
             } else if loading {
                 Section { HStack { ProgressView(); Text("Loading…").foregroundStyle(.secondary) } }
             }
-            Section {
-                Button("Lock admin", role: .destructive) { AdminTokenStore.save(""); token = ""; summary = nil }
-            }
         }
     }
 
@@ -119,8 +99,9 @@ struct AdminView: View {
 
     private func request(_ path: String, body: [String: Any]? = nil) async throws -> Data {
         guard let url = URL(string: baseURL + path) else { throw URLError(.badURL) }
+        try await account.ensureFresh()
         var request = URLRequest(url: url, timeoutInterval: 25)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
         if let body {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -129,11 +110,11 @@ struct AdminView: View {
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
-            if status == 401 { AdminTokenStore.save(""); token = "" }
+            if status == 401 { await account.refreshRole() }
             let code = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
             throw NSError(domain: "Admin", code: status, userInfo: [NSLocalizedDescriptionKey: [
-                "admin_token_required": "That admin token isn't right.", "too_many_attempts": "Too many wrong tokens. Try again in 10 minutes.",
-                "admin_token_not_configured": "The admin token isn't set on the server yet.",
+                "admin_token_required": "This account isn't an admin.", "too_many_attempts": "Too many tries. Try again in 10 minutes.",
+                "admin_token_not_configured": "Admin isn't set up on the server yet.",
             ][code ?? ""] ?? "The server answered \(status)."])
         }
         return data
@@ -200,26 +181,5 @@ struct AdminSummary {
                             notes: c["notes"] as? [String: String] ?? [:])
         let h = root["health"] as? [String: Any] ?? [:]
         build = h["build"] as? String ?? ""; storage = h["storage"] as? String ?? ""
-    }
-}
-
-/// The admin token in the Keychain, this device only (not synced to iCloud).
-enum AdminTokenStore {
-    private static let service = "com.dimitrisymeonidis.trippy.admin"
-    static func load() -> String {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                    kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return "" }
-        return String(decoding: data, as: UTF8.self)
-    }
-    static func save(_ value: String) {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service]
-        SecItemDelete(query as CFDictionary)
-        guard !value.isEmpty else { return }
-        var item = query
-        item[kSecValueData as String] = Data(value.utf8)
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        SecItemAdd(item as CFDictionary, nil)
     }
 }

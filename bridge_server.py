@@ -53,6 +53,19 @@ _env_at_start=read_environment(Path(__file__).resolve().parent/'.env')
 recorder=Usage(Path(__file__).resolve().parent/'.local/usage/usage.json', _env_at_start.get('TRIPPY_STATS_DATABASE_URL'))
 usage.install(recorder)
 controls=Controls(recorder)
+
+from trippy.accounts import Accounts, AccountError
+_accounts=None
+def accounts():
+    """Account settings are read once; changing them in Render takes effect after the restart a change triggers."""
+    global _accounts
+    if _accounts is None: _accounts=Accounts(read_environment(root()/'.env'))
+    return _accounts
+
+
+def session_person(handler):
+    token=(handler.headers.get('X-Trippy-Session') or '').strip()
+    return accounts().person(token) if token else None
 admin_failures={}
 admin_lock=threading.Lock()
 
@@ -68,9 +81,12 @@ def admin_allowed(handler):
         if len(recent)>=8: return 'locked'
     supplied=handler.headers.get('Authorization','')
     supplied=supplied[7:] if supplied.startswith('Bearer ') else ''
-    if len(expected)>=24 and hmac.compare_digest(expected,supplied): return 'ok'
+    if len(expected)>=24 and supplied and hmac.compare_digest(expected,supplied): return 'ok'
+    # An account the server lists in TRIPPY_ADMIN_EMAILS.
+    person=session_person(handler)
+    if person and person.admin: return 'ok'
     with admin_lock: admin_failures.setdefault(address,[]).append(now)
-    return 'disabled' if len(expected)<24 else 'denied'
+    return 'disabled' if len(expected)<24 and not accounts().admins else 'denied'
 places_limit_lock=threading.Lock()
 places_request_times=[]
 photo_request_times=[]
@@ -82,10 +98,12 @@ def places_key():
 
 
 def places_access_allowed(handler):
+    """The app's shared token, or a signed-in Trippy account."""
     expected=read_environment(root()/'.env').get('TRIPPY_BRIDGE_TOKEN','').strip()
     supplied=handler.headers.get('Authorization','')
     supplied=supplied[7:] if supplied.startswith('Bearer ') else ''
-    return bool(expected) and hmac.compare_digest(expected,supplied)
+    if bool(expected) and hmac.compare_digest(expected,supplied): return True
+    return session_person(handler) is not None
 
 
 def allow_places_request(kind='places'):
@@ -370,7 +388,8 @@ def read_job(job_id):
 
 KNOWN_PATHS={'/api/status','/api/research','/api/social/extract','/api/social/status','/api/places/retain',
              '/api/places/search','/api/places/details','/api/places/photo','/api/places/hours','/api/usage/report',
-             '/api/admin/summary','/api/admin/controls','/admin'}
+             '/api/admin/summary','/api/admin/controls','/admin','/api/me','/api/auth/email/start','/api/auth/email/verify',
+             '/api/auth/apple','/api/auth/refresh','/api/auth/delete'}
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -413,6 +432,29 @@ class RequestHandler(BaseHTTPRequestHandler):
         length=int(self.headers.get('Content-Length','0'))
         if not 0<length<=limit: raise ValueError('invalid_length')
         return json.loads(self.rfile.read(length))
+
+    def auth(self,path):
+        address=(self.headers.get('X-Forwarded-For') or self.client_address[0]).split(',')[0].strip()
+        kind=path.rsplit('/',1)[-1]
+        limits={'start':(5,600),'verify':(10,600),'apple':(10,600),'refresh':(60,600),'delete':(5,600)}
+        if path not in ('/api/auth/email/start','/api/auth/email/verify','/api/auth/apple','/api/auth/refresh','/api/auth/delete'):
+            self.send_json(404,{'error':'not_found'}); return
+        if not accounts().allow(address,kind,*limits[kind]): self.send_json(429,{'error':'too_many_requests'}); return
+        try:
+            body=self.read_json(20000) if int(self.headers.get('Content-Length','0') or 0) else {}
+            if not isinstance(body,dict): raise ValueError('object_required')
+            if path=='/api/auth/email/start': result=accounts().email_start(body.get('email'))
+            elif path=='/api/auth/email/verify': result=accounts().email_verify(body.get('email'),body.get('code'))
+            elif path=='/api/auth/apple': result=accounts().apple(body.get('id_token'),body.get('nonce'))
+            elif path=='/api/auth/refresh': result=accounts().refresh(body.get('refresh_token'))
+            else:
+                person=session_person(self)
+                if person is None: self.send_json(401,{'error':'session_expired'}); return
+                result=accounts().delete(person)
+            if path in ('/api/auth/email/verify','/api/auth/apple'): usage.hit('account:sign_in',self.client_id)
+            self.send_json(200,result)
+        except AccountError as error: self.send_json(error.status,{'error':error.code})
+        except (ValueError,TypeError,json.JSONDecodeError): self.send_json(422,{'error':'invalid_request'})
 
     def admin(self,target,method):
         verdict=admin_allowed(self)
@@ -626,6 +668,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         if target.path=='/admin':
             self.send_html(200,(root()/'admin'/'dashboard.html').read_text()); return
         if target.path.startswith('/api/admin/'): self.admin(target,'GET'); return
+        if target.path=='/api/me':
+            person=session_person(self)
+            if person is None: self.send_json(401,{'error':'session_expired'}); return
+            self.send_json(200,{'user_id':person.user_id,'email':person.email,'admin':person.admin}); return
         if target.path.startswith('/api/places/'): self.google_places(target); return
         if target.path in ('/api/social/extract','/api/social/status'):
             if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
@@ -656,6 +702,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         target=urlsplit(self.path)
         if target.path.startswith('/api/admin/'): self.admin(target,'POST'); return
+        if target.path.startswith('/api/auth/'): self.auth(target.path); return
         if target.path=='/api/usage/report':
             if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
             if self.client_id=='unknown': self.send_json(422,{'error':'install_id_required'}); return
@@ -676,7 +723,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 evidence = [{'origin': str(b.get('origin', ''))[:40], 'text': str(b.get('text', ''))[:40000]}
                             for b in (body.get('evidence') or [])[:40] if isinstance(b, dict)]
                 images = [(str(i.get('mime', 'image/jpeg')), base64.b64decode(i['data']))
-                          for i in (body.get('images') or [])[:12] if isinstance(i, dict) and i.get('data')]
+                          for i in (body.get('images') or [])[:35] if isinstance(i, dict) and i.get('data')]
                 audio = body.get('audio') or None
                 audio = (str(audio.get('mime', 'audio/mp4')), base64.b64decode(audio['data'])) if isinstance(audio, dict) and audio.get('data') else None
                 if not evidence and not images and not audio: raise ValueError('no_evidence')
