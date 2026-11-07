@@ -41,7 +41,9 @@ CASES = [
      # Simulates a city without creator videos: only Overture + Wikidata + Wikivoyage.
      'disable_videos': True, 'min_video_share': 0.0},
     {'id': 'seven-days', 'days': ('2026-12-10', '2026-12-16'), 'interests': ['attraction', 'food'],
-     'text': 'Museums, art and good local food', 'themes': {'art'}},
+     'text': 'Museums, art and good local food', 'themes': {'art'}, 'min_video_share': 0.2},
+    # Seven days now hold quick in-between stops (squares, fountains, churches), so the
+    # same 7 creator-video places are a smaller share of a longer plan (2026-11-07).
 ]
 UNSUITABLE = {'movie_theater', 'drive_in_theater', 'theatre_venue', 'fast_food_restaurant', 'petting_zoo',
               'dog_park', 'skate_park', 'home_theater_systems_stores'}

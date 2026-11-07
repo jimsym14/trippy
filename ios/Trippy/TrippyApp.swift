@@ -1758,6 +1758,23 @@ private struct TripFlowView: View {
             withAnimation(.easeOut(duration: 0.22)) { didBootstrap = true }
             #if DEBUG
             // Screenshot checks: `-TrippyStartScreen library|guide|composer`.
+            // `-TrippyImportResearch <path> [-TrippyImportStay Trastevere]`: load a planner result as the first trip.
+            if let path = UserDefaults.standard.string(forKey: "TrippyImportResearch"), let json = try? String(contentsOfFile: path, encoding: .utf8),
+               let root = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] {
+                let days = ((root["itinerary"] as? [String: Any])?["days"] as? [[String: Any]]) ?? []
+                var imported = TripBrief()
+                imported.destination = (root["map_overview"] as? [String: Any])?["title"] as? String ?? "Rome"
+                imported.startDate = days.first?["date"] as? String ?? ""; imported.endDate = days.last?["date"] as? String ?? ""
+                imported.duration = max(days.count, 1); imported.travelers = 6
+                var trip = Trip(brief: imported); trip.research = json; trip.customName = imported.destination + " · imported"
+                trips.removeAll { $0.customName == trip.customName }; trips.insert(trip, at: 0)
+                if let stay = UserDefaults.standard.string(forKey: "TrippyImportStay"), let base = (root["itinerary"] as? [String: Any])?["base"] as? [String: Any] {
+                    var edits = GuideEditsStore.load(trip.id, travelers: 6)
+                    edits.flight.stayName = stay
+                    edits.flight.stayLatitude = (base["latitude"] as? NSNumber)?.doubleValue; edits.flight.stayLongitude = (base["longitude"] as? NSNumber)?.doubleValue
+                    GuideEditsStore.save(edits, id: trip.id)
+                }
+            }
             switch UserDefaults.standard.string(forKey: "TrippyStartScreen") {
             case "library": rootTab = "library"; libraryHasMounted = true
             case "guide": rootTab = "library"; libraryHasMounted = true
@@ -4716,7 +4733,10 @@ private struct TripFlowView: View {
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue("Bearer \(bridgeToken)", forHTTPHeaderField: "Authorization")
-                request.httpBody = try? JSONSerialization.data(withJSONObject: briefContext)
+                // Every day starts from the stay: send it as the plan's base.
+                var body = briefContext
+                if let base = await planningBase(destination: brief.destination) { body["base"] = base }
+                request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
                 let (startData, response) = try await URLSession.shared.data(for: request)
                 if let http = response as? HTTPURLResponse, http.statusCode == 409 {
@@ -5187,6 +5207,18 @@ private struct TripFlowView: View {
         return []
     }
     private var sourceRecords: [[String: Any]] { records(["sources", "references"]) }
+    /// The stay: what the traveller typed (located on the phone), else the plan's own base.
+    var tripBase: GuideBase? {
+        if let id = activeTripID {
+            let flight = GuideEditsStore.load(id, travelers: brief.travelers).flight
+            if let lat = flight.stayLatitude, let lon = flight.stayLongitude, !flight.stayName.isEmpty {
+                return GuideBase(name: flight.stayName, latitude: lat, longitude: lon)
+            }
+        }
+        guard let base = (researchRoot["itinerary"] as? [String: Any])?["base"] as? [String: Any],
+              let lat = (base["latitude"] as? NSNumber)?.doubleValue, let lon = (base["longitude"] as? NSNumber)?.doubleValue else { return nil }
+        return GuideBase(name: base["name"] as? String ?? "Your stay", latitude: lat, longitude: lon)
+    }
     private var mapPoints: [ResearchMapPoint] {
         let places = placeRecords.enumerated().compactMap { index, place -> ResearchMapPoint? in
             guard let coordinate = placeCoordinate(place), (-90...90).contains(coordinate.latitude), (-180...180).contains(coordinate.longitude) else { return nil }
@@ -6955,6 +6987,16 @@ private extension TripFlowView {
         if let id = activeTripID, let index = trips.firstIndex(where: { $0.id == id }) {
             trips[index].brief = next; trips[index].research = nil; trips[index].researchJobID = nil; TripStorage.save(trips)
         }
+        // The guide shows flights and stay from the first open, and the stay is the plan's base.
+        if let id = activeTripID {
+            var edits = GuideEditsStore.load(id, travelers: next.travelers)
+            if !result.arrivalTime.isEmpty { edits.flight.arrivalTime = result.arrivalTime }
+            if !result.departureTime.isEmpty { edits.flight.departureTime = result.departureTime }
+            if !result.stay.isEmpty && edits.flight.stayName != result.stay {
+                edits.flight.stayName = result.stay; edits.flight.stayLatitude = nil; edits.flight.stayLongitude = nil
+            }
+            GuideEditsStore.save(edits, id: id)
+        }
         startLiveResearch()
         let chosenName = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !chosenName.isEmpty, let id = activeTripID, let index = trips.firstIndex(where: { $0.id == id }) {
@@ -6964,14 +7006,24 @@ private extension TripFlowView {
         if let look = result.look, let id = activeTripID {
             var looks = ShelfLookStore.load(); looks[id.uuidString] = look; ShelfLookStore.save(looks)
         }
-        // The guide shows flights and stay from the first open.
-        if let id = activeTripID {
-            var edits = GuideEditsStore.load(id, travelers: next.travelers)
-            if !result.arrivalTime.isEmpty { edits.flight.arrivalTime = result.arrivalTime }
-            if !result.departureTime.isEmpty { edits.flight.departureTime = result.departureTime }
-            if !result.stay.isEmpty && edits.flight.stayName.isEmpty { edits.flight.stayName = result.stay }
-            GuideEditsStore.save(edits, id: id)
+    }
+    /// The trip's stay (typed in the composer or in "Flights and stay") as a point:
+    /// stored coordinates when known, otherwise found on the phone from its name.
+    private func planningBase(destination: String) async -> [String: Any]? {
+        guard let id = activeTripID else { return nil }
+        var edits = GuideEditsStore.load(id, travelers: brief.travelers)
+        let name = edits.flight.stayName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return nil }
+        if edits.flight.stayLatitude == nil {
+            let query = name.localizedCaseInsensitiveContains(destination) ? name : "\(name), \(destination)"
+            if let found = try? await CLGeocoder().geocodeAddressString(query).first?.location?.coordinate {
+                edits.flight.stayLatitude = found.latitude; edits.flight.stayLongitude = found.longitude
+                GuideEditsStore.save(edits, id: id)
+            }
         }
+        guard let lat = edits.flight.stayLatitude, let lon = edits.flight.stayLongitude else { return nil }
+        return ["name": name, "latitude": lat, "longitude": lon,
+                "address": edits.flight.stayAddress.isEmpty ? NSNull() : edits.flight.stayAddress as Any]
     }
     private func completeLibraryTrip(_ id: UUID) {
         guard let index = trips.firstIndex(where: { $0.id == id }) else { return }
@@ -7397,7 +7449,14 @@ private extension TripFlowView {
     var workspaceRouteLegs: [TripRouteLeg] {
         guard mapLayers.contains("planned") else { return [] }
         var legs: [TripRouteLeg] = []
+        let base = tripBase
         for (dayIndex, day) in dayRecords.enumerated() where selectedMapDay == nil || selectedMapDay == dayIndex {
+            // Each day leaves from the stay.
+            if let base, let firstID = scheduleIDs(day, index: dayIndex).first,
+               let first = workspacePin(itemID: firstID, day: day, dayIndex: dayIndex, stopIndex: 0) {
+                legs.append(TripRouteLeg(id: "\(activeTripID?.uuidString ?? ""):\(dayIndex):base:\(firstID)", day: dayIndex,
+                                         from: base.coordinate, to: first.coordinate, walking: routePreviewMode == "walking"))
+            }
             let ids = scheduleIDs(day, index: dayIndex)
             guard ids.count > 1 else { continue }
             for index in 1..<ids.count {
@@ -7432,6 +7491,7 @@ private extension TripFlowView {
             detailsDetent = .large; showTripDetails = true
         },
                         searchRequestID: tripMapSearchRequestID, onSearchRequestHandled: { tripMapSearchRequestID = nil },
+                        base: tripBase,
                         onNewTrip: { startNewTrip() }, onCreateNote: { place, tripID in
                             let id = UUID(); let linked = linkedPlaceReference(place); travelNotes.insert(TravelNote(id: id, title: place.name, tripID: tripID, sourceIDs: [], userText: place.address, updatedAt: .now, linkedPlaceIDs: [place.id], linkedPlaces: [linked]), at: 0); selectedTravelNoteID = id
                         }, noteChoices: travelNotes.map { MapNoteChoice(id: $0.id, title: $0.title, tripID: $0.tripID) },
@@ -8795,6 +8855,7 @@ private struct TrippyMapCanvas<Header: View>: View {
     var focusPlaceID: String? = nil
     var searchRequestID: UUID? = nil
     var onSearchRequestHandled: (() -> Void)? = nil
+    var base: GuideBase? = nil
     var onNewTrip: (() -> Void)? = nil
     var onCreateNote: ((PersonalPlace, UUID?) -> Void)? = nil
     var noteChoices: [MapNoteChoice] = []
@@ -9217,9 +9278,18 @@ private struct TrippyMapCanvas<Header: View>: View {
                 Annotation(place.name, coordinate: place.coordinate) { pinButton(place) }
                     .annotationTitles(.automatic)
             }
+            if let base {
+                Annotation(base.name, coordinate: base.coordinate, anchor: .bottom) { BasePin() }
+                    .annotationTitles(.automatic)
+            }
             ForEach(routes) { leg in
                 if let route = renderedRoutes[routeKey(leg)] {
-                    MapPolyline(route.polyline).stroke(routeColor(leg.day).opacity(0.8), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                    if leg.id.contains(":base:") {
+                        // The way from the stay to the day's first stop: lighter, dotted.
+                        MapPolyline(route.polyline).stroke(routeColor(leg.day).opacity(0.45), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round, dash: [1, 8]))
+                    } else {
+                        MapPolyline(route.polyline).stroke(routeColor(leg.day).opacity(0.8), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                    }
                 }
             }
             if let directionsRoute {

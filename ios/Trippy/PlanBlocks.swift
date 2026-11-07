@@ -440,8 +440,14 @@ struct SlotRow: View {
     let onPick: (SlotOption?) -> Void
     let onMove: (Int) -> Void
     let onRemove: () -> Void
+    /// The stops before and after this block, and the stay: context on the options map.
+    var neighbors: [GuidePlace] = []
+    var base: GuideBase? = nil
     @StateObject private var pool = SlotOptionsModel()
     @State private var showAll = false
+    #if DEBUG
+    @MainActor static var debugOpened = false
+    #endif
 
     private var picked: Bool { slot.pickedID != nil }
     private var others: [SlotOption] { pool.options.filter { $0.id != slot.pickedID } }
@@ -489,9 +495,19 @@ struct SlotRow: View {
         .task(id: "\(slot.kind.rawValue)|\(slot.latitude ?? 0)|\(slot.longitude ?? 0)") {
             await pool.load(kind: slot.kind, latitude: slot.latitude, longitude: slot.longitude, planPlaces: planPlaces)
         }
+        #if DEBUG
+        .task {
+            // `-TrippyGuideBlockSheet lunch` opens the first such block's options for screenshots.
+            guard let kind = UserDefaults.standard.string(forKey: "TrippyGuideBlockSheet"), kind == slot.kind.rawValue,
+                  !SlotRow.debugOpened else { return }
+            SlotRow.debugOpened = true
+            try? await Task.sleep(for: .seconds(6)); showAll = true
+        }
+        #endif
         .sheet(isPresented: $showAll) {
             SlotOptionsSheet(kind: slot.kind, latitude: slot.latitude, longitude: slot.longitude, options: pool.options,
-                             loading: pool.loading, pickedID: slot.pickedID, suggestedID: slot.suggestedID, color: color) { choice in
+                             loading: pool.loading, pickedID: slot.pickedID, suggestedID: slot.suggestedID, color: color,
+                             neighbors: neighbors, base: base) { choice in
                 onPick(choice); showAll = false
             }
         }
@@ -590,6 +606,9 @@ private struct OptionTile: View {
 
 // MARK: - All options
 
+/// All options for one block on one map: the area, the stops around it and the
+/// stay for context; numbered pins match the cards below. A list with search is
+/// one tap away for when you know what you want.
 struct SlotOptionsSheet: View {
     let kind: SlotKind
     let latitude: Double?
@@ -599,8 +618,13 @@ struct SlotOptionsSheet: View {
     let pickedID: String?
     let suggestedID: String?
     let color: Color
+    var neighbors: [GuidePlace] = []
+    var base: GuideBase? = nil
     let onChoose: (SlotOption?) -> Void
     @State private var query = ""
+    @State private var focused: String?
+    @State private var showList = false
+    @State private var camera: MapCameraPosition = .automatic
     @Environment(\.dismiss) private var dismiss
 
     private var filtered: [SlotOption] {
@@ -608,34 +632,15 @@ struct SlotOptionsSheet: View {
         guard !q.isEmpty else { return options }
         return options.filter { $0.place.name.localizedCaseInsensitiveContains(q) || ($0.place.address ?? "").localizedCaseInsensitiveContains(q) }
     }
+    /// Plan picks first, then nearest: the order of pins and cards.
+    private var ranked: [SlotOption] { Array(filtered.prefix(30)) }
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    Button { onChoose(nil) } label: {
-                        Label {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Decide on the day").font(Sketch.text(15, "SemiBold", relativeTo: .body))
-                                Text("Keep the block, pick a place when you're there").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
-                            }
-                        } icon: { Image(systemName: pickedID == nil ? "checkmark.circle.fill" : "clock").foregroundStyle(color) }
-                    }.frame(minHeight: 44)
-                }
-                let planned = filtered.filter(\.fromPlan)
-                if !planned.isEmpty {
-                    Section("Recommended for this plan") { ForEach(planned) { row($0) } }
-                }
-                let nearby = filtered.filter { !$0.fromPlan }
-                Section {
-                    ForEach(nearby) { row($0) }
-                    if loading { HStack { ProgressView(); Text("Looking around…").foregroundStyle(Sketch.inkSoft) } }
-                    else if nearby.isEmpty { Text("No other places found nearby.").foregroundStyle(Sketch.inkSoft) }
-                } header: { Text("More nearby") } footer: { Text("Nearby places from Apple Maps.") }
+            Group {
+                if showList { list } else { mapAndCards }
             }
-            .listStyle(.insetGrouped)
-            .searchable(text: $query, prompt: "Search \(options.count) places")
-            .navigationTitle(kind.title).navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .principal) {
@@ -644,11 +649,109 @@ struct SlotOptionsSheet: View {
                         AreaLabel(latitude: latitude, longitude: longitude).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
                     }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button { withAnimation(.snappy) { showList.toggle() } } label: {
+                        Image(systemName: showList ? "map" : "list.bullet")
+                    }
+                    .accessibilityLabel(showList ? "Show map" : "Show list")
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                Button { onChoose(nil) } label: {
+                    Label(pickedID == nil ? "Deciding on the day" : "Decide on the day instead", systemImage: "clock")
+                        .font(Sketch.text(14, "SemiBold", relativeTo: .subheadline)).foregroundStyle(Sketch.ink)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .background(Capsule().fill(Sketch.paperDeep))
+                }
+                .padding(.horizontal, 16).padding(.bottom, 8)
+                .accessibilityHint("Keeps the block without a place")
             }
         }
         .tint(color)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .onAppear { focused = pickedID ?? ranked.first?.id }
+    }
+
+    // MARK: Map + cards
+
+    private var mapAndCards: some View {
+        VStack(spacing: 0) {
+            Map(position: $camera, selection: $focused) {
+                if let latitude, let longitude {
+                    MapCircle(center: .init(latitude: latitude, longitude: longitude), radius: 450)
+                        .foregroundStyle(color.opacity(0.08)).stroke(color.opacity(0.35), lineWidth: 1)
+                }
+                if let base {
+                    Annotation(base.name, coordinate: base.coordinate, anchor: .bottom) { BasePin() }
+                }
+                ForEach(Array(neighbors.enumerated()), id: \.offset) { _, place in
+                    if let c = place.coordinate {
+                        Annotation(place.name, coordinate: c) {
+                            Image(systemName: place.symbol).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                                .frame(width: 24, height: 24).background(Circle().fill(Sketch.inkSoft))
+                                .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
+                        }
+                    }
+                }
+                ForEach(Array(ranked.enumerated()), id: \.element.id) { index, option in
+                    if let c = option.place.coordinate {
+                        Annotation(option.place.name, coordinate: c) {
+                            OptionPin(number: index + 1, selected: focused == option.id, chosen: option.id == pickedID,
+                                      fromPlan: option.fromPlan, tint: color)
+                        }
+                        .tag(option.id)
+                        .annotationTitles(focused == option.id ? .visible : .hidden)
+                    }
+                }
+            }
+            .mapStyle(.standard(pointsOfInterest: .excludingAll))
+            .frame(maxHeight: .infinity)
+            if loading && options.isEmpty {
+                ProgressView("Looking around…").padding()
+            }
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 12) {
+                        ForEach(Array(ranked.enumerated()), id: \.element.id) { index, option in
+                            OptionCard(option: option, number: index + 1, chosen: option.id == pickedID,
+                                       suggested: option.id == suggestedID, tint: color) { onChoose(option) }
+                                .id(option.id)
+                                .onTapGesture { withAnimation(.snappy) { focused = option.id } }
+                        }
+                    }
+                    .scrollTargetLayout()
+                    .padding(.horizontal, 16)
+                }
+                .scrollTargetBehavior(.viewAligned)
+                .scrollPosition(id: $focused, anchor: .center)
+                .frame(height: 252)
+                .onChange(of: focused) { _, id in
+                    // Keep the focused card and pin together, whichever was tapped.
+                    if let id { withAnimation(.snappy) { proxy.scrollTo(id, anchor: .center) } }
+                }
+            }
+            .padding(.vertical, 10)
+        }
+    }
+
+    // MARK: List
+
+    private var list: some View {
+        List {
+            let planned = filtered.filter(\.fromPlan)
+            if !planned.isEmpty {
+                Section("Recommended for this plan") { ForEach(planned) { row($0) } }
+            }
+            let nearby = filtered.filter { !$0.fromPlan }
+            Section {
+                ForEach(nearby) { row($0) }
+                if loading { HStack { ProgressView(); Text("Looking around…").foregroundStyle(Sketch.inkSoft) } }
+                else if nearby.isEmpty { Text("No other places found nearby.").foregroundStyle(Sketch.inkSoft) }
+            } header: { Text("More nearby") } footer: { Text("Nearby places from Apple Maps.") }
+        }
+        .listStyle(.insetGrouped)
+        .searchable(text: $query, prompt: "Search \(options.count) places")
     }
 
     private func row(_ option: SlotOption) -> some View {
@@ -658,7 +761,8 @@ struct SlotOptionsSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 VStack(alignment: .leading, spacing: 3) {
                     Text(option.place.name).font(Sketch.text(15, "SemiBold", relativeTo: .body)).foregroundStyle(Sketch.ink)
-                    Text(detail(option)).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).lineLimit(2)
+                    Text(OptionCard.detail(option, suggested: option.id == suggestedID)).font(Sketch.text(12, relativeTo: .caption))
+                        .foregroundStyle(Sketch.inkSoft).lineLimit(2)
                 }
                 Spacer(minLength: 4)
                 if option.id == pickedID { Image(systemName: "checkmark").font(.system(size: 14, weight: .bold)).foregroundStyle(color) }
@@ -667,13 +771,71 @@ struct SlotOptionsSheet: View {
         }
         .accessibilityAddTraits(option.id == pickedID ? .isSelected : [])
     }
+}
 
-    private func detail(_ option: SlotOption) -> String {
+/// A numbered option on the block map.
+private struct OptionPin: View {
+    let number: Int
+    let selected: Bool
+    let chosen: Bool
+    let fromPlan: Bool
+    let tint: Color
+    var body: some View {
+        Text("\(number)").font(.system(size: selected ? 13 : 11, weight: .heavy, design: .rounded)).monospacedDigit()
+            .foregroundStyle(selected || chosen ? .white : tint)
+            .frame(width: selected ? 32 : 24, height: selected ? 32 : 24)
+            .background(Circle().fill(selected || chosen ? tint : Sketch.card))
+            .overlay(Circle().strokeBorder(fromPlan ? tint : Sketch.rule, lineWidth: fromPlan ? 2 : 1))
+            .shadow(color: .black.opacity(0.18), radius: 3, y: 1.5)
+            .animation(.snappy, value: selected)
+    }
+}
+
+/// A large card for one option: photo, what it is, how far, and choose.
+private struct OptionCard: View {
+    let option: SlotOption
+    let number: Int
+    let chosen: Bool
+    let suggested: Bool
+    let tint: Color
+    let onChoose: () -> Void
+    static func detail(_ option: SlotOption, suggested: Bool) -> String {
         var parts: [String] = []
-        if option.id == suggestedID { parts.append("Planner's pick") }
+        if suggested { parts.append("Planner's pick") } else if option.fromPlan { parts.append("Fits your plan") }
         if let walk = option.walk { parts.append(walk) }
         if let rating = option.place.rating { parts.append("★ \(rating.formatted(.number.precision(.fractionLength(1))))") }
-        if let address = option.place.address { parts.append(address) }
         return parts.joined(separator: " · ")
     }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            PlacePhoto(place: option.place, tint: tint).frame(width: 260, height: 120)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(alignment: .topLeading) {
+                    Text("\(number)").font(.system(size: 12, weight: .heavy, design: .rounded)).foregroundStyle(.white)
+                        .frame(width: 24, height: 24).background(Circle().fill(tint)).padding(8)
+                }
+            Text(option.place.name).font(Sketch.text(16, "Bold", relativeTo: .headline)).foregroundStyle(Sketch.ink).lineLimit(1)
+            Text(Self.detail(option, suggested: suggested)).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
+            if let address = option.place.address {
+                Text(address).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkFaint).lineLimit(1)
+            }
+            Button(action: onChoose) {
+                Text(chosen ? "Chosen" : "Choose").font(Sketch.text(14, "Bold", relativeTo: .subheadline))
+                    .foregroundStyle(chosen ? tint : .white)
+                    .frame(maxWidth: .infinity, minHeight: 40)
+                    .background(Capsule().fill(chosen ? tint.opacity(0.12) : tint))
+            }
+            .buttonStyle(SketchPressStyle())
+            .accessibilityLabel(chosen ? "\(option.place.name), chosen" : "Choose \(option.place.name)")
+        }
+        .padding(10)
+        .frame(width: 280)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(chosen ? tint : Sketch.rule, lineWidth: chosen ? 2 : 0.7))
+    }
+}
+
+extension Array {
+    /// nil instead of a crash for an index outside the array.
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }

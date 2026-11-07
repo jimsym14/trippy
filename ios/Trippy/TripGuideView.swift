@@ -49,6 +49,9 @@ struct TripGuideView: View {
                         case .day(let date):
                             if let day = ctx.days.first(where: { $0.date == date }) {
                                 DayView(day: day, ctx: ctx, edits: $edits, editing: editingDays, beforeRemove: rememberForUndo)
+                                if day.date == ctx.days.last?.date {
+                                    LeftOutSection(items: ctx.leftOut) { placeID, date in append(placeID, to: date, ctx: ctx) }
+                                }
                             }
                         }
                     }
@@ -73,6 +76,9 @@ struct TripGuideView: View {
             .task { if UserDefaults.standard.bool(forKey: "TrippyGuideFacts") { try? await Task.sleep(for: .seconds(1)); showFacts = true } }
             .task {
                 // `-TrippyGuideDay 1 [-TrippyGuideEdit YES]` scrolls to a day for screenshots.
+                if let name = UserDefaults.standard.string(forKey: "TrippyGuideSection"), let section = GuideSection(rawValue: name) {
+                    try? await Task.sleep(for: .seconds(1.5)); scrolledID = .section(section); return
+                }
                 let n = UserDefaults.standard.integer(forKey: "TrippyGuideDay")
                 guard n > 0 else { return }
                 try? await Task.sleep(for: .seconds(1.5))
@@ -97,6 +103,25 @@ struct TripGuideView: View {
             }
         }
         .onChange(of: edits) { _, value in if loaded { GuideEditsStore.save(value, id: input.tripID) } }
+        .task(id: edits.flight.stayName) { await locateStay() }
+    }
+
+    /// Adds a place at the end of a day (the day re-sorts by time).
+    private func append(_ placeID: String, to date: String, ctx: GuideContext) {
+        let ids = ctx.days.first { $0.date == date }?.stops.map(\.itemID) ?? []
+        guard !ids.contains(placeID) else { return }
+        withAnimation(reduceMotion ? nil : .snappy) { edits.order[date] = ids + [placeID] }
+    }
+
+    /// The stay's name becomes a point on the map, so every day can start there.
+    private func locateStay() async {
+        let name = edits.flight.stayName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { edits.flight.stayLatitude = nil; edits.flight.stayLongitude = nil; return }
+        try? await Task.sleep(for: .milliseconds(900))   // wait until typing pauses
+        guard !Task.isCancelled else { return }
+        let query = name.localizedCaseInsensitiveContains(input.destination) ? name : "\(name), \(input.destination)"
+        guard let found = try? await CLGeocoder().geocodeAddressString(query).first?.location?.coordinate, !Task.isCancelled else { return }
+        edits.flight.stayLatitude = found.latitude; edits.flight.stayLongitude = found.longitude
     }
 
     @ViewBuilder private var undoBar: some View {
@@ -154,7 +179,7 @@ struct TripGuideView: View {
 
     private func icon(_ section: GuideSection) -> TrippyIcon {
         switch section {
-        case .glance: .list; case .map: .map; case .calendar: .calendar; case .days: .clock; case .book: .ticket
+        case .glance: .list; case .map, .areas: .map; case .calendar: .calendar; case .days: .clock; case .book: .ticket
         case .tickets: .ticket; case .transport: .tram; case .food: .fork; case .budget: .euro; case .checklist: .check
         case .unknowns: .question
         }
@@ -167,8 +192,10 @@ struct TripGuideView: View {
             case .glance:
                 GlanceSection(ctx: ctx) { date in withAnimation(reduceMotion ? nil : .smooth) { scrolledID = .day(date) } }
             case .map:
-                GuideMap(days: ctx.days, height: 280, interactive: true)
+                GuideMap(days: ctx.days, height: 280, interactive: true, base: ctx.base)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            case .areas:
+                AreasSection(ctx: ctx) { placeID, date in append(placeID, to: date, ctx: ctx) }
             case .calendar: CalendarSection(ctx: ctx, status: holidayState)
             case .days: EmptyView()
             case .book: BookSection(ctx: ctx, edits: $edits)
@@ -300,6 +327,7 @@ struct GuideMap: View {
     let days: [ResolvedDay]
     var height: CGFloat = 220
     var interactive = false
+    var base: GuideBase? = nil
     var body: some View {
         let points = days.flatMap { day in day.stops.compactMap { s in s.place.coordinate.map { (day, s, $0) } } }
         Group {
@@ -313,6 +341,19 @@ struct GuideMap: View {
                 }
             } else {
                 Map(initialPosition: .automatic, interactionModes: interactive ? .all : []) {
+                    if let base {
+                        // Each day leaves from the base: a faint line to its first stop.
+                        ForEach(days) { day in
+                            if let first = day.stops.first?.place.coordinate {
+                                MapPolyline(coordinates: [base.coordinate, first])
+                                    .stroke(Sketch.dayColor(day.index).opacity(0.35), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [1, 5]))
+                            }
+                        }
+                        Annotation(base.name, coordinate: base.coordinate, anchor: .bottom) {
+                            BasePin()
+                        }
+                        .annotationTitles(interactive ? .automatic : .hidden)
+                    }
                     ForEach(days) { day in
                         let coords = day.stops.compactMap(\.place.coordinate)
                         if coords.count > 1 {
@@ -347,6 +388,27 @@ struct GuideMap: View {
                 .padding(10).accessibilityHidden(true)
             }
         }
+    }
+}
+
+/// The stay: an ink house pin that stands out from the numbered stops.
+struct BasePin: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            Image(systemName: "house.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(Sketch.ink))
+                .overlay(Circle().strokeBorder(.white, lineWidth: 2))
+                .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
+            Triangle().fill(Sketch.ink).frame(width: 10, height: 6)
+        }
+        .accessibilityLabel("Your stay")
+    }
+}
+
+private struct Triangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in p.move(to: .init(x: rect.minX, y: rect.minY)); p.addLine(to: .init(x: rect.maxX, y: rect.minY)); p.addLine(to: .init(x: rect.midX, y: rect.maxY)); p.closeSubpath() }
     }
 }
 
@@ -431,15 +493,22 @@ private struct DayView: View {
                     } else {
                         Text(day.title).font(Sketch.display(.title3)).fixedSize(horizontal: false, vertical: true)
                     }
+                    AreaTags(areas: ctx.areas(of: day), tint: color)
                     if let holiday = day.holiday { SketchTag(text: holiday.name, tint: Sketch.plum) }
                 }
             }
             if day.stops.contains(where: { $0.place.coordinate != nil }) {
-                GuideMap(days: [day], height: 150).clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                GuideMap(days: [day], height: 150, base: ctx.base).clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            if editing {
+                SuggestionStrip(suggestions: ctx.suggestions(for: day), tint: color, apply: apply)
             }
             VStack(alignment: .leading, spacing: 0) {
                 if day.stops.isEmpty {
                     Text("No stops yet.").font(Sketch.hand(.callout)).foregroundStyle(Sketch.inkSoft).padding(.vertical, 8)
+                }
+                if let base = ctx.base, !day.stops.isEmpty {
+                    BaseStartRow(base: base, minutes: day.stops.first?.fromBaseMinutes, tint: color)
                 }
                 ForEach(Array(day.stops.enumerated()), id: \.element.id) { index, stop in
                     if let travel = stop.travelMinutes, index > 0 { TravelLeg(minutes: travel, color: color) }
@@ -450,7 +519,10 @@ private struct DayView: View {
                     if let slot = stop.slot {
                         SlotRow(stop: stop, slot: slot, color: color, editing: editing, planPlaces: Array(ctx.model.places.values),
                                 time: Binding(get: { edits.times[stop.key] ?? stop.time }, set: { edits.times[stop.key] = $0 }),
-                                onPick: { pick(stop, $0) }, onMove: { move(stop, by: $0) }, onRemove: { remove(stop) })
+                                onPick: { pick(stop, $0) }, onMove: { move(stop, by: $0) }, onRemove: { remove(stop) },
+                                neighbors: [day.stops[safe: index - 1], day.stops[safe: index + 1]].compactMap { $0?.place }
+                                    .filter { !$0.isSlotPlaceholder },
+                                base: ctx.base)
                     } else {
                         StopRow(stop: stop, color: color, editing: editing, booked: edits.booked.contains(stop.place.id),
                                 note: Binding(get: { edits.notes[stop.key] ?? "" }, set: { edits.notes[stop.key] = $0.nilIfEmpty }),
@@ -464,6 +536,14 @@ private struct DayView: View {
     }
 
     private var ids: [String] { day.stops.map(\.itemID) }
+    private func apply(_ suggestion: GuideSuggestion) {
+        withAnimation(.snappy) {
+            switch suggestion.action {
+            case .addBlock(let kind): addBlock(kind)
+            case .addPlace(let id), .restore(let id): if !ids.contains(id) { setOrder(ids + [id]) }
+            }
+        }
+    }
     private func setOrder(_ new: [String]) { edits.order[day.date] = new }
     private func move(_ stop: ResolvedStop, by delta: Int) {
         var list = ids

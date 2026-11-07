@@ -76,6 +76,15 @@ def normalized_brief(supplied):
     brief['travelers'] = {**travelers, 'count': travelers.get('count', 1)}
     if not isinstance(brief.get('custom_instructions', ''), str) or len(brief.get('custom_instructions', '')) > 8000:
         raise ValueError('Invalid custom instructions')
+    # The traveller's base (hotel or area): every day starts there.
+    base = brief.get('base')
+    if base is not None:
+        if not isinstance(base, dict) or not isinstance(base.get('name', ''), str) or len(base.get('name', '')) > 200:
+            raise ValueError('Invalid base')
+        lat, lon = base.get('latitude'), base.get('longitude')
+        if lat is None and lon is None: brief['base'] = None
+        elif not all(isinstance(v, (int, float)) and math.isfinite(v) for v in (lat, lon)) or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError('Invalid base coordinates')
     locks = brief.get('locked_stops', [])
     if not isinstance(locks, list) or len(locks) > 100: raise ValueError('Invalid locked stops')
     for lock in locks:

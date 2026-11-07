@@ -26,7 +26,8 @@ from trippy.catalog.boundaries import area_key, city_slug
 GUIDE_PAGES = 4               # main article + first district pages
 GUIDE_MAX_AGE = 30 * 86400
 MAX_STOPS = 40                # 7 days x ~5 stops; longer trips are annotated in part
-LIMITS = {'title': 5, 'summary': 20, 'why': 18, 'tip': 16, 'trip': 40}
+LIMITS = {'title': 5, 'summary': 20, 'why': 18, 'tip': 16, 'trip': 40, 'character': 22, 'vibe': 4}
+MAX_AREAS = 12
 
 SYSTEM = """You write the short notes inside a travel app's itinerary. The stops, order and times are final:
 never add, remove, rename or move a stop, and never invent opening hours, prices or facts.
@@ -36,6 +37,9 @@ Write in {language}. Be concrete and warm, no clichés ("hidden gem", "must-see"
 - why: one sentence on why this stop fits this traveller and this day.
 - tip: one practical tip only when the guide line or common knowledge gives a real one; otherwise "".
 - trip summary: two sentences for the whole trip.
+- area: for each listed area, one sentence on its character for a visitor; a 2-4 word vibe;
+  and 1-5 scores from general knowledge: touristy (5 = very), price (5 = expensive), safety
+  (5 = very safe, also at night). Be honest and concrete; these are estimates, not facts.
 Use the guide lines when given; they come from Wikivoyage."""
 
 SCHEMA = {
@@ -48,8 +52,12 @@ SCHEMA = {
         'stops': {'type': 'ARRAY', 'items': {'type': 'OBJECT', 'properties': {
             'id': {'type': 'STRING'}, 'why': {'type': 'STRING'}, 'tip': {'type': 'STRING'}},
             'required': ['id', 'why', 'tip']}},
+        'areas': {'type': 'ARRAY', 'items': {'type': 'OBJECT', 'properties': {
+            'id': {'type': 'STRING'}, 'character': {'type': 'STRING'}, 'vibe': {'type': 'STRING'},
+            'touristy': {'type': 'INTEGER'}, 'price': {'type': 'INTEGER'}, 'safety': {'type': 'INTEGER'}},
+            'required': ['id', 'character', 'vibe', 'touristy', 'price', 'safety']}},
     },
-    'required': ['trip_summary', 'days', 'stops'],
+    'required': ['trip_summary', 'days', 'stops', 'areas'],
 }
 LANGUAGES = {'el': 'Greek', 'en': 'English'}
 
@@ -138,6 +146,16 @@ def request_text(result, brief, guide):
             if stop['place_id'] in guide:
                 lines.append(f"  guide: {guide[stop['place_id']]['content'][:220]}")
             count += 1
+    base = (result.get('itinerary') or {}).get('base')
+    if base: lines.insert(2, f"Base: {base.get('name')} (every day starts and ends here)")
+    area_rows = (result.get('areas') or [])[:MAX_AREAS]
+    if area_rows:
+        names = {p['id']: p['name'] for p in result['places']}
+        lines.append('\nAREAS')
+        for area in area_rows:
+            sample = ', '.join(names.get(i, '') for i in area['place_ids'][:4])
+            when = ', '.join(area.get('days') or []) or 'not in this plan'
+            lines.append(f"- [{area['id']}] {area.get('name')}: {sample} ({when})")
     return '\n'.join(lines)
 
 
@@ -190,6 +208,16 @@ def annotate(pool, result, brief, guide, *, cache_dir=None):
                     place['description'] = guide[stop['place_id']]['content']
                     place['guide_page'] = guide[stop['place_id']].get('page')
             written += 1
+    by_area = {a.get('id'): a for a in payload.get('areas', []) if isinstance(a, dict)}
+    for area in result.get('areas') or []:
+        note = by_area.get(area['id'])
+        if not note or not str(note.get('character', '')).strip(): continue
+        area['character'] = _words(note['character'], LIMITS['character'])
+        area['vibe'] = _words(note.get('vibe'), LIMITS['vibe'])
+        for field in ('touristy', 'price', 'safety'):
+            value = note.get(field)
+            if isinstance(value, (int, float)) and 1 <= value <= 5: area[field] = int(value)
+        area['character_source'] = 'model_estimate'
     if payload.get('trip_summary', '').strip():
         result.setdefault('overview', {})['summary'] = _words(payload['trip_summary'], LIMITS['trip'])
     total = sum(len(d['stops']) for d in days)

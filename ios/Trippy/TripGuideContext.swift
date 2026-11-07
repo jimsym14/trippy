@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 
 struct GuideInput {
     let tripID: UUID
@@ -25,6 +26,18 @@ struct ResolvedStop: Identifiable, Hashable {
     var why = ""
     var tip = ""
     var slot: ResolvedSlot? = nil
+    /// Minutes from the base, on the day's first stop.
+    var fromBaseMinutes: Int? = nil
+}
+
+/// One tap that improves a day; the traveller can always ignore it.
+struct GuideSuggestion: Identifiable, Hashable {
+    enum Action: Hashable { case addBlock(SlotKind), addPlace(String), restore(String) }
+    let id: String
+    let text: String
+    let detail: String
+    let symbol: String
+    let action: Action
 }
 
 /// A meal or coffee block: a kind, the area it fits in, and the place picked for it (if any).
@@ -44,6 +57,7 @@ struct ResolvedDay: Identifiable, Hashable {
     let subtitle: String
     let stops: [ResolvedStop]
     let holiday: GuideHoliday?
+    var areaIDs: [String] = []
 }
 
 struct ChecklistItem: Identifiable, Hashable {
@@ -61,9 +75,66 @@ struct GuideContext {
     let holidays: [GuideHoliday]
     let days: [ResolvedDay]
 
+    let base: GuideBase?
+
     init(model: GuideModel, edits: GuideEdits, input: GuideInput, holidays: [GuideHoliday]) {
         self.model = model; self.edits = edits; self.input = input; self.holidays = holidays
-        days = model.days.map { GuideContext.resolve($0, model: model, edits: edits, holidays: holidays) }
+        // The stay the traveller typed wins over the one the plan was made from.
+        if let lat = edits.flight.stayLatitude, let lon = edits.flight.stayLongitude, !edits.flight.stayName.isEmpty {
+            base = GuideBase(name: edits.flight.stayName, latitude: lat, longitude: lon)
+        } else { base = model.base }
+        let base = self.base
+        days = model.days.map { GuideContext.resolve($0, model: model, edits: edits, holidays: holidays, base: base) }
+    }
+
+    /// A rough door-to-door time: walking under 2.5 km, a ride beyond (as the planner estimates).
+    static func minutes(from a: CLLocationCoordinate2D, to b: CLLocationCoordinate2D) -> Int {
+        let metres = CLLocation(latitude: a.latitude, longitude: a.longitude).distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+        return metres > 2500 ? Int((metres / 1000 / 25 * 60).rounded(.up)) + 12 : Int((metres / 1000 / 4 * 60).rounded(.up)) + 10
+    }
+
+    func areas(of day: ResolvedDay) -> [GuideArea] { day.areaIDs.compactMap { id in model.areas.first { $0.id == id } } }
+
+    /// Planner stops the traveller removed and didn't move to another day.
+    var leftOut: [(date: String, place: GuidePlace)] {
+        let present = Set(days.flatMap { $0.stops.map(\.itemID) })
+        var out: [(String, GuidePlace)] = []
+        for day in model.days where edits.order[day.date] != nil {
+            for stop in day.stops where !present.contains(stop.placeID) {
+                if let place = model.places[stop.placeID] { out.append((day.date, place)) }
+            }
+        }
+        return out
+    }
+
+    /// Unused places in the day's own areas, best known first.
+    func unusedInAreas(of day: ResolvedDay) -> [GuidePlace] {
+        let used = Set(days.flatMap { $0.stops.map(\.place.id) })
+        return areas(of: day).flatMap(\.placeIDs).filter { !used.contains($0) }.compactMap { model.places[$0] }
+            .sorted { ($0.fame, $0.name) > ($1.fame, $1.name) }
+    }
+
+    /// At most three gentle suggestions for a day, most useful first.
+    func suggestions(for day: ResolvedDay) -> [GuideSuggestion] {
+        var out: [GuideSuggestion] = []
+        for (date, place) in leftOut where date == day.date {
+            out.append(.init(id: "restore|\(place.id)", text: "Put back \(place.name)", detail: "You removed it", symbol: "arrow.uturn.backward", action: .restore(place.id)))
+        }
+        let kinds = Set(day.stops.compactMap(\.slot?.kind))
+        let starts = day.stops.compactMap { GuideDates.minutes($0.time) }
+        let span = (starts.min() ?? 0, (starts.max() ?? 0))
+        if !kinds.contains(.lunch), span.0 < 13 * 60, span.1 > 14 * 60 {
+            out.append(.init(id: "lunch", text: "Add lunch", detail: "Nothing to eat at midday", symbol: SlotKind.lunch.symbol, action: .addBlock(.lunch)))
+        }
+        if !kinds.contains(.dinner), span.1 >= 17 * 60 {
+            out.append(.init(id: "dinner", text: "Add dinner", detail: "The evening has no meal", symbol: SlotKind.dinner.symbol, action: .addBlock(.dinner)))
+        }
+        let sights = day.stops.filter { $0.slot == nil && !$0.place.isFood }.count
+        if sights < 3, let next = unusedInAreas(of: day).first {
+            let area = areas(of: day).first { $0.placeIDs.contains(next.id) }?.name
+            out.append(.init(id: "add|\(next.id)", text: "Add \(next.name)", detail: area.map { "Also in \($0)" } ?? "Close by", symbol: "plus", action: .addPlace(next.id)))
+        }
+        return Array(out.prefix(3))
     }
 
     /// The day's order of item ids, with an afternoon coffee break added when the plan has none.
@@ -84,7 +155,7 @@ struct GuideContext {
         model.places[id] ?? edits.extraPlaces[id]?.guidePlace
     }
 
-    static func resolve(_ day: GuideDay, model: GuideModel, edits: GuideEdits, holidays: [GuideHoliday]) -> ResolvedDay {
+    static func resolve(_ day: GuideDay, model: GuideModel, edits: GuideEdits, holidays: [GuideHoliday], base: GuideBase? = nil) -> ResolvedDay {
         let original = Dictionary(day.stops.map { ($0.placeID, $0) }, uniquingKeysWith: { a, _ in a })
         let ids = edits.order[day.date] ?? baseOrder(day, model: model)
         // Coordinates of real stops, for placing open blocks between their neighbours.
@@ -141,6 +212,11 @@ struct GuideContext {
                                       slot: slot))
         }
         stops.sort { (GuideDates.minutes($0.time) ?? 0) < (GuideDates.minutes($1.time) ?? 0) }
+        // The day starts at the base: the planner's own estimate, else one from the distance.
+        if let base, !stops.isEmpty, let first = stops.first?.place.coordinate {
+            let planned = original[stops[0].itemID].flatMap { $0.fromBase ? $0.travelMinutes : nil }
+            stops[0].fromBaseMinutes = planned ?? minutes(from: base.coordinate, to: first)
+        }
         let sights = stops.filter { $0.slot == nil && !$0.place.isFood }.map(\.place.name)
         let food = stops.filter { $0.slot != nil || $0.place.isFood }.map { $0.slot?.pickedID == nil ? ($0.slot?.kind.title ?? $0.place.name) : $0.place.name }
         // Two names read as a title; more becomes a list.
@@ -148,7 +224,7 @@ struct GuideContext {
             ?? (sights.isEmpty ? (stops.isEmpty ? "Free day" : food.prefix(2).joined(separator: " & ")) : sights.prefix(2).joined(separator: " & "))
         let subtitle = day.summary.nilIfEmpty ?? (food.isEmpty ? "\(stops.count) stops" : "Eat at " + food.joined(separator: ", "))
         return ResolvedDay(index: day.index, date: day.date, title: title, subtitle: subtitle, stops: stops,
-                           holiday: holidays.first { $0.date == day.date })
+                           holiday: holidays.first { $0.date == day.date }, areaIDs: day.areaIDs)
     }
 
     struct DateTimeCursor {

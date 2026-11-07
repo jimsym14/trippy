@@ -317,13 +317,14 @@ class GoogleTravelProvider:
             )
         else:
             query = task.get('query') or f"{terms.get(category, category)} in {brief['destination']}"
-        response = self.request('places:searchText', body={'textQuery':query, 'pageSize':min(task['target'], 12)},
+        # Up to 20 results cost the same single request as 12.
+        response = self.request('places:searchText', body={'textQuery':query, 'pageSize':min(max(task['target'], 12), 20)},
             field_mask='places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,places.websiteUri,places.businessStatus,'
                        'places.rating,places.userRatingCount,places.regularOpeningHours,places.utcOffsetMinutes')
         if not isinstance(response, dict) or not isinstance(response.get('places', []), list):
             raise ValueError('Invalid places response')
         batch = empty_batch(); brands = []
-        for row in response.get('places', [])[:task['target']]:
+        for row in response.get('places', [])[:max(task['target'], 20)]:
             if row.get('businessStatus') in {'CLOSED_PERMANENTLY','CLOSED_TEMPORARILY'}: continue
             identifier = row.get('id'); name = row.get('displayName', {}).get('text')
             # One branch per chain: "Tonnarello", "Tonnarello Pantheon" and

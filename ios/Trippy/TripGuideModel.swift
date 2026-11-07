@@ -70,6 +70,7 @@ struct GuideStop: Identifiable, Hashable {
     let alternatives: [String]
     var why = ""
     var tip = ""
+    var fromBase = false
 }
 
 struct GuideDay: Identifiable, Hashable {
@@ -79,6 +80,33 @@ struct GuideDay: Identifiable, Hashable {
     let stops: [GuideStop]
     var theme = ""
     var summary = ""
+    var areaIDs: [String] = []
+}
+
+/// Where the traveller sleeps; every day starts there.
+struct GuideBase: Hashable {
+    let name: String
+    let latitude: Double
+    let longitude: Double
+    var coordinate: CLLocationCoordinate2D { .init(latitude: latitude, longitude: longitude) }
+}
+
+/// A part of the city the planner grouped sights into, with its character.
+struct GuideArea: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let latitude: Double
+    let longitude: Double
+    let placeIDs: [String]
+    let plannedIDs: [String]
+    let days: [String]
+    let importance: Double
+    let character: String
+    let vibe: String
+    let touristy: Int?
+    let price: Int?
+    let safety: Int?
+    var coordinate: CLLocationCoordinate2D { .init(latitude: latitude, longitude: longitude) }
 }
 
 struct GuideInfoRow: Identifiable, Hashable {
@@ -99,6 +127,8 @@ struct GuideModel {
     var events: [GuideInfoRow] = []
     var bookingTasks: [GuideInfoRow] = []
     var gaps: [String] = []
+    var areas: [GuideArea] = []
+    var base: GuideBase?
 
     var orderedPlaces: [GuidePlace] { places.values.sorted { ($0.fame, $0.name) > ($1.fame, $1.name) } }
 
@@ -132,11 +162,24 @@ struct GuideModel {
                 guard let id = str(s["place_id"]), places[id] != nil else { return nil }
                 return GuideStop(placeID: id, time: str(s["time"]) ?? "", durationMinutes: Int(num(s["duration_minutes"]) ?? 60),
                                  travelMinutes: num(s["travel_time_minutes"]).map { Int($0) }, alternatives: s["alternatives"] as? [String] ?? [],
-                                 why: str(s["why"]) ?? "", tip: str(s["tip"]) ?? "")
+                                 why: str(s["why"]) ?? "", tip: str(s["tip"]) ?? "", fromBase: str(s["travel_from"]) == "base")
             }
             // The engine's placeholder title is not a theme; the notes pass writes real ones.
             let theme = str(d["theme"]).flatMap { ["Η ημέρα σου", "Your day"].contains($0) ? nil : $0 } ?? ""
-            days.append(GuideDay(index: i, date: str(d["date"]) ?? "Day \(i + 1)", stops: stops, theme: theme, summary: str(d["summary"]) ?? ""))
+            days.append(GuideDay(index: i, date: str(d["date"]) ?? "Day \(i + 1)", stops: stops, theme: theme, summary: str(d["summary"]) ?? "",
+                                 areaIDs: d["areas"] as? [String] ?? []))
+        }
+        if let b = itinerary?["base"] as? [String: Any], let lat = num(b["latitude"]), let lon = num(b["longitude"]) {
+            base = GuideBase(name: str(b["name"]) ?? "Your stay", latitude: lat, longitude: lon)
+        }
+        areas = list("areas").compactMap { a in
+            guard let id = str(a["id"]), let lat = num(a["latitude"]), let lon = num(a["longitude"]) else { return nil }
+            func score(_ k: String) -> Int? { num(a[k]).map { Int($0) }.flatMap { (1...5).contains($0) ? $0 : nil } }
+            return GuideArea(id: id, name: str(a["name"]) ?? "Area", latitude: lat, longitude: lon,
+                             placeIDs: a["place_ids"] as? [String] ?? [], plannedIDs: a["planned_place_ids"] as? [String] ?? [],
+                             days: a["days"] as? [String] ?? [], importance: num(a["importance"]) ?? 0,
+                             character: str(a["character"]) ?? "", vibe: str(a["vibe"]) ?? "",
+                             touristy: score("touristy"), price: score("price"), safety: score("safety"))
         }
         tickets = list("ticket_options").enumerated().map { i, t in
             GuideInfoRow(id: str(t["id"]) ?? "ticket-\(i)", title: str(t["name"]) ?? "Ticket", detail: str(t["notes"]) ?? "",
@@ -188,16 +231,19 @@ struct GuideFlight: Codable, Hashable {
     var inbound = ""
     var stayName = ""
     var stayAddress = ""
+    /// Where the stay is, found on the phone from its name; the map and each day start there.
+    var stayLatitude: Double? = nil
+    var stayLongitude: Double? = nil
     var arrivalTime = ""   // "18:45" — also sent to the planner
     var departureTime = ""
 }
 
 enum GuideSection: String, CaseIterable, Codable, Identifiable {
-    case glance, map, calendar, days, book, tickets, transport, food, budget, checklist, unknowns
+    case glance, map, areas, calendar, days, book, tickets, transport, food, budget, checklist, unknowns
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .glance: "Overview"; case .map: "Map"; case .calendar: "Holidays"
+        case .glance: "Overview"; case .map: "Map"; case .areas: "Areas"; case .calendar: "Holidays"
         case .days: "Day by day"; case .book: "Book ahead"; case .tickets: "Tickets"
         case .transport: "Getting around"; case .food: "Food"; case .budget: "Budget"
         case .checklist: "Checklist"; case .unknowns: "Not yet checked"
@@ -205,7 +251,7 @@ enum GuideSection: String, CaseIterable, Codable, Identifiable {
     }
     var symbol: String {
         switch self {
-        case .glance: "rectangle.grid.1x2"; case .map: "map"; case .calendar: "calendar"; case .days: "clock"
+        case .glance: "rectangle.grid.1x2"; case .map: "map"; case .areas: "square.grid.3x3.square"; case .calendar: "calendar"; case .days: "clock"
         case .book: "bookmark"; case .tickets: "ticket"; case .transport: "tram"; case .food: "fork.knife"
         case .budget: "eurosign.circle"; case .checklist: "checklist"; case .unknowns: "questionmark.circle"
         }
@@ -244,7 +290,12 @@ struct GuideEdits: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let base = GuideEdits()
         var sections = (try? c.decode([String].self, forKey: .sections))?.compactMap(GuideSection.init(rawValue:)) ?? base.sections
-        sections += GuideSection.allCases.filter { !sections.contains($0) }
+        // New sections land where they belong (after the one before them), not at the end.
+        for (index, section) in GuideSection.allCases.enumerated() where !sections.contains(section) {
+            let previous = index > 0 ? GuideSection.allCases[index - 1] : nil
+            let at = previous.flatMap { sections.firstIndex(of: $0) }.map { $0 + 1 } ?? sections.count
+            sections.insert(section, at: at)
+        }
         self.sections = sections
         hidden = Set((try? c.decode([String].self, forKey: .hidden))?.compactMap(GuideSection.init(rawValue:)) ?? [])
         pigment = (try? c.decode(String.self, forKey: .pigment)) ?? base.pigment

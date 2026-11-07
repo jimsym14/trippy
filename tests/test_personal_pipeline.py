@@ -1228,8 +1228,9 @@ class RealLocalDataSmokeTests(unittest.TestCase):
                 # Barcelona bounding box check
                 self.assertTrue(41.0 <= lat <= 42.0, f"Latitude {lat} out of Barcelona bounds")
                 self.assertTrue(1.5 <= lon <= 2.5, f"Longitude {lon} out of Barcelona bounds")
-                # Source must be Overture catalog, not invented
-                self.assertTrue(any(s_map[sid]['publisher'] == 'Overture Maps Foundation' for sid in place['source_ids']))
+                # Source must be one of the catalog's real sources, not invented
+                catalog = ('Overture Maps Foundation', 'Wikivoyage', 'Wikidata')
+                self.assertTrue(any(s_map[sid]['publisher'].startswith(catalog) for sid in place['source_ids']), place['name'])
                 # Geographic relevance: every venue must be an area match for Gràcia
                 # Catalog, creator-video, Wikivoyage and Wikidata reasons all name the matched area.
                 self.assertTrue(place['why_recommended'].endswith('(Gràcia)'), place['why_recommended'])

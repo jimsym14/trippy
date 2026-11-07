@@ -182,17 +182,48 @@ def quality(place):
     return 0
 
 
-def slot_rank(p, previous, brief):
+def asked_for(p):
+    """Catalog places carry "theme:x" only for themes the traveller asked for (beach, art…)."""
+    return any(t.startswith('theme:') for t in p.get('tags', []))
+
+
+def slot_rank(p, previous, brief, centers=(), trip_centers=(), elsewhere=False, home=None):
     """Deterministic order for one slot.
 
-    Saved pins and explicit preference tags stay authoritative. Without a
-    previous stop the strongest candidate anchors the day; afterwards nearby
-    candidates are preferred so a day stays in one part of the city.
+    The day's areas come first: a place outside them waits for its own day.
+    Within them, saved pins and explicit preference tags stay authoritative,
+    then strength (quality, fame, rating) against distance from the previous
+    stop (or the area's centre for the day's first stop).
     """
+    from .areas import in_day_area, outside_metres, strength
     meters = distance(previous, p) if previous else 0
-    return (-p.get('personal_priority', 0), -len(set(p['tags']) & set(brief['preference_tags'])),
+    inside = in_day_area(p, centers)
+    # A saved place leads only on its own area's day when another day goes there;
+    # a saved place outside every planned area keeps its priority on any day.
+    personal = p.get('personal_priority', 0) if inside or not in_day_area(p, trip_centers) else 0
+    # Leaving the day's areas costs like extra walking, so the day stays in them
+    # without forcing a long leg to a far corner of a big area.
+    # Evenings drift towards the base, so the walk home stays short.
+    homeward = 0.6 * distance(home, p) if home else 0
+    # A place in an area planned for another day waits for that day.
+    return (elsewhere, -personal, -len(set(p['tags']) & set(brief['preference_tags'])),
             -p.get('judge_score', 0.0), meters > MAX_PREFERRED_LEG_METERS,
-            -(quality(p) - DISTANCE_PENALTY_PER_KM * meters / 1000), p['id'])
+            -(quality(p) + strength(p) + 4 * sum(t.startswith('theme:') for t in p.get('tags', [])) - DISTANCE_PENALTY_PER_KM * (meters + (0 if asked_for(p) else outside_metres(p, centers)) + homeward) / 1000), p['id'])
+
+
+SHORT_VISIT = ('fontana', 'fountain', 'piazza', 'square', 'plaza', 'plaça', 'steps', 'scalinata', 'ponte', 'bridge',
+               'obelisk', 'statue', 'keyhole', 'buco', 'viewpoint', 'belvedere', 'gate', 'porta ')
+CHURCH = ('basilica', 'church', 'chiesa', 'cathedral', 'duomo', 'santa ', 'san ', 'santo ', 'chapel', 'cappella', 'parròquia', 'iglesia')
+
+
+def visit_minutes(p):
+    """Sourced duration, else a sensible default by kind: a fountain is not a museum."""
+    if p['average_visit_minutes']: return p['average_visit_minutes']
+    name = (p['name'] or '').casefold()
+    if p['category'] == 'museum': return 120
+    if any(w in name for w in SHORT_VISIT): return 25
+    if any(w in name for w in CHURCH): return 45
+    return {'attraction':75,'nature':75,'excursion':300,'shopping':60,'food':75,'coffee':30,'bar':75,'club':120}.get(p['category'],60)
 
 
 def compose_plan(document, brief, *, route_provider=None):
@@ -236,15 +267,33 @@ def compose_plan(document, brief, *, route_provider=None):
         requirements = brief['mobility_requirements'] + (brief['dietary_needs'] if p['category'] in {'food','coffee','bar'} else [])
         return all(requirement_supported(doc,p['id'],r,local_date) for r in requirements)
     dates = trip_dates(brief)
-    slots = [(600, 'morning', {'attraction','museum','nature','shopping','excursion'}), (780,'afternoon',{'food','coffee'}),
-             (900,'afternoon',{'attraction','museum','nature','shopping'}), (1140,'evening',{'food'}), (1260,'night',{'bar','club'})]
-    if brief.get('pace') in {'χαλαρός','relaxed'}: slots = [slots[0],slots[1],slots[3]]
+    visits = {'attraction','museum','nature','shopping','excursion'}
+    # (start, period, categories, longest visit that fits). The short slots take
+    # quick stops (a fountain, a square, a church) between the main ones; lunch is
+    # food only, and a coffee break sits mid-afternoon when cafés were found.
+    slots = [(600,'morning',visits,None), (705,'morning',visits,50), (780,'afternoon',{'food'},None),
+             (900,'afternoon',visits,None), (1005,'afternoon',visits,50), (1035,'afternoon',{'coffee'},None),
+             (1140,'evening',{'food'},None), (1260,'night',{'bar','club'},None)]
+    if brief.get('pace') in {'χαλαρός','relaxed'}: slots = [slots[0],slots[2],slots[3],slots[5],slots[6]]
     # Speedrun: only a short visit per highlight, starting early, every slot used.
     speedrun = brief.get('pace') == 'speedrun'
     if speedrun:
         sights = {'attraction','museum','nature'}
-        slots = [(540,'morning',sights), slots[0], (720,'afternoon',sights|{'shopping'}), slots[1], slots[2],
-                 (1050,'afternoon',sights), slots[3], slots[4]]
+        slots = [(540,'morning',sights,None), slots[0], (720,'afternoon',sights|{'shopping'},None), slots[2], slots[3],
+                 (1050,'afternoon',sights,None), slots[6], slots[7]]
+    # Areas first: each day gets one or two neighbouring areas, starting from the base.
+    from .areas import cluster, assign
+    base = brief.get('base') if isinstance(brief.get('base'), dict) and brief['base'].get('latitude') is not None else None
+    times_all = brief.get('date_range') or {}
+    late_arrival = bool(times_all.get('arrival_time')) and clock_minutes(times_all['arrival_time']) >= 12*60
+    early_departure = bool(times_all.get('departure_time')) and clock_minutes(times_all['departure_time']) <= 17*60
+    areas = cluster(places, brief['preference_tags'])
+    area_plan, uncovered = assign(areas, dates, base=base, partial_first=late_arrival, partial_last=early_departure and len(dates) > 1)
+    area_by_id = {a['id']: a for a in areas}
+    trip_centers = [(area_by_id[a]['latitude'], area_by_id[a]['longitude']) for ids in area_plan.values() for a in ids]
+    area_of = {pid: a['id'] for a in areas for pid in a['place_ids']}
+    area_day = {a: d for d, ids in area_plan.items() for a in ids}
+    base_place = {'id':'base','name':base.get('name') or 'Base','coordinates':{'latitude':base['latitude'],'longitude':base['longitude']}} if base else None
     for day_number, local_date in enumerate(dates,1):
         day = {'day':day_number,'date':local_date,'theme':'Η ημέρα σου','stops':[], 'alternative':'',
                'flex_time':'Οι ώρες είναι προτάσεις· κράτησε χρόνο για διαλείμματα.',
@@ -264,17 +313,26 @@ def compose_plan(document, brief, *, route_provider=None):
         times = brief.get('date_range') or {}
         earliest = clock_minutes(times['arrival_time'])+90 if times.get('arrival_time') and day_number==1 else 0
         latest = clock_minutes(times['departure_time'])-180 if times.get('departure_time') and day_number==len(dates) else 1380
-        for start, period, slot_categories in slots:
-            if categories and not categories & slot_categories: continue
+        day['areas'] = area_plan.get(local_date, [])
+        centers = [(area_by_id[a]['latitude'], area_by_id[a]['longitude']) for a in day['areas']]
+        area_anchor = {'id':'area','coordinates':{'latitude':centers[0][0],'longitude':centers[0][1]}} if centers else None
+        for start, period, slot_categories, longest in slots:
+            # Coffee is a break, not an interest: it runs whenever cafés were found.
+            if categories and not categories & slot_categories and slot_categories != {'coffee'}: continue
             if start < earliest - 60 or start >= latest: continue
             options = [p for p in places if p['id'] not in used and p['category'] in slot_categories and available(p,local_date)]
-            options.sort(key=lambda p:slot_rank(p, previous, brief))
+            home = base_place if base_place and start >= 1140 else None
+            options.sort(key=lambda p:slot_rank(p, previous or area_anchor or base_place, brief, centers, trip_centers,
+                                                elsewhere=area_day.get(area_of.get(p['id'])) not in (None, local_date), home=home))
             for p in options:
-                duration = p['average_visit_minutes'] or {'attraction':75,'museum':90,'nature':90,'excursion':300}.get(p['category'],60)
+                duration = visit_minutes(p)
                 if speedrun: duration = min(duration, 45)
-                leg = travel(previous,p,local_date) if previous else None
+                # Quick in-between stops are only worth it right next door.
+                if longest and (duration > longest or (previous and distance(previous, p) > 900)): continue
+                # The day starts at the base: the first stop carries the trip from there.
+                leg = travel(previous,p,local_date) if previous else (travel(base_place,p,local_date) if base_place else None)
                 prior_stops = [s for s in day['stops'] if clock_minutes(s['time'])<=start]
-                candidate_start = max(start, max((clock_minutes(s['time'])+s['duration_minutes'] for s in prior_stops),default=start)+(math.ceil(leg['minutes']) if leg and leg['minutes'] is not None else 0))
+                candidate_start = max(start, max((clock_minutes(s['time'])+s['duration_minutes'] for s in prior_stops),default=start)+(math.ceil(leg['minutes']) if leg and leg['minutes'] is not None and prior_stops else 0))
                 check = check_for(doc,p['id'],local_date)
                 if check and check['status']=='confirmed' and check['opening_windows']:
                     windows = [(clock_minutes(w['start']),clock_minutes(w['end'])) for w in check['opening_windows']]
@@ -292,6 +350,7 @@ def compose_plan(document, brief, *, route_provider=None):
                     'estimated_cost_per_person_eur':float(price[0]) if price and price[0]==price[1] else None,
                     'travel_time_minutes':round(leg['minutes']) if leg and leg['minutes'] is not None else None,
                     'travel_time_basis':leg['method'] if leg else None,
+                    **({'travel_from':'base'} if not previous and base_place else {}),
                     'transport_mode':brief.get('transport_mode','walking'),
                     'alternatives':[q['id'] for q in options if q['id']!=p['id']][:3]})
                 used.add(p['id']); previous=p
@@ -325,6 +384,15 @@ def compose_plan(document, brief, *, route_provider=None):
     if brief.get('budget'): pending.append({'code':'budget_coverage_pending'})
     if not dates: pending.append({'code':'trip_dates_required'})
     doc['itinerary']={'days':days}
+    if base: doc['itinerary']['base']={'name':base.get('name') or 'Base','latitude':base['latitude'],'longitude':base['longitude'],
+                                       'address':base.get('address')}
+    # Area coverage: which days visit each area, and which important ones the plan skips.
+    scheduled_ids={s['place_id'] for d in days for s in d['stops']}
+    for area in areas:
+        area['days']=[d['date'] for d in days if area['id'] in d.get('areas',[]) and any(s['place_id'] in area['place_ids'] for s in d['stops'])]
+        area['planned_place_ids']=[i for i in area['place_ids'] if i in scheduled_ids]
+        area['covered']=bool(area['planned_place_ids'])
+    doc['areas']=areas
     adjacent={(a['place_id'],b['place_id'],d['date']) for d in days for a,b in zip(d['stops'],d['stops'][1:])}
     doc['route_previews']=[r for r in routes if (r['from_place_id'],r['to_place_id'],r['date']) in adjacent]
     doc['plan_validation']={'status':'needs_checks' if pending else 'validated' if days else 'discovery_only',

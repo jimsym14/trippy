@@ -64,6 +64,20 @@ class PlanNotesTests(unittest.TestCase):
             report = plan_notes.annotate(pool, plan(), BRIEF, {}, cache_dir=directory)
         self.assertEqual((pool.calls, report['calls']), (1, 0))
 
+    def test_area_character_is_written_in_the_same_call(self):
+        result = plan(); result['areas'] = [{'id': 'area-1', 'name': 'Celio', 'place_ids': ['a'], 'days': ['2026-12-10']}]
+        result['itinerary']['base'] = {'name': 'Trastevere', 'latitude': 41.889, 'longitude': 12.47}
+        notes = dict(NOTES, areas=[{'id': 'area-1', 'character': 'Ruins by day, quiet streets at night.', 'vibe': 'ancient and calm',
+                                    'touristy': 5, 'price': 3, 'safety': 9}])
+        pool = Pool(notes)
+        plan_notes.annotate(pool, result, BRIEF, {})
+        self.assertEqual(pool.calls, 1)
+        self.assertIn('[area-1] Celio: Colosseum', pool.texts[0])
+        self.assertIn('Base: Trastevere', pool.texts[0])
+        area = result['areas'][0]
+        self.assertEqual((area['touristy'], area['price'], area['vibe']), (5, 3, 'ancient and calm'))
+        self.assertNotIn('safety', area)  # out of range scores are dropped
+
     def test_guide_match_by_name_or_nearby(self):
         places = plan()['places']
         listings = [{'name': 'Vecchia Roma', 'content': 'c', 'latitude': None, 'longitude': None},

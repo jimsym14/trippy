@@ -129,6 +129,24 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
         except Exception as exc:
             failure = failure_details(exc, task=task['id'], stage='place_retrieval')
             failures.append(failure); progress('task_failed', failure); break
+    # Famous places the provider missed, free from Wikidata (live providers only:
+    # the local catalog already carries Wikidata fame).
+    if getattr(place_provider, 'name', None) == 'google_places' and not failures:
+        from . import famous
+        points = sorted((p['coordinates']['latitude'], p['coordinates']['longitude']) for b in batches[1:] for p in b['places']
+                        if p['coordinates'].get('latitude') is not None)
+        wanted = set(categories(brief)) & {'attraction', 'museum', 'nature'}
+        # Sightseeing includes the very famous museums and parks (the Vatican Museums
+        # are a sight in Rome), even when "museums" wasn't picked as an interest.
+        if 'attraction' in wanted: wanted |= {'museum', 'nature'}
+        if points and wanted:
+            middle = points[len(points) // 2]
+            items = famous.famous_items(root, brief['destination'], middle[0], sorted(p[1] for p in points)[len(points) // 2],
+                                        log=lambda event, detail: progress(event, detail))
+            if items:
+                extra = validate_batch(famous.enrich(batches, items, wanted))
+                if extra['places']: batches.append(extra)
+                progress('famous_added', {'places': len(extra['places']), 'known': len(items)})
     planning_brief = brief
     if intent and intent.area_hint:
         from .plan_engine import key
@@ -207,6 +225,10 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
     if area_shortfalls:
         pending.append({'code':'area_inventory_shortfall','details':area_shortfalls})
     stops=sum(len(d['stops']) for d in result['itinerary']['days'])
+    # Area names: one free reverse-geocode per area (cached), else "around <its best place>".
+    if result.get('areas'):
+        from .area_names import name_areas
+        name_areas(root, result['areas'], log=lambda event, detail: progress(event, detail))
     # One bounded Gemini call writes day titles and per-stop reasons; the
     # schedule above is final and never changes here.
     notes_report={'status':'off'}
