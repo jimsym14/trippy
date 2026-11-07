@@ -65,6 +65,8 @@ def _nominatim(query):
     wait = 1.1 - (time.time() - _last_nominatim[0])
     if wait > 0: time.sleep(wait)
     _last_nominatim[0] = time.time()
+    from trippy import usage
+    usage.hit('free:nominatim')
     url = 'https://nominatim.openstreetmap.org/search?' + urllib.parse.urlencode({'q': query, 'format': 'jsonv2', 'limit': 1})
     with urllib.request.urlopen(urllib.request.Request(url, headers=AGENT), timeout=10) as response:
         rows = json.load(response)
@@ -82,6 +84,8 @@ def stay_from_text(text):
 def overpass(query, *, timeout=100, mirrors=2):
     body = urllib.parse.urlencode({'data': query}).encode()
     error = None
+    from trippy import usage
+    usage.hit('free:overpass')
     for endpoint in OVERPASS[:mirrors]:
         try:
             request = urllib.request.Request(endpoint, data=body, headers=AGENT)

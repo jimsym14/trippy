@@ -40,3 +40,9 @@ services:
         sync: false
       - key: TRIPPY_SHARED_BUDGET_LEDGER
         sync: false
+      # Admin dashboard (/admin): its own token, never the app's; 24+ random characters.
+      - key: TRIPPY_ADMIN_TOKEN
+        sync: false
+      # Postgres for the dashboard's stats and admin controls (e.g. Supabase session pooler URL).
+      - key: TRIPPY_STATS_DATABASE_URL
+        sync: false

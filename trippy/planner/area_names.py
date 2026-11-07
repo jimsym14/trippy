@@ -18,6 +18,8 @@ FIELDS = ('neighbourhood', 'quarter', 'suburb', 'city_district', 'borough', 'vil
 def reverse(latitude, longitude, language='en'):
     query = urllib.parse.urlencode({'lat': f'{latitude:.5f}', 'lon': f'{longitude:.5f}', 'format': 'jsonv2', 'zoom': 16,
                                     'accept-language': language})
+    from trippy import usage
+    usage.hit('free:nominatim')
     request = urllib.request.Request('https://nominatim.openstreetmap.org/reverse?' + query,
                                      headers={'User-Agent': 'Trippy/1.0 (travel planner)'})
     with urllib.request.urlopen(request, timeout=10) as response:

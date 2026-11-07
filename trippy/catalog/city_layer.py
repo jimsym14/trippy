@@ -244,6 +244,8 @@ def collect_wikivoyage(fetcher, city, max_pages=40):
         title = titles.pop(0)
         if title in seen: continue
         seen.add(title)
+        from trippy import usage
+        usage.hit('free:wikivoyage')
         data = fetcher.get('en.wikivoyage.org', action='parse', page=title, prop='wikitext', redirects=1)
         if 'parse' not in data:
             continue

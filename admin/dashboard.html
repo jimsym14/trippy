@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Trippy Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f1e9; --surface: #fffdf9; --surface-2: #f1ebe1; --rule: #e4dccf;
+  --ink: #1f1b16; --ink-2: #5f574c; --ink-3: #8c8376; --accent: #b8562f; --accent-soft: rgba(184,86,47,.1);
+  --good: #2f7d4f; --warn: #b57a00; --bad: #c2413a;
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --bg: #15130f; --surface: #201d18; --surface-2: #2a2620; --rule: #3a342c;
+    --ink: #f1ece4; --ink-2: #c6bdb0; --ink-3: #958c7f; --accent: #e07a4f; --accent-soft: rgba(224,122,79,.14);
+    --good: #5fbf86; --warn: #e0a83a; --bad: #ec6b63;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #15130f; --surface: #201d18; --surface-2: #2a2620; --rule: #3a342c;
+  --ink: #f1ece4; --ink-2: #c6bdb0; --ink-3: #958c7f; --accent: #e07a4f; --accent-soft: rgba(224,122,79,.14);
+  --good: #5fbf86; --warn: #e0a83a; --bad: #ec6b63;
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); }
+body { font: 15px/1.45 "Plus Jakarta Sans", system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 64px; }
+h1 { font-size: 26px; font-weight: 800; margin: 0; letter-spacing: -.01em; }
+h2 { font-size: 13px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); margin: 0 0 12px; }
+.top { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.meta { color: var(--ink-3); font-size: 13px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+button, .btn { font: inherit; font-weight: 700; font-size: 13px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink);
+  border-radius: 999px; padding: 8px 14px; cursor: pointer; min-height: 36px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { color: var(--bad); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input { font: inherit; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); border-radius: 10px; padding: 8px 10px; min-height: 38px; }
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 18px; padding: 16px; }
+.grid { display: grid; gap: 14px; }
+.kpis { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 14px; }
+.kpi .v { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.kpi .l { color: var(--ink-2); font-size: 12px; font-weight: 600; }
+.kpi .s { color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+.two { grid-template-columns: 1fr; }
+@media (min-width: 900px) { .two { grid-template-columns: 1.4fr 1fr; } }
+section { margin-top: 14px; }
+.banner { border-radius: 14px; padding: 12px 14px; font-weight: 600; font-size: 14px; margin-bottom: 14px; display: flex; gap: 10px; align-items: flex-start; }
+.banner.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--ink); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+.banner.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 700; padding: 6px 8px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+td { padding: 9px 8px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+td.n, th.n { text-align: right; }
+.muted { color: var(--ink-3); }
+.small { font-size: 12px; }
+.bar { height: 6px; border-radius: 99px; background: var(--surface-2); overflow: hidden; min-width: 80px; margin-top: 5px; }
+.bar > i { display: block; height: 100%; border-radius: 99px; background: var(--ink-2); }
+.pill { display: inline-flex; gap: 5px; align-items: center; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 99px; background: var(--surface-2); color: var(--ink-2); white-space: nowrap; }
+.pill.good { color: var(--good); background: color-mix(in srgb, var(--good) 12%, transparent); }
+.pill.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.pill.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin-bottom: 8px; }
+.chart { position: relative; }
+.chart svg { width: 100%; height: 190px; display: block; }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); font-size: 12px; padding: 8px 10px; border-radius: 10px; white-space: nowrap; transform: translate(-50%, -110%); display: none; z-index: 2; }
+.login { max-width: 420px; margin: 12vh auto; }
+.login p { color: var(--ink-2); }
+.field { display: grid; gap: 4px; font-size: 12px; font-weight: 700; color: var(--ink-2); }
+.controls { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: end; }
+.switch { display: flex; gap: 8px; align-items: center; font-weight: 700; font-size: 14px; min-height: 38px; }
+.switch input { width: 20px; height: 20px; min-height: 0; accent-color: var(--accent); }
+.id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.hidden { display: none !important; }
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 999px; font-weight: 700; font-size: 13px; display: none; z-index: 5; }
+</style>
+</head>
+<body>
+<main>
+  <div id="login" class="login card hidden">
+    <h1>Trippy Admin</h1>
+    <p>Enter the dashboard token (<span class="id">TRIPPY_ADMIN_TOKEN</span> in Render). It stays in this browser only.</p>
+    <form id="loginForm" class="grid" autocomplete="off">
+      <label class="field">Admin token <input id="token" type="password" autocomplete="current-password" required minlength="24"></label>
+      <button class="primary" type="submit">Open dashboard</button>
+      <div id="loginError" class="small" style="color:var(--bad)"></div>
+    </form>
+  </div>
+
+  <div id="app" class="hidden">
+    <div class="top">
+      <div>
+        <h1>Trippy Admin</h1>
+        <div class="meta" id="meta">Loading…</div>
+      </div>
+      <div class="row">
+        <button id="refresh" type="button">Refresh</button>
+        <button id="forget" type="button">Sign out</button>
+      </div>
+    </div>
+    <div id="banners"></div>
+
+    <div class="grid kpis" id="kpis"></div>
+
+    <div class="grid two">
+      <div class="card">
+        <h2>API calls per day · last 30 days</h2>
+        <div class="legend" id="legend"></div>
+        <div class="chart" id="chart"><div class="tip" id="tip"></div></div>
+        <details class="small" style="margin-top:8px"><summary class="muted">Show as table</summary><div class="scroll" id="dailyTable"></div></details>
+      </div>
+      <div class="card">
+        <h2>Admin controls</h2>
+        <form id="controlsForm" class="controls">
+          <label class="switch"><input type="checkbox" id="paid"> Planning on</label>
+          <label class="field">Google calls per install / day <input type="number" id="defaultCap" min="0" max="100000" inputmode="numeric"></label>
+          <label class="field">Google calls for everyone / day <input type="number" id="globalCap" min="0" max="1000000" inputmode="numeric"></label>
+          <button class="primary" type="submit">Save</button>
+        </form>
+        <p class="small muted" style="margin:12px 0 0">Limits protect the free Google quota. Empty = no limit. Blocks and per-install limits are in the installs table.</p>
+        <h2 style="margin-top:18px">Gemini models</h2>
+        <div id="models" class="small"></div>
+      </div>
+    </div>
+
+    <section class="card">
+      <h2>APIs and free limits · this month</h2>
+      <div class="scroll" id="apis"></div>
+    </section>
+
+    <section class="card">
+      <h2>Installs</h2>
+      <p class="small muted" style="margin-top:-6px">Anonymous app installs. Storage and trips are what each phone reports on launch; calls are counted here.</p>
+      <div class="scroll" id="installs"></div>
+    </section>
+
+    <div class="grid two">
+      <section class="card">
+        <h2>Server endpoints · 30 days</h2>
+        <div class="scroll" id="endpoints"></div>
+      </section>
+      <section class="card">
+        <h2>Configuration</h2>
+        <div id="settings"></div>
+      </section>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+</main>
+<script>
+(() => {
+  const KEY = 'trippy.admin.token';
+  const $ = (id) => document.getElementById(id);
+  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const num = (v, d = 0) => (v === null || v === undefined || Number.isNaN(v)) ? '—' : Number(v).toLocaleString('en-GB', { maximumFractionDigits: d });
+  let token = '', data = null, timer = null;
+  try { token = localStorage.getItem(KEY) || ''; } catch (e) {}
+
+  function toast(text) { const t = $('toast'); t.textContent = text; t.style.display = 'block'; setTimeout(() => t.style.display = 'none', 2600); }
+  function ago(ts) {
+    if (!ts) return '—';
+    const s = Date.now() / 1000 - ts;
+    if (s < 90) return 'just now'; if (s < 3600) return Math.round(s / 60) + ' min ago';
+    if (s < 86400) return Math.round(s / 3600) + ' h ago'; return Math.round(s / 86400) + ' d ago';
+  }
+
+  async function call(path, options = {}) {
+    const r = await fetch(path, { ...options, headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, cache: 'no-store' });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(body.error || ('HTTP ' + r.status)); e.status = r.status; throw e; }
+    return body;
+  }
+
+  function showLogin(message) {
+    $('app').classList.add('hidden'); $('login').classList.remove('hidden');
+    $('loginError').textContent = message || '';
+    clearInterval(timer);
+  }
+
+  async function load() {
+    try {
+      data = await call('/api/admin/summary');
+      $('login').classList.add('hidden'); $('app').classList.remove('hidden');
+      render();
+      clearInterval(timer); timer = setInterval(load, 60000);
+    } catch (e) {
+      const messages = { admin_token_required: 'That token is not right.', too_many_attempts: 'Too many wrong tokens. Try again in 10 minutes.',
+        admin_token_not_configured: 'The dashboard is off: set TRIPPY_ADMIN_TOKEN (24+ characters) in Render.' };
+      if (e.status === 401 || e.status === 429 || e.status === 503 && messages[e.message]) showLogin(messages[e.message] || e.message);
+      else toast('Could not load: ' + e.message);
+    }
+  }
+
+  function render() {
+    const h = data.health, t = data.totals;
+    $('meta').textContent = `Build ${h.build} · up ${Math.round(h.uptime_seconds / 3600 * 10) / 10} h · ${h.memory_mb} MB memory · updated ${new Date(data.generated_at).toLocaleTimeString('en-GB')}`;
+    const banners = [];
+    if (h.storage !== 'postgres') banners.push(['warn', 'Stats are not saved permanently. ' + h.storage_note]);
+    if (h.last_error) banners.push(['bad', 'Saving stats failed (' + h.last_error + '). Counts are kept in memory and retried.']);
+    if (!data.controls.paid_research) banners.push(['warn', 'Planning is paused for everyone.']);
+    data.settings.filter((s) => s.required && !s.set).forEach((s) => banners.push(['bad', s.label + ' is missing in Render.']));
+    $('banners').innerHTML = banners.map(([k, m]) => `<div class="banner ${k}" role="status">${esc(m)}</div>`).join('');
+
+    const google = data.apis.filter((a) => a.group === 'google');
+    const googleMonth = google.reduce((s, a) => s + a.month, 0);
+    const googleToday = google.reduce((s, a) => s + a.today, 0);
+    const kpis = [
+      ['Installs', num(t.installs), `${num(t.active_7d)} active this week`],
+      ['Plans · 30 d', num(t.plans_30d), t.plans_30d ? `${Math.round(100 * t.plans_ready_30d / t.plans_30d)}% fully ready` : 'none yet'],
+      ['Google calls today', num(googleToday), data.controls.global_google_cap != null ? `limit ${num(data.controls.global_google_cap)} / day` : 'no daily limit'],
+      ['Google this month', num(googleMonth), 'across all SKUs'],
+      ['Calls / user / day', num(t.avg_calls_per_active_day, 1), 'average on active days'],
+      ['Trips / user', num(t.avg_trips, 1), `${num(t.avg_saved_places, 1)} saved places`],
+      ['Storage / user', t.avg_storage_mb == null ? '—' : num(t.avg_storage_mb, 1) + ' MB', 'on the phone'],
+    ];
+    $('kpis').innerHTML = kpis.map(([l, v, s]) => `<div class="card kpi"><div class="l">${esc(l)}</div><div class="v">${esc(v)}</div><div class="s">${esc(s)}</div></div>`).join('');
+
+    renderChart();
+
+    $('apis').innerHTML = `<table><thead><tr><th>API</th><th class="n">Today</th><th class="n">7 days</th><th class="n">Month</th><th>Free / month</th><th>Note</th></tr></thead><tbody>${
+      data.apis.map((a) => {
+        const share = a.share_of_free, level = share == null ? '' : share >= 1 ? 'bad' : share >= .7 ? 'warn' : 'good';
+        const free = a.monthly_free ? `<span class="pill ${level}">${num(a.month)} / ${num(a.monthly_free)}</span><div class="bar"><i style="width:${Math.min(100, (share || 0) * 100)}%;background:var(--${level === 'bad' ? 'bad' : level === 'warn' ? 'warn' : 'good'})"></i></div>` : '<span class="muted">—</span>';
+        return `<tr><td><span class="dot" style="background:var(--series-${{ google: 1, ai: 2, free: 3 }[a.group]})"></span> ${esc(a.label)}</td><td class="n">${num(a.today)}</td><td class="n">${num(a.week)}</td><td class="n">${num(a.month)}</td><td>${free}</td><td class="small muted">${esc(a.note)}</td></tr>`;
+      }).join('')}</tbody></table>
+      <p class="small muted">Rate limits on this server: ${data.rate_limits.map(([k, v]) => esc(k) + ' ' + esc(v)).join(' · ')}. Google’s free caps are per SKU per month; check the exact numbers and billing in Google Cloud Console.</p>`;
+
+    const models = data.models || [];
+    $('models').innerHTML = models.length ? `<table><tbody>${models.map((m) => {
+      const name = m.model || m.name || m.id || 'model';
+      const state = m.available === false || m.cooling_until || m.exhausted ? '<span class="pill warn">resting</span>' : '<span class="pill good">ready</span>';
+      return `<tr><td class="id">${esc(name)}</td><td>${state}</td><td class="small muted">${esc(Object.entries(m).filter(([k]) => !['model', 'name', 'id'].includes(k)).map(([k, v]) => k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : v)).join(' · ').slice(0, 140))}</td></tr>`;
+    }).join('')}</tbody></table>` : '<span class="muted">No model status (Gemini key missing or not used yet).</span>';
+
+    const c = data.controls;
+    $('paid').checked = !!c.paid_research;
+    $('defaultCap').value = c.default_google_cap ?? '';
+    $('globalCap').value = c.global_google_cap ?? '';
+
+    const rows = data.installs;
+    $('installs').innerHTML = rows.length ? `<table><thead><tr><th>Install</th><th>Last seen</th><th class="n">Trips</th><th class="n">Saved</th><th class="n">Phone MB</th><th class="n">Plans</th><th class="n">Google</th><th class="n">AI</th><th class="n">Calls / day</th><th class="n">Data MB</th><th>App</th><th></th></tr></thead><tbody>${
+      rows.map((i) => {
+        const blocked = c.blocked.includes(i.client), cap = c.client_caps[i.client], note = c.notes[i.client] || '';
+        const id = i.client === 'unknown' ? '<span class="muted">older app versions</span>' : `<span class="id">${esc(i.short)}</span>${note ? ' · ' + esc(note) : ''}${blocked ? ' <span class="pill bad">blocked</span>' : ''}${cap != null ? ` <span class="pill">limit ${num(cap)}</span>` : ''}`;
+        const actions = i.client === 'unknown' ? '' : `<div class="row"><button type="button" data-act="${blocked ? 'unblock' : 'block'}" data-id="${esc(i.client)}" class="${blocked ? '' : 'danger'}">${blocked ? 'Unblock' : 'Block'}</button><button type="button" data-act="cap" data-id="${esc(i.client)}">Limit</button><button type="button" data-act="note" data-id="${esc(i.client)}">Name</button></div>`;
+        return `<tr><td>${id}</td><td class="small">${esc(ago(i.last_seen))}</td><td class="n">${num(i.trips)}</td><td class="n">${num(i.saved_places)}</td><td class="n">${num(i.storage_mb, 1)}</td><td class="n">${num(i.plans)}</td><td class="n">${num(i.google)}</td><td class="n">${num(i.ai)}</td><td class="n">${num(i.calls_per_active_day, 1)}</td><td class="n">${num(i.mb_transferred, 1)}</td><td class="small muted">${esc([i.app_version, i.device, i.ios && 'iOS ' + i.ios].filter(Boolean).join(' · ') || '—')}</td><td>${actions}</td></tr>`;
+      }).join('')}</tbody></table>` : '<p class="muted">No installs yet. They appear once the updated app opens.</p>';
+
+    $('endpoints').innerHTML = data.endpoints.length ? `<table><thead><tr><th>Path</th><th class="n">Calls</th><th class="n">MB sent</th></tr></thead><tbody>${
+      data.endpoints.map((e) => `<tr><td class="id">${esc(e.path)}</td><td class="n">${num(e.count)}</td><td class="n">${num(e.bytes / 1e6, 2)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No requests yet.</p>';
+
+    $('settings').innerHTML = `<table><tbody>${data.settings.map((s) => `<tr><td>${esc(s.label)}<div class="id muted">${esc(s.key)}</div></td><td>${s.set ? '<span class="pill good">✓ set</span>' : s.required ? '<span class="pill bad">✕ missing</span>' : '<span class="pill">not set</span>'}</td></tr>`).join('')}
+      ${Object.entries(data.public_settings).map(([k, v]) => `<tr><td class="id muted">${esc(k)}</td><td class="small">${esc(v ?? '—')}</td></tr>`).join('')}
+      <tr><td>Stats storage</td><td class="small">${esc(h.storage)}</td></tr>
+      <tr><td>Host</td><td class="small">${esc(h.host)}</td></tr>
+      ${h.issues.length ? `<tr><td>Issues</td><td class="small">${h.issues.map(esc).join(', ')}</td></tr>` : ''}</tbody></table>
+      <p class="small muted">Values are never shown here; only whether each key is set.</p>`;
+  }
+
+  function renderChart() {
+    const groups = [['google', 'Google', 1], ['ai', 'AI', 2], ['free', 'Free sources', 3]];
+    $('legend').innerHTML = groups.map(([, l, i]) => `<span><span class="dot" style="background:var(--series-${i})"></span> ${l}</span>`).join('');
+    const days = data.daily, W = 600, H = 190, pad = { l: 34, r: 6, t: 8, b: 22 };
+    const max = Math.max(1, ...days.map((d) => d.google + d.ai + d.free));
+    const nice = Math.pow(10, Math.floor(Math.log10(max))), top = Math.ceil(max / nice) * nice;
+    const bw = (W - pad.l - pad.r) / days.length, y = (v) => H - pad.b - (v / top) * (H - pad.t - pad.b);
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="API calls per day for the last 30 days">`;
+    for (const f of [0, .5, 1]) {
+      const v = top * f;
+      svg += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--rule)" stroke-width="1"/><text x="${pad.l - 6}" y="${y(v) + 4}" text-anchor="end" font-size="10" fill="var(--ink-3)">${num(v)}</text>`;
+    }
+    days.forEach((d, i) => {
+      const x = pad.l + i * bw + 1.5, w = Math.max(2, bw - 3);
+      let base = 0;
+      groups.forEach(([k, , s], gi) => {
+        const v = d[k]; if (!v) return;
+        const y0 = y(base), y1 = y(base + v), hgt = Math.max(0, y0 - y1 - (base ? 2 : 0));
+        const last = groups.slice(gi + 1).every(([kk]) => !d[kk]);
+        svg += `<rect x="${x}" y="${y1}" width="${w}" height="${Math.max(1, hgt)}" rx="${last ? 2 : 0}" fill="var(--series-${s})"/>`;
+        base += v;
+      });
+      if (i % 5 === 0 || i === days.length - 1) svg += `<text x="${x + w / 2}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--ink-3)">${d.day.slice(5)}</text>`;
+      svg += `<rect class="hit" data-i="${i}" x="${pad.l + i * bw}" y="${pad.t}" width="${bw}" height="${H - pad.t - pad.b}" fill="transparent"/>`;
+    });
+    svg += '</svg>';
+    const chart = $('chart'); chart.querySelector('svg')?.remove(); chart.insertAdjacentHTML('beforeend', svg);
+    const tip = $('tip');
+    chart.querySelectorAll('.hit').forEach((r) => {
+      const show = (ev) => {
+        const d = days[+r.dataset.i], box = chart.getBoundingClientRect(), rb = r.getBoundingClientRect();
+        tip.innerHTML = `<b>${esc(d.day)}</b><br>Google ${num(d.google)} · AI ${num(d.ai)} · Free ${num(d.free)}`;
+        tip.style.left = (rb.left - box.left + rb.width / 2) + 'px'; tip.style.top = '20px'; tip.style.display = 'block';
+      };
+      r.addEventListener('mouseenter', show); r.addEventListener('touchstart', show, { passive: true });
+      r.addEventListener('mouseleave', () => tip.style.display = 'none');
+    });
+    $('dailyTable').innerHTML = `<table><thead><tr><th>Day</th><th class="n">Google</th><th class="n">AI</th><th class="n">Free</th></tr></thead><tbody>${
+      days.slice().reverse().map((d) => `<tr><td>${esc(d.day)}</td><td class="n">${num(d.google)}</td><td class="n">${num(d.ai)}</td><td class="n">${num(d.free)}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  async function saveControls(changes, message) {
+    try { data.controls = (await call('/api/admin/controls', { method: 'POST', body: JSON.stringify(changes) })).controls; render(); toast(message || 'Saved'); }
+    catch (e) { toast('Not saved: ' + e.message); }
+  }
+
+  $('loginForm').addEventListener('submit', (ev) => {
+    ev.preventDefault(); token = $('token').value.trim();
+    try { localStorage.setItem(KEY, token); } catch (e) {}
+    $('token').value = ''; load();
+  });
+  $('forget').addEventListener('click', () => { token = ''; try { localStorage.removeItem(KEY); } catch (e) {} showLogin(''); });
+  $('refresh').addEventListener('click', load);
+  $('controlsForm').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const n = (v) => v === '' ? null : Math.max(0, parseInt(v, 10));
+    saveControls({ paid_research: $('paid').checked, default_google_cap: n($('defaultCap').value), global_google_cap: n($('globalCap').value) });
+  });
+  $('installs').addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-act]'); if (!b) return;
+    const id = b.dataset.id, c = data.controls;
+    if (b.dataset.act === 'block') { if (confirm('Block this install? Its maps, plans and video requests will be refused.')) saveControls({ blocked: [...c.blocked, id] }, 'Blocked'); }
+    if (b.dataset.act === 'unblock') saveControls({ blocked: c.blocked.filter((x) => x !== id) }, 'Unblocked');
+    if (b.dataset.act === 'cap') {
+      const v = prompt('Google calls per day for this install (empty = use the default):', c.client_caps[id] ?? '');
+      if (v === null) return;
+      const caps = { ...c.client_caps }; if (v.trim() === '') delete caps[id]; else caps[id] = Math.max(0, parseInt(v, 10) || 0);
+      saveControls({ client_caps: caps });
+    }
+    if (b.dataset.act === 'note') {
+      const v = prompt('A name for this install (only you see it):', c.notes[id] || '');
+      if (v === null) return;
+      const notes = { ...c.notes }; if (v.trim() === '') delete notes[id]; else notes[id] = v.trim().slice(0, 80);
+      saveControls({ notes });
+    }
+  });
+  token ? load() : showLogin('');
+})();
+</script>
+</body>
+</html>

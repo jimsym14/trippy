@@ -117,6 +117,7 @@ enum SocialExtractionClient {
         var request = URLRequest(url: url, timeoutInterval: 60)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await send(request)
@@ -127,6 +128,7 @@ enum SocialExtractionClient {
         components.queryItems = [URLQueryItem(name: "job_id", value: jobID)]
         var request = URLRequest(url: components.url!, timeoutInterval: 30)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
         do { return try await send(request) }
         catch Failure.server(404, _) { return nil } // server restarted: caller resubmits
     }

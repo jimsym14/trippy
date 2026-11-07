@@ -38,6 +38,8 @@
 		C700000000000000000000B1 /* PlanBlocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000B1 /* PlanBlocks.swift */; };
 		C700000000000000000000B2 /* OpeningHours.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000B2 /* OpeningHours.swift */; };
 		C700000000000000000000B3 /* GuideAreas.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000B3 /* GuideAreas.swift */; };
+		C700000000000000000000B4 /* InstallReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000B4 /* InstallReport.swift */; };
+		C700000000000000000000B5 /* AdminView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000B5 /* AdminView.swift */; };
 		C70000000000000000000003 /* TripGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000003 /* TripGuideView.swift */; };
 		C70000000000000000000004 /* TripShelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000004 /* TripShelf.swift */; };
 		C70000000000000000000005 /* TripComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000005 /* TripComposer.swift */; };
@@ -108,6 +110,8 @@
 		C800000000000000000000B1 /* PlanBlocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanBlocks.swift; sourceTree = "<group>"; };
 		C800000000000000000000B2 /* OpeningHours.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpeningHours.swift; sourceTree = "<group>"; };
 		C800000000000000000000B3 /* GuideAreas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuideAreas.swift; sourceTree = "<group>"; };
+		C800000000000000000000B4 /* InstallReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallReport.swift; sourceTree = "<group>"; };
+		C800000000000000000000B5 /* AdminView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminView.swift; sourceTree = "<group>"; };
 		C80000000000000000000003 /* TripGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripGuideView.swift; sourceTree = "<group>"; };
 		C80000000000000000000004 /* TripShelf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripShelf.swift; sourceTree = "<group>"; };
 		C80000000000000000000005 /* TripComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripComposer.swift; sourceTree = "<group>"; };
@@ -184,6 +188,8 @@
 				C800000000000000000000B1 /* PlanBlocks.swift */,
 				C800000000000000000000B2 /* OpeningHours.swift */,
 				C800000000000000000000B3 /* GuideAreas.swift */,
+				C800000000000000000000B4 /* InstallReport.swift */,
+				C800000000000000000000B5 /* AdminView.swift */,
 				C80000000000000000000001 /* TripGuideModel.swift */,
 				C80000000000000000000000 /* SketchKit.swift */,
 				B20000000000000000000005 /* BeenGlobeMap.swift */,
@@ -345,6 +351,8 @@
 				C700000000000000000000B1 /* PlanBlocks.swift in Sources */,
 				C700000000000000000000B2 /* OpeningHours.swift in Sources */,
 				C700000000000000000000B3 /* GuideAreas.swift in Sources */,
+				C700000000000000000000B4 /* InstallReport.swift in Sources */,
+				C700000000000000000000B5 /* AdminView.swift in Sources */,
 				C70000000000000000000001 /* TripGuideModel.swift in Sources */,
 				C70000000000000000000000 /* SketchKit.swift in Sources */,
 				A20000000000000000000005 /* BeenGlobeMap.swift in Sources */,

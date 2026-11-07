@@ -1755,6 +1755,13 @@ private struct TripFlowView: View {
             }
             cachedGeneralTripPins = makeGeneralTripPins()
             TrippyPerformance.mark("pins.prepared")
+            // Counts for the admin dashboard (no trip contents), at most every 6 hours.
+            let reportTrips = trips.count, planned = trips.filter { $0.research != nil }.count
+            let saved = savedPlaces.filter(\.isSaved).count, videos = socialSources.count
+            Task.detached(priority: .background) { [bridgeBaseURL, bridgeToken] in
+                await TrippyInstall.reportIfDue(baseURL: bridgeBaseURL, token: bridgeToken, trips: reportTrips, plannedTrips: planned,
+                                                savedPlaces: saved, videos: videos)
+            }
             withAnimation(.easeOut(duration: 0.22)) { didBootstrap = true }
             #if DEBUG
             // Screenshot checks: `-TrippyStartScreen library|guide|composer`.
@@ -4733,6 +4740,7 @@ private struct TripFlowView: View {
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue("Bearer \(bridgeToken)", forHTTPHeaderField: "Authorization")
+                request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
                 // Every day starts from the stay: send it as the plan's base.
                 var body = briefContext
                 if let base = await planningBase(destination: brief.destination) { body["base"] = base }
@@ -10763,6 +10771,7 @@ private struct TrippyMapCanvas<Header: View>: View {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         request.setValue("Bearer \(placesAccessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
@@ -11416,6 +11425,7 @@ private struct TrippyMapCanvas<Header: View>: View {
             var request = URLRequest(url: url, timeoutInterval: 8)
             request.httpMethod = "POST"
             request.setValue("Bearer \(placesAccessToken)", forHTTPHeaderField: "Authorization")
+            request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try? JSONSerialization.data(withJSONObject: ["places": Array(records[offset..<min(offset + 100, records.count)])])
             do {
@@ -11475,6 +11485,7 @@ private struct TrippyMapCanvas<Header: View>: View {
         guard let url = components.url else { return }
         var request = URLRequest(url: url, timeoutInterval: 90)
         request.setValue("Bearer \(placesAccessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -13403,6 +13414,7 @@ private actor PlacePhotoPipeline {
             if attempt > 0 { try await Task.sleep(for: .milliseconds(900 * attempt * attempt)) }
             var request = URLRequest(url: url)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
             request.setValue("application/json, image/*", forHTTPHeaderField: "Accept")
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { continue }
@@ -14517,6 +14529,11 @@ private extension TripFlowView {
                     .disabled(isCheckingPlacesConnection)
                     placesConnectionFeedback
                 }
+                Section {
+                    NavigationLink { AdminView(baseURL: bridgeBaseURL) } label: { Label("Admin", systemImage: "lock.shield") }
+                } footer: {
+                    Text("Usage, limits and installs. Needs the separate admin token.")
+                }
             }
             .navigationTitle("Google Places")
             .navigationBarTitleDisplayMode(.inline)
@@ -14581,6 +14598,7 @@ private extension TripFlowView {
         request.httpMethod = "GET"
         request.timeoutInterval = 25
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)

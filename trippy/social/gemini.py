@@ -136,6 +136,8 @@ class GeminiPool:
             self._parked[model] = max(self._parked.get(model, 0), self._clock() + seconds)
 
     def _call(self, model, body):
+        from trippy import usage
+        usage.hit('ai:gemini')
         request = Request(f"{API}/models/{model}:generateContent", data=json.dumps(body).encode(),
                           headers={"x-goog-api-key": self.api_key, "Content-Type": "application/json"}, method="POST")
         with self._open(request, timeout=self.timeout) as response:

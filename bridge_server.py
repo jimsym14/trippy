@@ -46,6 +46,31 @@ class ResearchState:
         self.jobs={}
 
 state=ResearchState()
+
+from trippy import usage
+from trippy.usage import Usage, Controls, clean_client
+_env_at_start=read_environment(Path(__file__).resolve().parent/'.env')
+recorder=Usage(Path(__file__).resolve().parent/'.local/usage/usage.json', _env_at_start.get('TRIPPY_STATS_DATABASE_URL'))
+usage.install(recorder)
+controls=Controls(recorder)
+admin_failures={}
+admin_lock=threading.Lock()
+
+
+def admin_allowed(handler):
+    """The dashboard has its own token (never the app's), and guessing it is throttled per address."""
+    expected=read_environment(root()/'.env').get('TRIPPY_ADMIN_TOKEN','').strip()
+    address=(handler.headers.get('X-Forwarded-For') or handler.client_address[0]).split(',')[0].strip()
+    now=time.time()
+    with admin_lock:
+        recent=[t for t in admin_failures.get(address,[]) if now-t<600]
+        admin_failures[address]=recent
+        if len(recent)>=8: return 'locked'
+    supplied=handler.headers.get('Authorization','')
+    supplied=supplied[7:] if supplied.startswith('Bearer ') else ''
+    if len(expected)>=24 and hmac.compare_digest(expected,supplied): return 'ok'
+    with admin_lock: admin_failures.setdefault(address,[]).append(now)
+    return 'disabled' if len(expected)<24 else 'denied'
 places_limit_lock=threading.Lock()
 places_request_times=[]
 photo_request_times=[]
@@ -82,7 +107,20 @@ def allow_places_request(kind='places'):
 _hours_cache={}
 
 
+def google_sku(path, body, field_mask):
+    """Which Google SKU a call is billed as, for the dashboard (approximate, by request shape)."""
+    mask=field_mask or ''
+    if '/media' in path: return 'google:photo'
+    if path=='places:searchText':
+        if 'places.websiteUri' in mask and 'regularOpeningHours' in mask: return 'google:text_search'
+        if (body or {}).get('pageSize')==3: return 'google:social_search'
+        return 'google:app_search'
+    if mask=='id,regularOpeningHours,utcOffsetMinutes': return 'google:hours'
+    return 'google:details'
+
+
 def google_places_json(path, api_key, *, body=None, field_mask=None):
+    usage.hit(google_sku(path, body, field_mask))
     data=json.dumps(body).encode() if body is not None else None
     headers={'X-Goog-Api-Key':api_key,'Accept':'application/json'}
     if data is not None: headers['Content-Type']='application/json'
@@ -330,7 +368,81 @@ def read_job(job_id):
     return job
 
 
+KNOWN_PATHS={'/api/status','/api/research','/api/social/extract','/api/social/status','/api/places/retain',
+             '/api/places/search','/api/places/details','/api/places/photo','/api/places/hours','/api/usage/report',
+             '/api/admin/summary','/api/admin/controls','/admin'}
+
+
 class RequestHandler(BaseHTTPRequestHandler):
+    def setup(self):
+        super().setup()
+        self.counted=False
+
+    @property
+    def client_id(self):
+        return clean_client(self.headers.get('X-Trippy-Client'))
+
+    def count(self,nbytes):
+        if self.counted: return
+        self.counted=True
+        path=urlsplit(self.path).path
+        if path.startswith('/api/admin') or path=='/admin': return   # the dashboard doesn't count itself
+        usage.hit('api:'+(path if path in KNOWN_PATHS else 'other'),self.client_id,1,nbytes)
+
+    def refuse(self,code):
+        messages={'install_blocked':'This install has been blocked by the admin.',
+                  'paid_research_paused':'Planning is paused by the admin for now.',
+                  'daily_limit_reached':'Daily limit for maps lookups reached. It resets at midnight UTC.',
+                  'service_daily_limit_reached':'The service reached today\'s maps limit. It resets at midnight UTC.'}
+        self.send_json(403 if code=='install_blocked' else 429,{'error':code,'message':messages.get(code,code)})
+
+    def send_html(self,status,html):
+        body=html.encode()
+        self.send_response(status)
+        self.send_header('Content-Type','text/html; charset=utf-8')
+        self.send_header('Cache-Control','no-store')
+        # Only this page's own inline code; no third-party scripts can read the token.
+        self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+        self.send_header('X-Content-Type-Options','nosniff')
+        self.send_header('Referrer-Policy','no-referrer')
+        self.end_headers()
+        try: self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError): pass
+
+    def read_json(self,limit):
+        length=int(self.headers.get('Content-Length','0'))
+        if not 0<length<=limit: raise ValueError('invalid_length')
+        return json.loads(self.rfile.read(length))
+
+    def admin(self,target,method):
+        verdict=admin_allowed(self)
+        if verdict!='ok':
+            status={'locked':429,'disabled':503}.get(verdict,401)
+            self.send_json(status,{'error':{'locked':'too_many_attempts','disabled':'admin_token_not_configured'}.get(verdict,'admin_token_required')})
+            return
+        if target.path=='/api/admin/controls' and method=='POST':
+            try: self.send_json(200,{'controls':controls.update(self.read_json(200_000))})
+            except (ValueError,TypeError,json.JSONDecodeError) as error: self.send_json(422,{'error':'invalid_controls','field':str(error)[:40]})
+            except Exception: self.send_json(503,{'error':'controls_unavailable'})
+            return
+        if target.path=='/api/admin/summary':
+            from trippy.admin_summary import build
+            try:
+                models=social_queue()._pool_factory().status()
+            except Exception: models=[]
+            values=read_environment(root()/'.env')
+            try: issues=configuration_issues(values)
+            except (ValueError,OSError): issues=['ENVIRONMENT_CONFIGURATION']
+            try:
+                summary=build(recorder.rows(30),recorder.client_reports(),values=values,issues=issues,models=models,
+                              mode=recorder.mode,last_error=recorder.last_error,started=recorder.started)
+            except Exception as error:
+                self.send_json(503,{'error':'usage_store_unavailable','type':type(error).__name__}); return
+            summary['controls']=controls.snapshot()
+            summary['busy']={'plan_running':state.is_running}
+            self.send_json(200,summary); return
+        self.send_json(404,{'error':'not_found'})
+
     def send_json(self,status,payload):
         path = urlsplit(self.path).path
         if path.startswith('/api/places/'):
@@ -340,7 +452,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Type','application/json; charset=utf-8')
         self.send_header('Cache-Control','no-store')
         self.end_headers()
-        try: self.wfile.write(json.dumps(payload,ensure_ascii=False,allow_nan=False).encode())
+        body=json.dumps(payload,ensure_ascii=False,allow_nan=False).encode()
+        self.count(len(body))
+        try: self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError): pass
     def send_image(self,status,content_type,payload):
         self.send_response(status)
@@ -348,10 +462,15 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control','no-store, max-age=0')
         self.send_header('X-Content-Type-Options','nosniff')
         self.end_headers()
+        self.count(len(payload))
         try: self.wfile.write(payload)
         except (BrokenPipeError, ConnectionResetError): pass
     def google_places(self,target):
         if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return True
+        # Blocks and daily limits come before anything else, so a blocked install learns nothing more.
+        refusal=controls.refusal(self.client_id,google=True)
+        if refusal: self.refuse(refusal); return True
+        usage.set_client(self.client_id)
         api_key=places_key()
         if not api_key:
             self.send_json(503,{'stage':'render','errorCode':'google_places_key_missing',
@@ -475,6 +594,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                         self.send_json(502,{'error':'photo_unavailable'}); return True
                     self.send_json(200,{'photoUri':photo_uri}); return True
                 request=Request(url,headers={'X-Goog-Api-Key':api_key,'Accept':'image/*'})
+                usage.hit('google:photo')
                 with urlopen(request,timeout=15) as response:
                     image=response.read(8_000_000)
                     content_type=response.headers.get_content_type()
@@ -503,6 +623,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         return False
     def do_GET(self):
         target=urlsplit(self.path)
+        if target.path=='/admin':
+            self.send_html(200,(root()/'admin'/'dashboard.html').read_text()); return
+        if target.path.startswith('/api/admin/'): self.admin(target,'GET'); return
         if target.path.startswith('/api/places/'): self.google_places(target); return
         if target.path in ('/api/social/extract','/api/social/status'):
             if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
@@ -531,8 +654,20 @@ class RequestHandler(BaseHTTPRequestHandler):
         if job is None: self.send_json(404,{'error':'job_not_found'}); return
         self.send_json(200,{**capabilities,**job,'has_result':job['result'] is not None})
     def do_POST(self):
+        target=urlsplit(self.path)
+        if target.path.startswith('/api/admin/'): self.admin(target,'POST'); return
+        if target.path=='/api/usage/report':
+            if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
+            if self.client_id=='unknown': self.send_json(422,{'error':'install_id_required'}); return
+            try: payload=self.read_json(4000)
+            except (ValueError,json.JSONDecodeError): self.send_json(422,{'error':'invalid_report'}); return
+            recorder.report(self.client_id,payload if isinstance(payload,dict) else {})
+            self.send_json(200,{'ok':True,'blocked':self.client_id in controls.snapshot()['blocked']}); return
         if urlsplit(self.path).path == '/api/social/extract':
             if not places_access_allowed(self): self.send_json(401, {'error': 'access_token_required'}); return
+            refusal=controls.refusal(self.client_id)
+            if refusal: self.refuse(refusal); return
+            usage.hit('social:extract',self.client_id)
             try:
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 < length <= 24_000_000: raise ValueError('invalid_length')
@@ -576,12 +711,22 @@ class RequestHandler(BaseHTTPRequestHandler):
             brief=json.loads(self.rfile.read(length).decode())
             if isinstance(brief,dict) and brief.get('planning_strategy')=='personal_places' and not places_access_allowed(self):
                 self.send_json(401,{'error':'access_token_required'}); return
+            refusal=controls.refusal(self.client_id,google=True,paid=True)
+            if refusal: self.refuse(refusal); return
             job_id,brief=begin_job(brief)
         except RuntimeError:
             self.send_json(409,{'error':'research_already_running'}); return
         except (ValueError,TypeError,KeyError):
             self.send_json(422,{'error':'invalid_trip_brief'}); return
-        threading.Thread(target=run_pipeline,args=(brief,job_id),daemon=True).start()
+        client=self.client_id
+        usage.hit('plan:started',client)
+        def planned():
+            # The plan's own calls (Google, Wikidata, Gemini) count for the install that asked.
+            usage.set_client(client)
+            run_pipeline(brief,job_id)
+            result=(state.jobs.get(job_id) or {}).get('result') or {}
+            usage.hit('plan:'+{'ready':'ready','partial':'partial'}.get(result.get('delivery_status'),'failed'),client)
+        threading.Thread(target=planned,daemon=True).start()
         self.send_json(202,{'status':'started','job_id':job_id,'status_url':'/api/status?job_id='+job_id})
     def log_message(self,format,*args): pass
 

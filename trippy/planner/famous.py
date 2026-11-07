@@ -67,6 +67,8 @@ def query_wikidata(latitude, longitude):
       OPTIONAL {{ ?item wdt:P361|wdt:P276 ?whole . ?whole wdt:P31 ?wholeType . VALUES ?wholeType {{ {WHOLE_VALUES} }} }}
       SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
     }} GROUP BY ?item ?itemLabel ?loc ?links ORDER BY DESC(?links) LIMIT 90"""
+    from trippy import usage
+    usage.hit('free:wikidata')
     url = 'https://query.wikidata.org/sparql?' + urllib.parse.urlencode({'query': query})
     request = urllib.request.Request(url, headers={'Accept': 'application/sparql-results+json',
                                                    'User-Agent': 'Trippy/1.0 (travel planner)'})
