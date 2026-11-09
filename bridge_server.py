@@ -139,10 +139,12 @@ def google_sku(path, body, field_mask):
     mask=field_mask or ''
     if '/media' in path: return 'google:photo'
     if path=='places:searchText':
+        if mask=='places.id': return 'google:id_match'   # Text Search Essentials (IDs only): no charge
         if 'places.websiteUri' in mask and 'regularOpeningHours' in mask: return 'google:text_search'
         if (body or {}).get('pageSize')==3: return 'google:social_search'
         return 'google:app_search'
     if mask=='id,regularOpeningHours,utcOffsetMinutes': return 'google:hours'
+    if mask=='id,location,types,formattedAddress': return 'google:details_essentials'   # the planner's cheap place check
     return 'google:details'
 
 
@@ -314,6 +316,47 @@ def begin_job(brief):
         return job_id,brief
 
 
+def planner_summary(limit=15):
+    """Admin → Planner: the choices, today's setting with a 2- and 5-day trip estimate, and recent plans with their own estimate."""
+    from trippy.planner.planner_config import catalog, clean as clean_planner, estimate as estimate_plan
+    config=clean_planner(controls.snapshot().get('planner') or {})
+    recent=[]
+    folder=root()/'.local/trip-pipeline/jobs'
+    if folder.is_dir():
+        files=sorted((p for p in folder.glob('*/status.json')),key=lambda p:p.stat().st_mtime,reverse=True)[:60]
+        for path in files:
+            try: job=json.loads(path.read_text())
+            except (OSError,ValueError): continue
+            result=job.get('result') or {}
+            info=(result.get('pipeline_report') or {}).get('planner')
+            if not info: continue
+            context=job.get('request_context') or {}
+            recent.append({'job':job.get('job_id','')[:8],'destination':context.get('destination'),'started_at':job.get('started_at'),
+                'status':result.get('delivery_status'),'days':len((result.get('itinerary') or {}).get('days',[])),
+                'stops':sum(len(d.get('stops',[])) for d in (result.get('itinerary') or {}).get('days',[])),
+                'config':info.get('config'),'estimate':info.get('estimate'),'checks':info.get('checks'),
+                'ideas':info.get('ideas'),'kept':info.get('kept')})
+            if len(recent)>=limit: break
+    return {**catalog(),'config':config,'estimates':{'2':estimate_plan(config,days=2),'5':estimate_plan(config,days=5)},'recent':recent}
+
+
+def blend_generator(planner, values):
+    """The AI that writes place ideas for the blend, as generate(prompt, system, schema) -> dict, or None."""
+    model=planner['idea_model']
+    if model=='azure-luna':
+        if configuration_issues(values): return None
+        ledger=Path(values.get('TRIPPY_SHARED_BUDGET_LEDGER',str(root()/'.local/stage3/extraction-budget.sqlite')))
+        if not ledger.is_absolute(): ledger=root()/ledger
+        luna=AzureResearchProvider(values,ledger)
+        from trippy.planner.gemini_blend import json_schema
+        return lambda prompt,system,schema: luna.normalize(system,{'request':prompt},json_schema(schema),'blend-ideas-'+uuid4().hex[:8])
+    key=values.get('GEMINI_API_KEY','').strip()
+    if not key: return None
+    # Same model first, a lighter one when it's busy; a paid key just means higher limits on the same call.
+    pool=GeminiPool(key,[model]+[m for m in ('gemini-3.5-flash-lite','gemini-3.1-flash-lite') if m!=model],timeout=150)
+    return lambda prompt,system,schema: pool.generate([{'text':prompt}],system=system,schema=schema,temperature=0.4)[0]
+
+
 def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None):
     if job_id is None: job_id,brief_data=begin_job(brief_data)
     try:
@@ -325,21 +368,34 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
             provider=AzureResearchProvider(values,ledger)
         report_progress=lambda step,detail:progress(job_id,step,detail) if step not in {'completed','partial'} else None
         if personal:
-            place_provider=None
-            if values.get('GOOGLE_PLACES_API_KEY') and values.get('TRIPPY_ALLOW_PAID_RESEARCH','').lower()=='true':
-                def request_places(path, **kwargs):
-                    if not allow_places_request(): raise RuntimeError('place_rate_limit')
-                    return google_places_json(path,values['GOOGLE_PLACES_API_KEY'],**kwargs)
+            from trippy.planner.planner_config import clean as clean_planner, estimate as estimate_plan
+            # The admin's choice (Admin → Planner); env TRIPPY_PLACE_PROVIDER only sets the starting default.
+            stored=controls.snapshot().get('planner')
+            planner=clean_planner(stored or ({'place_finder':'gemini_blend'} if values.get('TRIPPY_PLACE_PROVIDER','').strip()=='gemini_blend' else {}))
+            place_provider=None; blend=None
+            google_ok=bool(values.get('GOOGLE_PLACES_API_KEY')) and values.get('TRIPPY_ALLOW_PAID_RESEARCH','').lower()=='true'
+            def request_places(path, **kwargs):
+                if not allow_places_request(): raise RuntimeError('place_rate_limit')
+                return google_places_json(path,values['GOOGLE_PLACES_API_KEY'],**kwargs)
+            from trippy.planner.osm_places import FallbackChain
+            if planner['place_finder']=='google_search' and google_ok:
                 place_provider=GoogleTravelProvider(request_places)
+            elif planner['place_finder']=='gemini_blend':
+                from trippy.planner.gemini_blend import GeminiBlendProvider, google_resolver, osm_resolver
+                checks={'osm':[osm_resolver()],'google':[google_resolver(request_places)] if google_ok else [osm_resolver()],
+                        'osm_then_google':[osm_resolver()]+([google_resolver(request_places)] if google_ok else [])}[planner['place_check']]
+                generate=blend_generator(planner,values)
+                if generate: place_provider=blend=GeminiBlendProvider(generate,checks)
+            elif planner['place_finder']=='open_data':
+                place_provider=FallbackChain(root())
             # Existing AI configuration remains optional; the library can draft offline.
             if provider is None and not configuration_issues(values):
                 ledger=Path(values.get('TRIPPY_SHARED_BUDGET_LEDGER',str(root()/'.local/stage3/extraction-budget.sqlite')))
                 if not ledger.is_absolute(): ledger=root()/ledger
                 provider=AzureResearchProvider(values,ledger)
-            ai_adapter=AzureIntentAdapter(provider) if provider is not None else None
-            # Free OpenStreetMap venues stand in when Google fails (a spent daily quota).
-            from trippy.planner.osm_places import FallbackChain
-            fallback=FallbackChain(root()) if place_provider is not None else None
+            ai_adapter=AzureIntentAdapter(provider) if provider is not None and planner['request_reader']=='azure-luna' else None
+            # Free OpenStreetMap venues stand in when the main source fails (a spent daily quota).
+            fallback=FallbackChain(root()) if place_provider is not None and planner['place_finder']!='open_data' else None
             result=execute_personal_plan(brief_data,place_provider=place_provider,intelligence=provider,
                 ai_adapter=ai_adapter,notes_pool=gemini_pool(),fallback_provider=fallback,
                 directory=job_directory(job_id),root=root(),route_provider=route_provider,progress=report_progress)
@@ -348,6 +404,13 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
                 route_provider=route_provider,progress=report_progress)
         report=result.setdefault('pipeline_report',{})
         report.update(support_id=state.jobs[job_id]['support_id'],build_commit=os.environ.get('RENDER_GIT_COMMIT','local'))
+        if personal:
+            from trippy.planner.planning_contract import categories as plan_categories
+            try: cats=len(plan_categories(normalized_brief(brief_data)))
+            except Exception: cats=5
+            report['planner']={'config':planner,'estimate':estimate_plan(planner,days=max(1,len(result.get('itinerary',{}).get('days',[]))),categories=cats),
+                'checks':{label:sum(1 for r in (blend.report if blend else []) if r.get('checked_by')==label) for label in ('openstreetmap','google')},
+                'ideas':len(blend.report) if blend else 0,'kept':sum(1 for r in (blend.report if blend else []) if r['kept'])}
         step='completed' if result['delivery_status']=='ready' else 'error' if result['delivery_status']=='failed' else 'partial'
         with state.lock:
             diagnostics=state.jobs[job_id]['diagnostics']
@@ -396,8 +459,8 @@ def read_job(job_id):
 
 
 KNOWN_PATHS={'/api/status','/api/research','/api/social/extract','/api/social/status','/api/places/retain',
-             '/api/places/search','/api/places/details','/api/places/photo','/api/places/hours','/api/usage/report',
-             '/api/admin/summary','/api/admin/controls','/admin','/api/me','/api/auth/email/start','/api/auth/email/verify',
+             '/api/places/search','/api/places/match','/api/places/ios-key','/api/places/kit-load','/api/places/details','/api/places/photo','/api/places/hours','/api/usage/report',
+             '/api/admin/summary','/api/admin/controls','/api/admin/planner-estimate','/admin','/api/me','/api/auth/email/start','/api/auth/email/verify',
              '/api/auth/apple','/api/auth/refresh','/api/auth/delete','/api/auth/google/start','/api/auth/exchange','/api/account/data'}
 
 
@@ -496,6 +559,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             except (ValueError,TypeError,json.JSONDecodeError) as error: self.send_json(422,{'error':'invalid_controls','field':str(error)[:40]})
             except Exception: self.send_json(503,{'error':'controls_unavailable'})
             return
+        if target.path=='/api/admin/planner-estimate':
+            from trippy.planner.planner_config import estimate as estimate_plan
+            query=parse_qs(target.query)
+            try:
+                config=json.loads(query.get('config',['{}'])[0])
+                days=min(31,max(1,int(query.get('days',['2'])[0]))); cats=min(10,max(1,int(query.get('categories',['5'])[0])))
+                self.send_json(200,estimate_plan(config,days=days,categories=cats))
+            except (ValueError,TypeError,json.JSONDecodeError) as error: self.send_json(422,{'error':'invalid_planner','field':str(error)[:40]})
+            return
         if target.path=='/api/admin/summary':
             from trippy.admin_summary import build
             try:
@@ -515,6 +587,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                 from trippy.usage import today
                 summary['capacity']=capacity(recorder.rows(31),summary['controls'],today=today())
             except Exception as error: summary['capacity']={'error':type(error).__name__}
+            try:
+                from trippy.cost_model import snapshot as cost_model
+                from trippy.usage import today
+                summary['cost_model']=cost_model(recorder.rows(31),today=today())
+            except Exception as error: summary['cost_model']={'error':type(error).__name__}
+            try: summary['planner']=planner_summary()
+            except Exception as error: summary['planner']={'error':type(error).__name__}
             summary['busy']={'plan_running':state.is_running}
             self.send_json(200,summary); return
         self.send_json(404,{'error':'not_found'})
@@ -563,6 +642,32 @@ class RequestHandler(BaseHTTPRequestHandler):
                     field_mask='places.id')
                 self.send_json(200,{'gateway':'connected','googlePlaces':'connected',
                     'message':'Render authenticated successfully with Google Places API (New).'}); return True
+            if target.path=='/api/places/ios-key':
+                # The iOS app's own key (restricted to the app's bundle ID in Google Cloud) for the
+                # Places UI Kit. It lives in the Render environment so it never sits in the public repo.
+                key=os.environ.get('GOOGLE_PLACES_IOS_KEY','').strip()
+                if not key: self.send_json(503,{'errorCode':'google_places_ios_key_missing'}); return True
+                self.send_json(200,{'key':key}); return True
+            if target.path=='/api/places/kit-load':
+                # The phone reports each Places UI Kit load (billed by Google per load) so the
+                # dashboard and the cost calculator see it; daily limits and blocks apply above.
+                usage.hit('google:ui_kit',self.client_id)
+                self.send_json(200,{'ok':True}); return True
+            if target.path=='/api/places/match':
+                # Google place ID for a place we already know by name and position. IDs-only Text Search
+                # is free, returns no Google content, and place IDs may be stored without limit.
+                text=query.get('q',[''])[0].strip()
+                try: lat=float(query.get('lat',[''])[0]); lng=float(query.get('lng',[''])[0])
+                except ValueError: self.send_json(422,{'error':'invalid_location'}); return True
+                if len(text)<2 or len(text)>180 or not (-90<=lat<=90 and -180<=lng<=180):
+                    self.send_json(422,{'error':'invalid_query'}); return True
+                box=0.004   # about 400 m around the pin
+                payload=google_places_json('places:searchText',api_key,body={'textQuery':text,'pageSize':1,
+                    'locationRestriction':{'rectangle':{'low':{'latitude':max(-90,lat-box),'longitude':max(-180,lng-box)},
+                                                        'high':{'latitude':min(90,lat+box),'longitude':min(180,lng+box)}}}},
+                    field_mask='places.id')
+                places=payload.get('places') or []
+                self.send_json(200,{'placeID':places[0].get('id') if places else None}); return True
             if target.path=='/api/places/search':
                 text=query.get('q',[''])[0].strip()
                 if len(text)<2 or len(text)>180: self.send_json(422,{'error':'invalid_query'}); return True

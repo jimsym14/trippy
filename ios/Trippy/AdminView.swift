@@ -54,6 +54,10 @@ struct AdminView: View {
                     LabeledContent("Google for everyone / day", value: s.controls.globalCap.map(String.init) ?? "No limit")
                 }
 
+                if let planner = s.planner {
+                    PlannerAdminSection(planner: planner, baseURL: baseURL) { config in await update(["planner": config]) }
+                }
+
                 Section("Google this month") {
                     ForEach(s.apis.filter { $0.group == "google" }) { api in
                         VStack(alignment: .leading, spacing: 4) {
@@ -201,6 +205,7 @@ struct AdminSummary {
     }
     var totals = Totals(); var apis: [API] = []; var installs: [Install] = []; var controls = Controls(); var build = ""; var storage = ""
     var capacity: Capacity?
+    var planner: PlannerAdmin?
 
     init(data: Data) throws {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw URLError(.cannotParseResponse) }
@@ -241,7 +246,173 @@ struct AdminSummary {
             }
             capacity = c
         }
+        planner = PlannerAdmin(json: root["planner"])
         let h = root["health"] as? [String: Any] ?? [:]
         build = h["build"] as? String ?? ""; storage = h["storage"] as? String ?? ""
     }
 }
+
+
+/// Admin → Planner: how plans are built (fixed choices from the server), and what a trip costs.
+struct PlannerAdmin {
+    struct Option: Identifiable { var id: String; var label: String; var choices: [(id: String, label: String)] }
+    struct Line: Identifiable { var id: String { step }; var step: String; var choice: String; var calls: Double; var usd: Double; var paid: Double; var note: String }
+    struct Estimate { var days = 2; var lines: [Line] = []; var total = 0.0; var paidTotal = 0.0; var warnings: [String] = [] }
+    struct Model: Identifiable { var id: String; var label: String; var priceIn: Double; var priceOut: Double; var freeTier: Bool; var maps: String; var reviews: String; var speed: String; var notes: String }
+    struct Plan: Identifiable { var id: String; var destination: String; var days: Int; var stops: Int; var status: String; var finder: String; var detail: String; var estimate: Estimate }
+    var options: [Option] = []; var config: [String: String] = [:]; var models: [Model] = []; var recent: [Plan] = []; var estimate = Estimate()
+
+    init?(json: Any?) {
+        guard let root = json as? [String: Any], root["error"] == nil, let opts = root["options"] as? [String: Any] else { return nil }
+        let order = ["place_finder", "idea_model", "gemini_tier", "place_check", "request_reader"]
+        options = order.compactMap { key in
+            guard let o = opts[key] as? [String: Any] else { return nil }
+            return Option(id: key, label: o["label"] as? String ?? key,
+                          choices: (o["choices"] as? [[String: Any]] ?? []).map { ($0["id"] as? String ?? "", $0["label"] as? String ?? "") })
+        }
+        config = root["config"] as? [String: String] ?? [:]
+        models = (root["models"] as? [[String: Any]] ?? []).map { m in
+            Model(id: m["id"] as? String ?? "", label: m["label"] as? String ?? "", priceIn: (m["in"] as? NSNumber)?.doubleValue ?? 0,
+                  priceOut: (m["out"] as? NSNumber)?.doubleValue ?? 0, freeTier: m["free_tier"] as? Bool ?? false,
+                  maps: m["maps"] as? String ?? "", reviews: m["reviews"] as? String ?? "", speed: m["speed"] as? String ?? "", notes: m["notes"] as? String ?? "")
+        }
+        estimate = Self.estimate((root["estimates"] as? [String: Any])?["2"]) ?? Estimate()
+        let finders = Dictionary(uniqueKeysWithValues: (options.first { $0.id == "place_finder" }?.choices ?? []).map { ($0.id, $0.label) })
+        recent = (root["recent"] as? [[String: Any]] ?? []).enumerated().map { index, r in
+            let c = r["config"] as? [String: String] ?? [:]
+            return Plan(id: (r["job"] as? String ?? "") + "\(index)", destination: r["destination"] as? String ?? "Trip",
+                        days: (r["days"] as? NSNumber)?.intValue ?? 0, stops: (r["stops"] as? NSNumber)?.intValue ?? 0,
+                        status: r["status"] as? String ?? "", finder: finders[c["place_finder"] ?? ""] ?? (c["place_finder"] ?? ""),
+                        detail: c["place_finder"] == "gemini_blend" ? [c["idea_model"], c["gemini_tier"], c["place_check"]].compactMap { $0 }.joined(separator: " · ") : "",
+                        estimate: Self.estimate(r["estimate"]) ?? Estimate())
+        }
+    }
+
+    static func estimate(_ json: Any?) -> Estimate? {
+        guard let e = json as? [String: Any] else { return nil }
+        func d(_ v: Any?) -> Double { (v as? NSNumber)?.doubleValue ?? 0 }
+        return Estimate(days: (e["days"] as? NSNumber)?.intValue ?? 2,
+                        lines: (e["lines"] as? [[String: Any]] ?? []).map {
+                            Line(step: $0["step"] as? String ?? "", choice: $0["choice"] as? String ?? "", calls: d($0["calls"]),
+                                 usd: d($0["usd"]), paid: d($0["paid_usd"]), note: $0["note"] as? String ?? "") },
+                        total: d(e["total_usd"]), paidTotal: d(e["paid_total_usd"]), warnings: e["warnings"] as? [String] ?? [])
+    }
+}
+
+struct PlannerAdminSection: View {
+    let planner: PlannerAdmin
+    let baseURL: String
+    let save: ([String: String]) async -> Void
+    @State private var draft: [String: String] = [:]
+    @State private var days = 2
+    @State private var estimate: PlannerAdmin.Estimate?
+    @State private var saving = false
+
+    private var current: [String: String] { draft.isEmpty ? planner.config : draft }
+    private var changed: Bool { !draft.isEmpty && draft != planner.config }
+
+    var body: some View {
+        Section {
+            ForEach(planner.options) { option in
+                Picker(option.label, selection: Binding(get: { current[option.id] ?? "" }, set: { value in
+                    var next = current; next[option.id] = value; draft = next
+                })) {
+                    ForEach(option.choices, id: \.id) { Text($0.label).tag($0.id) }
+                }
+                .disabled(["idea_model", "gemini_tier", "place_check"].contains(option.id) && current["place_finder"] != "gemini_blend")
+            }
+            Stepper("Trip length: \(days) day\(days == 1 ? "" : "s")", value: $days, in: 1...14)
+            let e = estimate ?? planner.estimate
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Self.usd(e.total) + " per \(e.days)-day trip").font(.title3.bold()).monospacedDigit()
+                if e.paidTotal != e.total { Text(Self.usd(e.paidTotal) + " once off Gemini's free tier").font(.caption).foregroundStyle(.secondary) }
+            }
+            ForEach(e.lines) { line in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(line.step).font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text(Self.usd(line.usd)).monospacedDigit()
+                    }
+                    Text(line.choice + (line.note.isEmpty ? "" : " · " + line.note)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            ForEach(e.warnings, id: \.self) { Label($0, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
+            Button(saving ? "Saving…" : "Save planner") {
+                saving = true
+                Task { await save(current); saving = false; draft = [:] }
+            }
+            .disabled(!changed || saving)
+        } header: { Text("Planner") } footer: { Text("Saving applies to every plan from then on.") }
+        .task(id: "\(current)\(days)") { await loadEstimate() }
+
+        Section("AI models compared") {
+            ForEach(planner.models) { m in
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Maps: \(m.maps)"); Text("Reviews: \(m.reviews)"); Text("Speed: \(m.speed)"); Text(m.notes).foregroundStyle(.secondary)
+                    }.font(.caption)
+                } label: {
+                    HStack {
+                        Text(m.label)
+                        Spacer()
+                        Text(String(format: "$%.2f · $%.2f", m.priceIn, m.priceOut)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        if m.freeTier { Text("Free tier").font(.caption2.bold()).foregroundStyle(.green) }
+                    }
+                }
+            }
+        }
+
+        if !planner.recent.isEmpty {
+            Section("Recent plans") {
+                ForEach(planner.recent) { plan in
+                    DisclosureGroup {
+                        ForEach(plan.estimate.lines) { line in
+                            LabeledContent(line.step, value: Self.usd(line.usd)).font(.caption)
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack { Text("\(plan.destination) · \(plan.days) days").font(.subheadline.weight(.semibold)); Spacer(); Text(Self.usd(plan.estimate.total)).monospacedDigit() }
+                            Text(plan.finder + (plan.detail.isEmpty ? "" : " · " + plan.detail) + " · \(plan.stops) stops").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadEstimate() async {
+        guard let json = try? JSONSerialization.data(withJSONObject: current), let config = String(data: json, encoding: .utf8),
+              var components = URLComponents(string: baseURL + "/api/admin/planner-estimate") else { return }
+        components.queryItems = [URLQueryItem(name: "config", value: config), URLQueryItem(name: "days", value: String(days))]
+        guard let url = components.url else { return }
+        try? await AccountSession.shared.ensureFresh()
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
+        guard let (data, response) = try? await URLSession.shared.data(for: request), (response as? HTTPURLResponse)?.statusCode == 200,
+              let parsed = PlannerAdmin.estimate(try? JSONSerialization.jsonObject(with: data)) else { return }
+        estimate = parsed
+    }
+
+    static func usd(_ value: Double) -> String { value == 0 ? "$0" : String(format: value < 0.1 ? "$%.3f" : "$%.2f", value) }
+}
+
+
+#if DEBUG
+/// `-TrippyPlannerAdminDemo`: the Planner admin section with sample data, for screenshots (no admin sign-in needed).
+struct PlannerAdminDemo: View {
+    static let json = #"""
+{"options": {"place_finder": {"label": "Places come from", "choices": [{"id": "google_search", "label": "Google search per category (today)"}, {"id": "gemini_blend", "label": "AI ideas, checked as real places"}, {"id": "open_data", "label": "Open data only (OpenStreetMap, Wikivoyage)"}]}, "idea_model": {"label": "AI for place ideas", "choices": [{"id": "gemini-3.6-flash", "label": "Gemini 3.6 Flash"}, {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"}, {"id": "gemini-3.5-flash-lite", "label": "Gemini 3.5 Flash-Lite"}, {"id": "gemini-3.1-flash-lite", "label": "Gemini 3.1 Flash-Lite"}, {"id": "azure-luna", "label": "GPT-6 Luna (Azure)"}]}, "gemini_tier": {"label": "Gemini billing", "choices": [{"id": "free", "label": "Free tier (limits; Google may use inputs)"}, {"id": "paid", "label": "Paid tier"}]}, "place_check": {"label": "Check ideas against", "choices": [{"id": "osm", "label": "OpenStreetMap only (free)"}, {"id": "osm_then_google", "label": "OpenStreetMap, then Google for misses"}, {"id": "google", "label": "Google for every idea"}]}, "request_reader": {"label": "Reading the request", "choices": [{"id": "azure-luna", "label": "GPT-6 Luna (Azure)"}, {"id": "keywords", "label": "Keywords only (free)"}]}}, "models": [{"label": "Gemini 3.6 Flash", "in": 0.75, "out": 3.75, "think": 1000, "free_tier": true, "maps": "Paid tier only ($14 per 1,000 after 5,000 free a month)", "web": "Paid tier only", "reviews": "From training only; no live reviews without grounding", "speed": "≈ 16 s per category", "notes": "Best food picks in the 9 Nov tests. Price doubles 1 Jan 2027.", "id": "gemini-3.6-flash"}, {"label": "Gemini 3.8 Flash", "in": 0.75, "out": 3.75, "think": 3000, "free_tier": true, "maps": "Paid tier only ($14 per 1,000 after 5,000 free a month)", "web": "Paid tier only", "reviews": "From training only; no live reviews without grounding", "speed": "Slow: up to 5 min per call in the 8 Nov test", "notes": "Strongest reasoning; too slow for plans today.", "id": "gemini-3.8-flash"}, {"label": "Gemini 3.5 Flash-Lite", "in": 0.3, "out": 2.5, "think": 0, "free_tier": true, "maps": "Paid tier only ($14 per 1,000 after 5,000 free a month)", "web": "Paid tier only", "reviews": "From training only", "speed": "≈ 4–11 s per category", "notes": "Fast; sometimes puts a sight or café in the wrong list (the check drops it).", "id": "gemini-3.5-flash-lite"}, {"label": "Gemini 3.1 Flash-Lite", "in": 0.25, "out": 1.5, "think": 0, "free_tier": true, "maps": "Paid tier only", "web": "Paid tier only", "reviews": "From training only", "speed": "≈ 6 s per category", "notes": "Cheapest; older knowledge.", "id": "gemini-3.1-flash-lite"}, {"label": "GPT-6 Luna (Azure)", "in": 0.3, "out": 1.0, "think": 800, "free_tier": false, "maps": "No map data", "web": "Web search through our Azure agent (blogs, review sites), billed per search", "reviews": "Can read review sites and blogs when web search is on", "speed": "Not measured for this task", "notes": "Paid only; counts against TRIPPY_AI_BUDGET_AMOUNT. Not yet tested for place ideas.", "id": "azure-luna"}], "default": {"place_finder": "google_search", "idea_model": "gemini-3.6-flash", "gemini_tier": "free", "place_check": "osm_then_google", "request_reader": "azure-luna"}, "config": {"place_finder": "google_search", "idea_model": "gemini-3.6-flash", "gemini_tier": "free", "place_check": "osm_then_google", "request_reader": "azure-luna"}, "estimates": {"2": {"config": {"place_finder": "google_search", "idea_model": "gemini-3.6-flash", "gemini_tier": "free", "place_check": "osm_then_google", "request_reader": "azure-luna"}, "days": 2, "categories": 5, "lines": [{"step": "Reading the request", "choice": "GPT-6 Luna", "calls": 1, "usd": 0.0024, "paid_usd": 0.0024, "note": ""}, {"step": "Finding places", "choice": "Google search", "calls": 5, "usd": 0.175, "paid_usd": 0.175, "note": "After the 1,000 free searches a month"}, {"step": "Famous sights", "choice": "Wikidata", "calls": 1, "usd": 0, "paid_usd": 0, "note": "Free"}, {"step": "Plan notes and day themes", "choice": "Gemini (notes pool)", "calls": 3, "usd": 0.0, "paid_usd": 0.0126, "note": "Free tier"}], "total_usd": 0.1774, "paid_total_usd": 0.19, "warnings": ["Google ratings are used to choose places, which Google's EEA terms don't allow for trip planning."]}}, "recent": [{"job": "a1b2c3d4", "destination": "Rome", "days": 2, "stops": 17, "status": "partial", "config": {"place_finder": "gemini_blend", "idea_model": "gemini-3.6-flash", "gemini_tier": "free", "place_check": "osm_then_google", "request_reader": "azure-luna"}, "estimate": {"config": {"place_finder": "gemini_blend", "idea_model": "gemini-3.6-flash", "gemini_tier": "free", "place_check": "osm_then_google", "request_reader": "azure-luna"}, "days": 2, "categories": 5, "lines": [{"step": "Reading the request", "choice": "GPT-6 Luna", "calls": 1, "usd": 0.0024, "paid_usd": 0.0024, "note": ""}, {"step": "Finding places", "choice": "Gemini 3.6 Flash (free tier)", "calls": 6.5, "usd": 0.0, "paid_usd": 0.0558, "note": "Free tier: limited requests a day"}, {"step": "Checking places are real", "choice": "OpenStreetMap, Google for misses", "calls": 52.0, "usd": 0.091, "paid_usd": 0.091, "note": "≈ 18 Google checks at $0.005, after 10,000 free a month"}, {"step": "Famous sights", "choice": "Wikidata", "calls": 1, "usd": 0, "paid_usd": 0, "note": "Free"}, {"step": "Plan notes and day themes", "choice": "Gemini (notes pool)", "calls": 3, "usd": 0.0, "paid_usd": 0.0126, "note": "Free tier"}], "total_usd": 0.0934, "paid_total_usd": 0.1618, "warnings": ["Free tier: a busy day can hit Gemini's limits, and Google may use the prompts to improve its models."]}}, {"job": "e5f6a7b8", "destination": "Athens", "days": 2, "stops": 21, "status": "partial", "config": {"place_finder": "google_search", "idea_model": "gemini-3.6-flash", "gemini_tier": "free", "place_check": "osm_then_google", "request_reader": "azure-luna"}, "estimate": {"config": {"place_finder": "google_search", "idea_model": "gemini-3.6-flash", "gemini_tier": "free", "place_check": "osm_then_google", "request_reader": "azure-luna"}, "days": 2, "categories": 5, "lines": [{"step": "Reading the request", "choice": "GPT-6 Luna", "calls": 1, "usd": 0.0024, "paid_usd": 0.0024, "note": ""}, {"step": "Finding places", "choice": "Google search", "calls": 5, "usd": 0.175, "paid_usd": 0.175, "note": "After the 1,000 free searches a month"}, {"step": "Famous sights", "choice": "Wikidata", "calls": 1, "usd": 0, "paid_usd": 0, "note": "Free"}, {"step": "Plan notes and day themes", "choice": "Gemini (notes pool)", "calls": 3, "usd": 0.0, "paid_usd": 0.0126, "note": "Free tier"}], "total_usd": 0.1774, "paid_total_usd": 0.19, "warnings": ["Google ratings are used to choose places, which Google's EEA terms don't allow for trip planning."]}}]}
+"""#
+    var body: some View {
+        NavigationStack {
+            List {
+                if let planner = PlannerAdmin(json: try? JSONSerialization.jsonObject(with: Data(Self.json.utf8))) {
+                    PlannerAdminSection(planner: planner, baseURL: "http://127.0.0.1:9") { _ in }
+                }
+            }
+            .navigationTitle("Admin").navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+#endif

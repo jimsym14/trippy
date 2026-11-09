@@ -31,7 +31,16 @@ struct TrippyApp: App {
     }
     var body: some Scene {
         WindowGroup {
+            #if DEBUG
+            // `-TrippyCostCalculatorDemo`: open the cost calculator straight away, for screenshots.
+            if ProcessInfo.processInfo.arguments.contains("-TrippyCostCalculatorDemo") {
+                NavigationStack { CostCalculatorView(baseURL: "") }
+            } else if ProcessInfo.processInfo.arguments.contains("-TrippyPlannerAdminDemo") {
+                PlannerAdminDemo()
+            } else { TrippyStartupHost() }
+            #else
             TrippyStartupHost()
+            #endif
         }
     }
 }
@@ -5596,7 +5605,7 @@ private struct BrandWordmark: View {
     }
 }
 
-private enum AppPalette {
+enum AppPalette {
     static let canvas = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark ? UIColor(red: 0.07, green: 0.12, blue: 0.10, alpha: 1) : UIColor(red: 0.976, green: 0.957, blue: 0.929, alpha: 1)
     })
@@ -9076,6 +9085,9 @@ private struct TrippyMapCanvas<Header: View>: View {
     @State private var resolvedGooglePlaceIDs: [String: String] = [:]
     @State private var loadingGoogleDetails = false
     @State private var googleDetailsError: String?
+    @State private var appleMapItem: MKMapItem?
+    @State private var appleCardItem: MKMapItem?
+    @State private var kitPlaceID: String?
     @State private var pendingPlanPin: WorkspaceMapPin?
     @State private var renderedRoutes: [String: MKRoute] = [:]
     @State private var routeCache: [String: MKRoute] = [:]
@@ -9476,7 +9488,8 @@ private struct TrippyMapCanvas<Header: View>: View {
             guard openNowOnly else { return }
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            await hoursStore.lookup(hoursQueries, google: true, bridgeBaseURL: placesBaseURL, token: placesAccessToken)
+            // OpenStreetMap only: Google hours may not be stored or used to filter a map (EEA terms).
+            await hoursStore.lookup(hoursQueries, google: false)
         }
         .task(id: destination.isEmpty ? "prefetch:off" : "prefetch:\(pointTaskID.hashValue)") {
             // Inside a trip, fetch free OpenStreetMap hours in the background so
@@ -10658,9 +10671,9 @@ private struct TrippyMapCanvas<Header: View>: View {
                 providerLight(appleSearchStatus)
             }.accessibilityElement(children: .ignore).accessibilityLabel("Apple Maps: \(appleSearchStatus.label)")
             HStack(spacing: 5) {
-                Image("GoogleSearchGlyph").resizable().scaledToFit().frame(width: 16, height: 16)
+                Image(systemName: "heart.text.square").font(.system(size: 15, weight: .medium))
                 providerLight(googleSearchStatus)
-            }.accessibilityElement(children: .ignore).accessibilityLabel("Google Maps: \(googleSearchStatus.label)")
+            }.accessibilityElement(children: .ignore).accessibilityLabel("Your saved places: \(googleSearchStatus.label)")
             Spacer()
             if searching { ProgressView().controlSize(.small) }
             Text("\(displayedSearchResults.count)").font(.system(size: 10, weight: .medium)).foregroundStyle(AppPalette.secondaryInk)
@@ -10798,12 +10811,14 @@ private struct TrippyMapCanvas<Header: View>: View {
         catch { return }
         searchError = nil; searching = true
         appleSearchStatus = .loading
-        googleSearchStatus = placesAccessToken.isEmpty ? .unavailable : .loading
+        googleSearchStatus = .loading
         TrippyPerformance.mark("search.begin")
+        // Apple's search plus the user's own saved, pinned and TikTok places. Google search results
+        // can't be shown on our map under the EEA terms, so search no longer calls Google.
         var apple: [PersonalPlace] = [], google: [PersonalPlace] = []
         await withTaskGroup(of: (Bool, [PersonalPlace]?).self) { group in
             group.addTask { @MainActor in (true, try? await searchApplePlaces(text)) }
-            group.addTask { @MainActor in (false, try? await searchGooglePlaces(text)) }
+            group.addTask { @MainActor in (false, libraryMatches(text)) }
             for await (isApple, results) in group {
                 guard !Task.isCancelled, showMapSearch, query.trimmingCharacters(in: .whitespacesAndNewlines) == text else { group.cancelAll(); return }
                 if isApple { apple = results ?? []; appleSearchStatus = results == nil ? .unavailable : .used }
@@ -10815,6 +10830,19 @@ private struct TrippyMapCanvas<Header: View>: View {
         guard !Task.isCancelled, query.trimmingCharacters(in: .whitespacesAndNewlines) == text else { return }
         searching = false
         if searchResults.isEmpty { searchError = appleSearchStatus == .unavailable ? "Search isn’t reachable right now" : "Nothing found" }
+    }
+    /// The user's own places whose name or address matches the query (free, on the phone).
+    private func libraryMatches(_ text: String) -> [PersonalPlace] {
+        func folded(_ value: String) -> String { value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) }
+        let needle = folded(text)
+        var seen = Set<String>()
+        return (savedPlaces.filter { $0.isSaved || $0.isPinned } + pins.map(\.personalPlace))
+            .filter { place in
+                guard place.searchKind != .area else { return false }
+                return folded(place.name).contains(needle) || folded(place.address).contains(needle)
+            }
+            .filter { seen.insert(folded($0.name) + String(format: ":%.3f:%.3f", $0.latitude, $0.longitude)).inserted }
+            .prefix(8).map { $0 }
     }
     private func searchApplePlaces(_ text: String) async throws -> [PersonalPlace] {
         let request = MKLocalSearch.Request()
@@ -11057,6 +11085,18 @@ private struct TrippyMapCanvas<Header: View>: View {
                 }
 
                 if !isArea {
+                    // Saved, pinned and TikTok places: Google's rating line through the UI Kit
+                    // (the only form the EEA terms allow beside a map). Everything else stays free.
+                    if let kitPlaceID, isLibraryPlace(pin) {
+                        GooglePlaceBlock(placeID: kitPlaceID, baseURL: placesBaseURL, token: placesAccessToken)
+                            .id(kitPlaceID)
+                    }
+                    if #available(iOS 18.0, *) {
+                        if appleMapItem != nil { AppleMapsCardButton { appleCardItem = appleMapItem } }
+                    }
+                }
+
+                if !isArea {
                     if !photos.isEmpty {
                         PlacePhotoMosaic(photos: photos, baseURL: placesBaseURL, accessToken: placesAccessToken, tint: tint) { photoViewerIndex = $0 }
                     } else if loadingGoogleDetails {
@@ -11169,8 +11209,8 @@ private struct TrippyMapCanvas<Header: View>: View {
                             .foregroundStyle(AppPalette.ink).background(Sketch.card, in: Capsule())
                     }.buttonStyle(QuietPressStyle())
                 }
-                if details != nil {
-                    Text("Details, photos and reviews from Google Maps").font(Sketch.text(11, relativeTo: .caption2))
+                if appleMapItem != nil {
+                    Text("Place details from Apple Maps").font(Sketch.text(11, relativeTo: .caption2))
                         .foregroundStyle(AppPalette.secondaryInk).frame(maxWidth: .infinity)
                 }
             }
@@ -11199,6 +11239,7 @@ private struct TrippyMapCanvas<Header: View>: View {
         .fullScreenCover(isPresented: Binding(get: { photoViewerIndex != nil }, set: { if !$0 { photoViewerIndex = nil } })) {
             PlacePhotoViewer(title: title, photos: photos, baseURL: placesBaseURL, accessToken: placesAccessToken, index: photoViewerIndex ?? 0)
         }
+        .modifier(AppleMapsCardSheet(item: $appleCardItem))
         .task(id: pin.id) {
             if let detent = PlacePanelDemo.detent {
                 Task { try? await Task.sleep(for: .milliseconds(700)); placePanelDetent = detent
@@ -11572,67 +11613,48 @@ private struct TrippyMapCanvas<Header: View>: View {
         }
         return personal + imported
     }
+    /// Card data: Apple's place for our own layout (free), plus a stored Google place ID for the
+    /// UI Kit rating line on saved, pinned and TikTok places. No Google content is fetched or kept here.
     private func loadGoogleDetails(for pin: WorkspaceMapPin) async {
         googlePlaceDetails = nil
         googleDetailsError = nil
+        appleMapItem = nil
+        kitPlaceID = nil
         guard pin.searchKind != .area else { return }
-        if let demo = PlacePanelDemo.details(for: pin) { googlePlaceDetails = demo; return }
-        guard !placesAccessToken.isEmpty else {
-            googleDetailsError = "Place details are not connected. Add the bridge token in Settings → Google Places."
-            return
-        }
         loadingGoogleDetails = true
         defer { loadingGoogleDetails = false }
+        if isLibraryPlace(pin) { Task { await loadKitPlace(for: pin) } }
+        let item = await ApplePlaceLookup.mapItem(name: pin.name, coordinate: pin.coordinate)
+        guard !Task.isCancelled, selectedPin?.id == pin.id else { return }
+        appleMapItem = item
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-TrippyAppleCardDemo") { try? await Task.sleep(for: .seconds(1.5)); appleCardItem = item }
+        #endif
+        googlePlaceDetails = GooglePlaceDetails(placeID: "", name: pin.name,
+            address: item?.placemark.title ?? pin.address,
+            latitude: pin.coordinate.latitude, longitude: pin.coordinate.longitude,
+            primaryType: item.map(ApplePlaceLookup.categoryName) ?? "",
+            rating: nil, reviewCount: nil, openNow: nil, openingHours: [],
+            phoneNumber: item?.phoneNumber ?? pin.phoneNumber, websiteURL: item?.url?.absoluteString ?? pin.websiteURL,
+            googleMapsURL: nil, summary: "", photos: [], reviews: [])
+    }
+    private func isLibraryPlace(_ pin: WorkspaceMapPin) -> Bool {
+        savedPlaces.contains { ($0.isSaved || $0.isPinned) && samePlace($0, pin) } || !relatedTikTokMentions(for: pin).isEmpty
+    }
+    private func loadKitPlace(for pin: WorkspaceMapPin) async {
+        guard await GooglePlacesKit.shared.prepare(baseURL: placesBaseURL, token: placesAccessToken) else { return }
         var placeID = pin.googlePlaceID ?? resolvedGooglePlaceIDs[pin.id]
+            ?? savedPlaces.first(where: { samePlace($0, pin) })?.googlePlaceID
         if placeID == nil {
-            let query = [pin.name, pin.address, pin.city].filter { !$0.isEmpty }.joined(separator: ", ")
-            guard let candidates = try? await searchGooglePlaces(query, timeout: 90), !Task.isCancelled else {
-                googleDetailsError = "No Google Places result for this place."
-                return
-            }
-            let origin = CLLocation(latitude: pin.coordinate.latitude, longitude: pin.coordinate.longitude)
-            func metres(_ place: PersonalPlace) -> Double { CLLocation(latitude: place.latitude, longitude: place.longitude).distance(from: origin) }
-            func folded(_ text: String) -> String { text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")) }
-            // A result with the same name is the same place even when Apple and Google disagree on
-            // where its centre is (towns and big sights); anything else must be right next to the pin.
-            let sameName = candidates.filter { folded($0.name) == folded(pin.name) && metres($0) < 30_000 }
-            let nearby = candidates.filter { metres($0) < 2_500 }
-            guard let closest = (sameName.isEmpty ? nearby : sameName).min(by: { metres($0) < metres($1) }) else {
-                googleDetailsError = "No Google Places result close enough to this pin."
-                return
-            }
-            guard let closestPlaceID = closest.googlePlaceID else { return }
-            placeID = closestPlaceID
-            guard selectedPin?.id == pin.id, !Task.isCancelled else { return }
-            resolvedGooglePlaceIDs[pin.id] = closestPlaceID
+            placeID = await GooglePlacesKit.shared.matchPlaceID(name: pin.name, coordinate: pin.coordinate,
+                                                                baseURL: placesBaseURL, token: placesAccessToken)
         }
-        guard let placeID else { return }
-        guard var components = URLComponents(string: placesBaseURL + "/api/places/details") else { return }
-        components.queryItems = [URLQueryItem(name: "place_id", value: placeID)]
-        guard let url = components.url else { return }
-        var request = URLRequest(url: url, timeoutInterval: 90)
-        request.setValue("Bearer \(placesAccessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
-        if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard !Task.isCancelled, selectedPin?.id == pin.id else { return }
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                let failure = try? JSONDecoder().decode(GooglePlacesRequestError.self, from: data)
-                let reason = failure?.message ?? failure?.errorCode ?? "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"
-                googleDetailsError = "Google Places: \(reason)"; return
-            }
-            googlePlaceDetails = try JSONDecoder().decode(GooglePlaceDetails.self, from: data)
-            if let details = googlePlaceDetails {
-                let source = !relatedTikTokMentions(for: pin).isEmpty ? "videos" : pin.tripID != nil ? "trips" : "viewed"
-                Task { await retainGoogleReferences([["placeID": details.placeID, "source": source]]) }
-                if let index = savedPlaces.firstIndex(where: { samePlace($0, pin) }) { savedPlaces[index].googlePlaceID = details.placeID }
-            }
-        } catch {
-            guard !Task.isCancelled else { return }
-            googleDetailsError = "Place details could not load: \(error.localizedDescription)"
+        guard let placeID, !Task.isCancelled, selectedPin?.id == pin.id else { return }
+        resolvedGooglePlaceIDs[pin.id] = placeID
+        if let index = savedPlaces.firstIndex(where: { samePlace($0, pin) }), savedPlaces[index].googlePlaceID == nil {
+            savedPlaces[index].googlePlaceID = placeID
         }
+        kitPlaceID = placeID
     }
     private func cityTripCount(for pin: WorkspaceMapPin) -> Int? {
         let names = [pin.name, pin.city]
@@ -14607,7 +14629,7 @@ private struct AdaptiveGlassGroup<Content: View>: View {
         else { content() }
     }
 }
-private struct QuietPressStyle: ButtonStyle {
+struct QuietPressStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.opacity(configuration.isPressed ? 0.8 : 1)

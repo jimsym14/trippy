@@ -64,7 +64,7 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
     """
     brief = normalized_brief(brief)
     progress = progress or (lambda stage, detail:None)
-    live = getattr(place_provider, 'name', None) == 'google_places'
+    live = getattr(place_provider, 'name', None) in {'google_places', 'gemini_blend'}
     if live and not brief.get('base'):
         # Every day starts at the base. When the app sent none, a note like
         # "Staying in Trastevere" still places it (free geocoding, cached).

@@ -341,11 +341,15 @@ struct AccountHub: View {
                                 separator
                                 Button { dismiss(); onConnections() } label: { row("wrench.and.screwdriver", "Server connection", value: nil) }
                             }
+                            separator
+                            NavigationLink { CostCalculatorView(baseURL: AccountSession.baseURL) } label: { row("function", "Cost calculator", value: "Costs, income, users") }
                         }
                     }
                     if account.isAdmin {
                         group("Admin") {
                             NavigationLink { AdminView(baseURL: AccountSession.baseURL) } label: { row("chart.bar.xaxis", "Dashboard", value: "Usage, limits, installs") }
+                            separator
+                            NavigationLink { CostCalculatorView(baseURL: AccountSession.baseURL) } label: { row("function", "Cost calculator", value: "Live model") }
                         }
                     }
                     if account.isSignedIn {

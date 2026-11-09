@@ -1,0 +1,508 @@
+{
+ "apple_cut": 0.15,
+ "eur_to_usd": 1.1,
+ "fixed": [
+  {
+   "id": "launch",
+   "items": [
+    {
+     "item": "Apple Developer Program",
+     "usd": 8.25
+    },
+    {
+     "item": "Claude Pro",
+     "usd": 16.67
+    },
+    {
+     "item": "Render Starter (web)",
+     "usd": 7
+    },
+    {
+     "item": "Supabase Free",
+     "usd": 0
+    },
+    {
+     "item": "Email (SMTP free tier)",
+     "usd": 0
+    },
+    {
+     "item": "Domain",
+     "usd": 1
+    }
+   ],
+   "label": "Launch",
+   "up_to_users": 2000
+  },
+  {
+   "id": "growth",
+   "items": [
+    {
+     "item": "Apple Developer Program",
+     "usd": 8.25
+    },
+    {
+     "item": "Claude Max 5x",
+     "usd": 100
+    },
+    {
+     "item": "Render Standard web",
+     "usd": 25
+    },
+    {
+     "item": "Render Standard worker",
+     "usd": 25
+    },
+    {
+     "item": "Supabase Pro",
+     "usd": 25
+    },
+    {
+     "item": "Email (SMTP)",
+     "usd": 20
+    },
+    {
+     "item": "Domain",
+     "usd": 1
+    }
+   ],
+   "label": "Growth",
+   "up_to_users": 20000
+  },
+  {
+   "id": "scale",
+   "items": [
+    {
+     "item": "Apple Developer Program",
+     "usd": 8.25
+    },
+    {
+     "item": "Claude Max 5x",
+     "usd": 100
+    },
+    {
+     "item": "Render Pro workspace",
+     "usd": 19
+    },
+    {
+     "item": "Render 2 × Standard web",
+     "usd": 50
+    },
+    {
+     "item": "Render 3 × Standard worker",
+     "usd": 75
+    },
+    {
+     "item": "Render extra bandwidth",
+     "usd": 50
+    },
+    {
+     "item": "Supabase Pro + compute",
+     "usd": 60
+    },
+    {
+     "item": "Email (SMTP)",
+     "usd": 35
+    },
+    {
+     "item": "Monitoring",
+     "usd": 30
+    },
+    {
+     "item": "Domain",
+     "usd": 1
+    }
+   ],
+   "label": "Scale",
+   "up_to_users": null
+  }
+ ],
+ "live": null,
+ "money": {
+  "high": {
+   "affiliate_usd_per_year": 0.9,
+   "label": "High",
+   "packs_per_year": 0.06,
+   "plus_month": 0.02,
+   "plus_year": 0.03,
+   "tips_usd_per_year": 0.06,
+   "trip_pass_per_year": 0.06
+  },
+  "low": {
+   "affiliate_usd_per_year": 0.1,
+   "label": "Low",
+   "packs_per_year": 0.01,
+   "plus_month": 0.005,
+   "plus_year": 0.005,
+   "tips_usd_per_year": 0.01,
+   "trip_pass_per_year": 0.01
+  },
+  "middle": {
+   "affiliate_usd_per_year": 0.4,
+   "label": "Middle",
+   "packs_per_year": 0.03,
+   "plus_month": 0.01,
+   "plus_year": 0.015,
+   "tips_usd_per_year": 0.03,
+   "trip_pass_per_year": 0.03
+  }
+ },
+ "pipelines": {
+  "foursquare": {
+   "label": "Foursquare ratings, live",
+   "legal": "Allowed (credit Foursquare; nothing stored but IDs)",
+   "quality": "Good in big cities, thinner in Greece",
+   "units": {
+    "foursquare_premium": 6,
+    "plan_ai": 1
+   }
+  },
+  "gemini_blend": {
+   "label": "Gemini blend (ideas checked by Google)",
+   "legal": "Grey: uses Google place checks for planning",
+   "quality": "Most local; fewer landmarks; needs good place checks",
+   "units": {
+    "gemini_lite_call": 5,
+    "google_place_check": 33,
+    "plan_ai": 1
+   }
+  },
+  "google_today": {
+   "label": "Google ratings (today's planner)",
+   "legal": "Not allowed under the EEA terms",
+   "quality": "Best data",
+   "units": {
+    "google_text_search": 10,
+    "plan_ai": 1
+   }
+  },
+  "open_data": {
+   "label": "Open data + TikTok score",
+   "legal": "Allowed",
+   "quality": "Lower: no ratings for places outside the user's saves",
+   "units": {
+    "plan_ai": 1
+   }
+  }
+ },
+ "products": {
+  "pack": {
+   "eur": 0.99,
+   "label": "Pack",
+   "net_usd": 0.7465,
+   "per": "purchase"
+  },
+  "plus_month": {
+   "eur": 2.99,
+   "label": "Plus monthly",
+   "net_usd": 2.2546,
+   "per": "month"
+  },
+  "plus_year": {
+   "eur": 19.99,
+   "label": "Plus yearly",
+   "net_usd": 15.0731,
+   "per": "year"
+  },
+  "trip_pass": {
+   "eur": 3.99,
+   "label": "Trip Pass",
+   "net_usd": 3.0086,
+   "per": "purchase"
+  }
+ },
+ "scenarios": [
+  {
+   "id": "launch",
+   "label": "1,000 users",
+   "money": "middle",
+   "pipeline": "foursquare",
+   "result": {
+    "calls": {
+     "apple_mapkit": 55000,
+     "foursquare_premium": 1200,
+     "gemini_lite_call": 0,
+     "gemini_video": 2800,
+     "google_id_match": 20000,
+     "google_place_check": 0,
+     "google_text_search": 0,
+     "google_ui_kit": 25000,
+     "plan_ai": 200
+    },
+    "cost_per_user_year_usd": 1.04,
+    "cost_usd": 86.42,
+    "costs": {
+     "apple_mapkit": 0.0,
+     "foursquare_premium": 22.5,
+     "gemini_lite_call": 0.0,
+     "gemini_video": 14.0,
+     "google_id_match": 0.0,
+     "google_place_check": 0.0,
+     "google_text_search": 0.0,
+     "google_ui_kit": 15.0,
+     "plan_ai": 2.0
+    },
+    "fixed_stage": "launch",
+    "fixed_usd": 32.92,
+    "income": {
+     "affiliate": 33.33,
+     "pack": 1.87,
+     "plus_month": 22.55,
+     "plus_year": 18.84,
+     "tips": 2.12,
+     "trip_pass": 7.52
+    },
+    "income_usd": 86.23,
+    "net_usd": -0.19,
+    "payers": 25,
+    "users": 1000,
+    "variable_usd": 53.5
+   },
+   "reuse": 0.3,
+   "usage": "average",
+   "users": 1000
+  },
+  {
+   "id": "growth",
+   "label": "10,000 users",
+   "money": "middle",
+   "pipeline": "foursquare",
+   "result": {
+    "calls": {
+     "apple_mapkit": 550000,
+     "foursquare_premium": 12000,
+     "gemini_lite_call": 0,
+     "gemini_video": 20000,
+     "google_id_match": 200000,
+     "google_place_check": 0,
+     "google_text_search": 0,
+     "google_ui_kit": 250000,
+     "plan_ai": 2000
+    },
+    "cost_per_user_year_usd": 0.95,
+    "cost_usd": 789.25,
+    "costs": {
+     "apple_mapkit": 0.0,
+     "foursquare_premium": 225.0,
+     "gemini_lite_call": 0.0,
+     "gemini_video": 100.0,
+     "google_id_match": 0.0,
+     "google_place_check": 0.0,
+     "google_text_search": 0.0,
+     "google_ui_kit": 240.0,
+     "plan_ai": 20.0
+    },
+    "fixed_stage": "growth",
+    "fixed_usd": 204.25,
+    "income": {
+     "affiliate": 333.33,
+     "pack": 18.66,
+     "plus_month": 225.46,
+     "plus_year": 188.41,
+     "tips": 21.25,
+     "trip_pass": 75.21
+    },
+    "income_usd": 862.32,
+    "net_usd": 73.07,
+    "payers": 250,
+    "users": 10000,
+    "variable_usd": 585.0
+   },
+   "reuse": 0.5,
+   "usage": "average",
+   "users": 10000
+  },
+  {
+   "id": "scale",
+   "label": "100,000 users",
+   "money": "middle",
+   "pipeline": "foursquare",
+   "result": {
+    "calls": {
+     "apple_mapkit": 5500000,
+     "foursquare_premium": 120000,
+     "gemini_lite_call": 0,
+     "gemini_video": 160000,
+     "google_id_match": 2000000,
+     "google_place_check": 0,
+     "google_text_search": 0,
+     "google_ui_kit": 2500000,
+     "plan_ai": 20000
+    },
+    "cost_per_user_year_usd": 0.74,
+    "cost_usd": 6168.25,
+    "costs": {
+     "apple_mapkit": 0.0,
+     "foursquare_premium": 2250.0,
+     "gemini_lite_call": 0.0,
+     "gemini_video": 800.0,
+     "google_id_match": 0.0,
+     "google_place_check": 0.0,
+     "google_text_search": 0.0,
+     "google_ui_kit": 2490.0,
+     "plan_ai": 200.0
+    },
+    "fixed_stage": "scale",
+    "fixed_usd": 428.25,
+    "income": {
+     "affiliate": 3333.33,
+     "pack": 186.62,
+     "plus_month": 2254.56,
+     "plus_year": 1884.14,
+     "tips": 212.5,
+     "trip_pass": 752.15
+    },
+    "income_usd": 8623.3,
+    "net_usd": 2455.05,
+    "payers": 2500,
+    "users": 100000,
+    "variable_usd": 5740.0
+   },
+   "reuse": 0.6,
+   "usage": "average",
+   "users": 100000
+  },
+  {
+   "id": "worst",
+   "label": "10,000, low income",
+   "money": "low",
+   "pipeline": "foursquare",
+   "result": {
+    "calls": {
+     "apple_mapkit": 2200000,
+     "foursquare_premium": 60000,
+     "gemini_lite_call": 0,
+     "gemini_video": 140000,
+     "google_id_match": 1000000,
+     "google_place_check": 0,
+     "google_text_search": 0,
+     "google_ui_kit": 1200000,
+     "plan_ai": 10000
+    },
+    "cost_per_user_year_usd": 3.98,
+    "cost_usd": 3319.25,
+    "costs": {
+     "apple_mapkit": 0.0,
+     "foursquare_premium": 1125.0,
+     "gemini_lite_call": 0.0,
+     "gemini_video": 700.0,
+     "google_id_match": 0.0,
+     "google_place_check": 0.0,
+     "google_text_search": 0.0,
+     "google_ui_kit": 1190.0,
+     "plan_ai": 100.0
+    },
+    "fixed_stage": "growth",
+    "fixed_usd": 204.25,
+    "income": {
+     "affiliate": 83.33,
+     "pack": 6.22,
+     "plus_month": 112.73,
+     "plus_year": 62.8,
+     "tips": 7.08,
+     "trip_pass": 25.07
+    },
+    "income_usd": 297.23,
+    "net_usd": -3022.02,
+    "payers": 100,
+    "users": 10000,
+    "variable_usd": 3115.0
+   },
+   "reuse": 0.3,
+   "usage": "heavy",
+   "users": 10000
+  }
+ ],
+ "units": {
+  "apple_mapkit": {
+   "free": "unlimited",
+   "label": "Apple MapKit (phone) and Maps Server API",
+   "note": "Free with the Developer Program; server API capped at 25,000 calls a day.",
+   "usd": 0.0,
+   "verify": false
+  },
+  "foursquare_premium": {
+   "free": null,
+   "label": "Foursquare Premium call (ratings, hours)",
+   "note": "No free Premium calls. Data may not be stored on pay-as-you-go, only place IDs.",
+   "usd": 0.01875,
+   "verify": false
+  },
+  "gemini_lite_call": {
+   "free": null,
+   "label": "Gemini Flash-Lite call (place ideas)",
+   "note": "Measured in the 8 Nov plan comparison: 5 calls a plan, about $0.003 in all.",
+   "usd": 0.0006,
+   "verify": true
+  },
+  "gemini_video": {
+   "free": null,
+   "label": "Gemini reading one video",
+   "note": "Paid tier, low media resolution. Free tier is $0 but Google may use the inputs.",
+   "usd": 0.005,
+   "verify": true
+  },
+  "google_id_match": {
+   "free": "unlimited",
+   "label": "Google place ID match",
+   "note": "Text Search Essentials (IDs only) has no charge.",
+   "usd": 0.0,
+   "verify": false
+  },
+  "google_place_check": {
+   "free": 10000,
+   "label": "Google place check (ID + location)",
+   "note": "IDs-only search (free) plus Place Details Essentials for the location.",
+   "usd": 0.005,
+   "verify": true
+  },
+  "google_text_search": {
+   "free": 1000,
+   "label": "Google Text Search (Enterprise)",
+   "note": "Today's planner. Not allowed for planning under the EEA terms.",
+   "usd": 0.035,
+   "verify": false
+  },
+  "google_ui_kit": {
+   "free": 10000,
+   "label": "Google Places UI Kit load",
+   "note": "Place Details UI Kit (Essentials), billed per load. Pricing page not reachable; confirm in Cloud Console.",
+   "usd": 0.001,
+   "verify": true
+  },
+  "plan_ai": {
+   "free": null,
+   "label": "AI work in one plan",
+   "note": "Request reading and plan notes.",
+   "usd": 0.01,
+   "verify": true
+  }
+ },
+ "usage": {
+  "average": {
+   "label": "Average",
+   "library_cards": 25,
+   "other_cards": 20,
+   "plans": 0.2,
+   "searches": 10,
+   "videos": 4
+  },
+  "heavy": {
+   "label": "Heavy",
+   "library_cards": 120,
+   "other_cards": 60,
+   "plans": 1.0,
+   "searches": 40,
+   "videos": 20
+  },
+  "light": {
+   "label": "Light",
+   "library_cards": 8,
+   "other_cards": 10,
+   "plans": 0.1,
+   "searches": 4,
+   "videos": 1
+  }
+ },
+ "vat": 0.24,
+ "version": "2026-11-08"
+}

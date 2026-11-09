@@ -44,7 +44,11 @@ button, .btn { font: inherit; font-weight: 700; font-size: 13px; border: 1px sol
   border-radius: 999px; padding: 8px 14px; cursor: pointer; min-height: 36px; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { color: var(--bad); }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+select { font: inherit; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); border-radius: 10px; padding: 8px 10px; min-height: 38px; width: 100%; }
+select:disabled { opacity: .5; }
+.cost-total { font-size: 26px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.warnlist { margin: 8px 0 0; padding-left: 18px; color: var(--warn); font-size: 12.5px; }
 input { font: inherit; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); border-radius: 10px; padding: 8px 10px; min-height: 38px; }
 .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 18px; padding: 16px; }
 .grid { display: grid; gap: 14px; }
@@ -139,6 +143,25 @@ td.n, th.n { text-align: right; }
     <section class="card">
       <h2>APIs and free limits · this month</h2>
       <div class="scroll" id="apis"></div>
+    </section>
+
+    <section class="card" id="plannerCard">
+      <h2>Planner · how plans are built</h2>
+      <p class="small muted" style="margin-top:-6px">Choose each part; the cost of one trip updates before you save. Saving applies to every plan from then on.</p>
+      <form id="plannerForm" class="controls"></form>
+      <div class="grid two" style="margin-top:14px">
+        <div>
+          <div class="small muted">Estimated cost of one trip</div>
+          <div class="cost-total" id="plannerTotal">—</div>
+          <div class="small muted" id="plannerPaid"></div>
+          <ul class="warnlist" id="plannerWarnings"></ul>
+        </div>
+        <div class="scroll" id="plannerLines"></div>
+      </div>
+      <h2 style="margin-top:18px">AI models compared</h2>
+      <div class="scroll" id="plannerModels"></div>
+      <h2 style="margin-top:18px">Recent plans · what each one cost</h2>
+      <div class="scroll" id="plannerRecent"></div>
     </section>
 
     <section class="card" id="capacityCard">
@@ -252,6 +275,7 @@ td.n, th.n { text-align: right; }
       <p class="small muted">Rate limits on this server: ${data.rate_limits.map(([k, v]) => esc(k) + ' ' + esc(v)).join(' · ')}. Google’s free caps are per SKU per month; check the exact numbers and billing in Google Cloud Console.</p>`;
 
     renderCapacity(data.capacity);
+    renderPlanner(data.planner);
 
     const models = data.models || [];
     $('models').innerHTML = models.length ? `<table><tbody>${models.map((m) => {
@@ -285,6 +309,55 @@ td.n, th.n { text-align: right; }
       <p class="small muted">Values are never shown here; only whether each key is set.</p>`;
   }
 
+  const usd = (v) => v === 0 ? '$0' : '$' + Number(v).toFixed(v < 0.1 ? 3 : 2);
+  let plannerDraft = null, plannerTimer = null;
+  function plannerEstimateHTML(e) {
+    return '<table><thead><tr><th>Step</th><th>Choice</th><th class="n">Calls</th><th class="n">Cost</th></tr></thead><tbody>' +
+      e.lines.map(l => `<tr><td>${esc(l.step)}</td><td>${esc(l.choice)}${l.note ? `<div class="small muted">${esc(l.note)}</div>` : ''}</td><td class="n">${num(l.calls, 1)}</td><td class="n">${usd(l.usd)}${l.paid_usd !== l.usd ? `<div class="small muted">paid ${usd(l.paid_usd)}</div>` : ''}</td></tr>`).join('') +
+      `<tr><td><b>Total</b></td><td></td><td></td><td class="n"><b>${usd(e.total_usd)}</b></td></tr></tbody></table>`;
+  }
+  function showPlannerEstimate(e) {
+    $('plannerTotal').textContent = usd(e.total_usd) + ' per ' + e.days + '-day trip';
+    $('plannerPaid').textContent = e.paid_total_usd !== e.total_usd ? `${usd(e.paid_total_usd)} once off Gemini's free tier` : '';
+    $('plannerWarnings').innerHTML = e.warnings.map(w => `<li>${esc(w)}</li>`).join('');
+    $('plannerLines').innerHTML = plannerEstimateHTML(e);
+  }
+  function plannerChanged() {
+    const f = $('plannerForm'); plannerDraft = {};
+    data.planner.options && Object.keys(data.planner.options).forEach(k => plannerDraft[k] = f.querySelector('#pl-' + k).value);
+    const blend = plannerDraft.place_finder === 'gemini_blend';
+    ['idea_model', 'gemini_tier', 'place_check'].forEach(k => f.querySelector('#pl-' + k).disabled = !blend);
+    const draft = { ...plannerDraft }, days = f.querySelector('#pl-days').value || 2;   // fixed now: saving clears plannerDraft
+    clearTimeout(plannerTimer);
+    plannerTimer = setTimeout(async () => {
+      try {
+        showPlannerEstimate(await call('/api/admin/planner-estimate?config=' + encodeURIComponent(JSON.stringify(draft)) + '&days=' + days));
+      } catch (e) { toast('Estimate failed: ' + e.message); }
+    }, 150);
+  }
+  function renderPlanner(p) {
+    if (!p || p.error) { $('plannerCard').classList.add('hidden'); return; }
+    $('plannerCard').classList.remove('hidden');
+    const f = $('plannerForm');
+    const current = plannerDraft || p.config;
+    f.innerHTML = Object.entries(p.options).map(([k, o]) => `<label class="field">${esc(o.label)}<select id="pl-${k}">${o.choices.map(c => `<option value="${esc(c.id)}"${current[k] === c.id ? ' selected' : ''}>${esc(c.label)}</option>`).join('')}</select></label>`).join('') +
+      `<label class="field">Trip length (days) <input type="number" id="pl-days" min="1" max="31" value="2" inputmode="numeric"></label>` +
+      `<button class="primary" type="submit">Save planner</button>`;
+    f.querySelectorAll('select, input').forEach(el => el.addEventListener('change', plannerChanged));
+    plannerChanged();
+    $('plannerModels').innerHTML = '<table><thead><tr><th>Model</th><th class="n">$ / 1M in · out</th><th>Free tier</th><th>Maps</th><th>Reviews</th><th>Speed</th><th>Notes</th></tr></thead><tbody>' +
+      p.models.map(m => `<tr><td><b>${esc(m.label)}</b></td><td class="n">${m.in} · ${m.out}</td><td>${m.free_tier ? '<span class="pill good">Yes</span>' : '<span class="pill">No</span>'}</td><td>${esc(m.maps)}</td><td>${esc(m.reviews)}</td><td>${esc(m.speed)}</td><td>${esc(m.notes)}</td></tr>`).join('') + '</tbody></table>';
+    $('plannerRecent').innerHTML = p.recent.length ? '<table><thead><tr><th>When</th><th>Trip</th><th>Built with</th><th class="n">Stops</th><th class="n">Ideas kept</th><th class="n">Est. cost</th></tr></thead><tbody>' +
+      p.recent.map(r => `<tr><td>${ago(r.started_at)}</td><td>${esc(r.destination)} · ${r.days} days <span class="pill ${r.status === 'ready' ? 'good' : 'warn'}">${esc(r.status)}</span></td>
+        <td>${esc((p.options.place_finder.choices.find(c => c.id === r.config.place_finder) || {}).label || r.config.place_finder)}${r.config.place_finder === 'gemini_blend' ? `<div class="small muted">${esc(r.config.idea_model)} · ${esc(r.config.gemini_tier)} · ${esc(r.config.place_check)}</div>` : ''}</td>
+        <td class="n">${r.stops}</td><td class="n">${r.ideas ? r.kept + ' / ' + r.ideas : '—'}</td>
+        <td class="n"><details><summary>${usd(r.estimate.total_usd)}</summary>${plannerEstimateHTML(r.estimate)}</details></td></tr>`).join('') + '</tbody></table>'
+      : '<p class="small muted">No plans since the planner settings were added.</p>';
+  }
+  $('plannerForm').addEventListener('submit', (ev) => {
+    ev.preventDefault(); if (!plannerDraft) return;
+    saveControls({ planner: plannerDraft }, 'Planner saved: new plans use it').then(() => { if (data.controls.planner) { data.planner.config = data.controls.planner; plannerDraft = null; } });
+  });
   function renderCapacity(cap) {
     if (!cap || cap.error) { $('capacityCard').classList.add('hidden'); return; }
     $('capacityCard').classList.remove('hidden');

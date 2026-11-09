@@ -56,6 +56,10 @@
 		C70000000000000000000011 /* BeenGlobe3D.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000011 /* BeenGlobe3D.swift */; };
 		C70000000000000000000012 /* BeenToPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000012 /* BeenToPage.swift */; };
 		C70000000000000000000013 /* BeenShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000013 /* BeenShare.swift */; };
+		C700000000000000000000C1 /* GooglePlacesSwift in Frameworks */ = {isa = PBXBuildFile; productRef = C700000000000000000000C2 /* GooglePlacesSwift */; };
+		C700000000000000000000C4 /* PlaceSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000C4 /* PlaceSources.swift */; };
+		C700000000000000000000C5 /* CostCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000C5 /* CostCalculator.swift */; };
+		C700000000000000000000C6 /* cost-model.json in Resources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000C6 /* cost-model.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -83,6 +87,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		C800000000000000000000C6 /* cost-model.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "cost-model.json"; sourceTree = "<group>"; };
 		C80000000000000000000017 /* stay-grid-barcelona.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "stay-grid-barcelona.json"; sourceTree = "<group>"; };
 		C80000000000000000000016 /* ComposerPieces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ComposerPieces.swift"; sourceTree = "<group>"; };
 		C80000000000000000000015 /* CityFacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CityFacts.swift"; sourceTree = "<group>"; };
@@ -121,6 +126,8 @@
 		C800000000000000000000B6 /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		C800000000000000000000B7 /* Account.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Account.swift; sourceTree = "<group>"; };
 		C800000000000000000000B8 /* BriefDemos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BriefDemos.swift; sourceTree = "<group>"; };
+		C800000000000000000000C4 /* PlaceSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceSources.swift; sourceTree = "<group>"; };
+		C800000000000000000000C5 /* CostCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CostCalculator.swift; sourceTree = "<group>"; };
 		C800000000000000000000B9 /* AccountData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountData.swift; sourceTree = "<group>"; };
 		C80000000000000000000003 /* TripGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripGuideView.swift; sourceTree = "<group>"; };
 		C80000000000000000000004 /* TripShelf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripShelf.swift; sourceTree = "<group>"; };
@@ -140,6 +147,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C700000000000000000000C1 /* GooglePlacesSwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -204,6 +212,8 @@
 				C800000000000000000000B7 /* Account.swift */,
 				C800000000000000000000B8 /* BriefDemos.swift */,
 				C800000000000000000000B9 /* AccountData.swift */,
+				C800000000000000000000C5 /* CostCalculator.swift */,
+				C800000000000000000000C4 /* PlaceSources.swift */,
 				C80000000000000000000001 /* TripGuideModel.swift */,
 				C80000000000000000000000 /* SketchKit.swift */,
 				B20000000000000000000005 /* BeenGlobeMap.swift */,
@@ -238,6 +248,7 @@
                 B30000000000000000000001 /* statlas-city-snapshot.json */,
                 B30000000000000000000002 /* globe-earth.jpg */,
 				C80000000000000000000017 /* stay-grid-barcelona.json */,
+				C800000000000000000000C6 /* cost-model.json */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -275,6 +286,9 @@
 				970000000000000000000002 /* PBXTargetDependency */,
 			);
 			name = Trippy;
+			packageProductDependencies = (
+				C700000000000000000000C2 /* GooglePlacesSwift */,
+			);
 			productName = Trippy;
 			productReference = B10000000000000000000002 /* Trippy.app */;
 			productType = "com.apple.product-type.application";
@@ -298,6 +312,9 @@
 				Base,
 			);
 			mainGroup = D10000000000000000000001;
+			packageReferences = (
+				C700000000000000000000C3 /* XCRemoteSwiftPackageReference "ios-places-sdk" */,
+			);
 			productRefGroup = D10000000000000000000003 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -325,6 +342,7 @@
                 A30000000000000000000001 /* statlas-city-snapshot.json in Resources */,
                 A30000000000000000000002 /* globe-earth.jpg in Resources */,
 				C70000000000000000000017 /* stay-grid-barcelona.json in Resources */,
+				C700000000000000000000C6 /* cost-model.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -373,6 +391,8 @@
 				C700000000000000000000B7 /* Account.swift in Sources */,
 				C700000000000000000000B8 /* BriefDemos.swift in Sources */,
 				C700000000000000000000B9 /* AccountData.swift in Sources */,
+				C700000000000000000000C5 /* CostCalculator.swift in Sources */,
+				C700000000000000000000C4 /* PlaceSources.swift in Sources */,
 				C70000000000000000000001 /* TripGuideModel.swift in Sources */,
 				C70000000000000000000000 /* SketchKit.swift in Sources */,
 				A20000000000000000000005 /* BeenGlobeMap.swift in Sources */,
@@ -631,6 +651,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		C700000000000000000000C3 /* XCRemoteSwiftPackageReference "ios-places-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googlemaps/ios-places-sdk";
+			requirement = {
+				kind = exactVersion;
+				version = 11.3.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C700000000000000000000C2 /* GooglePlacesSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C700000000000000000000C3 /* XCRemoteSwiftPackageReference "ios-places-sdk" */;
+			productName = GooglePlacesSwift;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = E10000000000000000000002 /* Project object */;
 }

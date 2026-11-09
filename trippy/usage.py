@@ -218,7 +218,9 @@ class Controls:
     JSON file). Read on every guarded request from memory; written only by admins.
     """
     DEFAULTS = {'blocked': [], 'client_caps': {}, 'default_google_cap': 60, 'global_google_cap': 200,
-                'paid_research': True, 'notes': {}, 'free_plans_per_month': 3, 'free_videos_per_month': 20}
+                'paid_research': True, 'notes': {}, 'free_plans_per_month': 3, 'free_videos_per_month': 20,
+                # How plans are built (trippy/planner/planner_config.py): admin dropdowns, fixed lists only.
+                'planner': None}
 
     def __init__(self, usage):
         self.usage = usage
@@ -263,6 +265,9 @@ class Controls:
             elif key == 'paid_research':
                 if not isinstance(value, bool): raise ValueError(key)
                 clean[key] = value
+            elif key == 'planner':
+                from trippy.planner.planner_config import clean as clean_planner
+                clean[key] = clean_planner(value)
             elif key == 'notes':
                 if not isinstance(value, dict) or len(value) > 5000: raise ValueError(key)
                 clean[key] = {clean_client(c): str(t)[:80] for c, t in value.items() if clean_client(c) != ANONYMOUS and str(t).strip()}

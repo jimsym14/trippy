@@ -20,6 +20,8 @@ SKUS = {
     'details_enterprise': {'label': 'Place Details (Enterprise, hours)', 'free': 1000, 'price': 0.020,
                            'metrics': ['google:hours']},
     'photos': {'label': 'Place Photos', 'free': 1000, 'price': 0.007, 'metrics': ['google:photo']},
+    'details_essentials': {'label': 'Place Details Essentials (planner place check)', 'free': 10000, 'price': 0.005, 'metrics': ['google:details_essentials']},
+    'ui_kit': {'label': 'Places UI Kit (place card rating line)', 'free': 10000, 'price': 0.001, 'metrics': ['google:ui_kit']},
 }
 
 # Calls per action, per SKU.
