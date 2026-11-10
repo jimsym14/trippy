@@ -94,6 +94,16 @@ def normalized_brief(supplied):
             raise ValueError('Lock needs a valid place/date/time/duration')
         clock_minutes(lock['time'])
     brief['locked_stops'] = deepcopy(locks)
+    # Community knowledge (indexed TikTok and YouTube videos) is the traveller's choice per trip:
+    # 'auto' = whatever fits the trip, 'off' = none, 'picked' = only the videos they ticked.
+    # Absent on older clients, which keeps their briefs (and resumed jobs) unchanged.
+    if 'community' in brief:
+        choice = brief['community']
+        if (not isinstance(choice, dict) or set(choice) - {'use', 'videos'} or choice.get('use', 'auto') not in {'auto', 'off', 'picked'}
+                or not isinstance(choice.get('videos', []), list) or len(choice.get('videos', [])) > 60
+                or any(not isinstance(v, str) or not v or len(v) > 200 for v in choice.get('videos', []))):
+            raise ValueError('Invalid community choice')
+        brief['community'] = {'use': choice.get('use', 'auto'), 'videos': sorted(set(choice.get('videos', [])))}
     strategy = brief.get('planning_strategy', 'research')
     if strategy not in {'research', 'personal_places'}: raise ValueError('Unknown planning strategy')
     brief['planning_strategy'] = strategy

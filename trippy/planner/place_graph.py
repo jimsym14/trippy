@@ -11,6 +11,11 @@ KINDS = {'pin', 'save', 'note', 'video', 'prior_trip'}
 WEIGHTS = {'pin': 100, 'save': 90, 'note': 80, 'video': 60, 'prior_trip': 40, 'community': 10}
 
 
+def weight(node):
+    """Community knowledge stays far below the traveller's own library, unless they ticked that video for this trip."""
+    return WEIGHTS['video'] - 10 if node['kind'] == 'community' and node.get('picked') else WEIGHTS[node['kind']]
+
+
 def validate_nodes(records):
     if not isinstance(records, list) or len(records) > 300:
         raise ValueError('Library nodes must be a bounded list')
@@ -56,7 +61,7 @@ def library_graph(brief, community_nodes=()):
     nodes = [n for n in brief.get('library_nodes', []) if n.get('include', True) and key(n.get('city', '')) == city]
     nodes += [{**deepcopy(n), 'kind': 'community'} for n in community_nodes
               if n.get('published') is True and key(n.get('city', '')) == city]
-    nodes.sort(key=lambda n: (-WEIGHTS[n['kind']], n['id']))
+    nodes.sort(key=lambda n: (-weight(n), n['id']))
     places, links = {}, []
     for node in nodes:
         for occurrence in node.get('places', []):
@@ -68,7 +73,7 @@ def library_graph(brief, community_nodes=()):
             pid = 'place-'+digest(identity)[:20]
             selected = p.get('selected', False) and p.get('latitude') is not None
             if pid not in places:
-                places[pid] = {**p, 'id': pid, 'selected': selected, 'priority': WEIGHTS[node['kind']], 'node_ids': []}
+                places[pid] = {**p, 'id': pid, 'selected': selected, 'priority': weight(node), 'node_ids': []}
             elif selected and not places[pid]['selected']:
                 places[pid].update(p, id=pid, selected=True)
             places[pid]['node_ids'].append(node['id'])

@@ -135,6 +135,16 @@ enum PlaceCatalog {
     }()
 
     static func cities(in code: String) -> [CityEntry] { cities.filter { $0.countryCode == code } }
+    /// The listed city a searched place is, if it is one: same name in the same country, or within 6 km of its centre.
+    static func significantCity(name: String, countryCode: String?, latitude: Double, longitude: Double) -> CityEntry? {
+        let folded = VisitedPlace.normalized(name)
+        return cities.first { city in
+            guard countryCode == nil || city.countryCode == countryCode, abs(city.latitude - latitude) < 0.6, abs(city.longitude - longitude) < 0.9 else { return false }
+            let dLat = (city.latitude - latitude) * 111, dLon = (city.longitude - longitude) * 111 * cos(latitude * .pi / 180)
+            let km = (dLat * dLat + dLon * dLon).squareRoot()
+            return km < 6 || (km < 40 && VisitedPlace.normalized(city.name) == folded)
+        }
+    }
     static func country(_ code: String?) -> CountryEntry? { countries.first { $0.code == code } }
     static var deviceCountry: String? { Locale.current.region?.identifier }
 }

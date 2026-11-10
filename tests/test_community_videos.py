@@ -1,7 +1,7 @@
 import json
 
 from trippy.planner.place_graph import library_graph
-from trippy.social.community import CommunityVideos, clock, place_verdict, plan_nodes, tiktok_videos, wanted_by_brief, youtube_videos
+from trippy.social.community import CommunityVideos, clock, place_verdict, plan_nodes, plan_sources, tiktok_videos, wanted_by_brief, youtube_videos
 from trippy.social.index import PlaceTakes, VideoIndex
 
 
@@ -85,3 +85,43 @@ def test_plan_nodes_respect_categories_and_community(tmp_path):
     assert [p["name"] for p in node["places"]] == ["ChIJgood"]  # bad = rejected by community, bar = not asked, far = no coordinates
     graph = library_graph({"destination": "Barcelona", "library_nodes": []}, [node])
     assert graph["places"][0]["priority"] == 10 and graph["nodes"][0]["kind"] == "community"
+
+
+def _choice_videos():
+    place = lambda pid, cat, stance="recommended": {"id": pid, "name": pid, "category": cat, "stance": stance, "latitude": 41.38,
+                                                    "longitude": 2.17, "google_place_id": pid, "summary": "", "address": None}
+    video = lambda key, places: {"key": key, "platform": key.split(":")[0], "url": "https://example.com/" + key, "title": key, "summary": "",
+                                 "author": "a", "city": "Barcelona", "places": places}
+    return [video("youtube:one", [place("ChIJfood", "food"), place("ChIJbar", "bars")]),
+            video("tiktok:two", [place("ChIJcafe", "coffee"), place("ChIJskip", "food", "avoid")])]
+
+
+def test_traveller_chooses_which_videos_feed_a_plan():
+    videos = _choice_videos()
+    brief = {"destination": "Barcelona", "preference_tags": [], "excluded_place_ids": []}
+    names = lambda nodes: sorted(p["name"] for n in nodes for p in n["places"])
+    assert names(plan_nodes(brief, videos=videos, plan_categories=["food", "coffee"])) == ["ChIJcafe", "ChIJfood"]
+    assert plan_nodes({**brief, "community": {"use": "off", "videos": []}}, videos=videos, plan_categories=["food"]) == []
+    # A ticked video counts for everything it recommends (the bar too), and nothing comes from the others.
+    picked = plan_nodes({**brief, "community": {"use": "picked", "videos": ["youtube:one"]}}, videos=videos, plan_categories=["food"])
+    assert names(picked) == ["ChIJbar", "ChIJfood"] and picked[0]["picked"]
+    graph = library_graph({"destination": "Barcelona", "library_nodes": []}, picked)
+    assert {p["priority"] for p in graph["places"]} == {50}  # above automatic community (10), below your own videos (60)
+
+
+def test_plan_sources_lists_what_a_city_already_knows():
+    found = plan_sources("Barcelona, Spain", videos=_choice_videos())
+    assert [(v["key"], v["usable"]) for v in found["videos"]] == [("youtube:one", 2), ("tiktok:two", 1)]
+    assert found["places"] == 3 and found["videos"][0]["categories"] == {"food": 1, "nightlife": 1}
+    assert plan_sources("Rome", videos=_choice_videos())["videos"] == []
+
+
+def test_community_choice_is_validated():
+    import pytest
+    from trippy.planner.planning_contract import normalized_brief
+    brief = {"destination": "Barcelona"}
+    assert "community" not in normalized_brief(brief)
+    assert normalized_brief({**brief, "community": {"use": "picked", "videos": ["b", "a", "a"]}})["community"] == {"use": "picked", "videos": ["a", "b"]}
+    for bad in ({"use": "everything"}, {"use": "picked", "videos": [1]}, {"use": "auto", "extra": 1}, "auto"):
+        with pytest.raises(ValueError):
+            normalized_brief({**brief, "community": bad})

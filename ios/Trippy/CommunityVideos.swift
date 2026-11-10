@@ -124,7 +124,23 @@ struct CommunityActions {
     var isPinned: (CommunityPlace) -> Bool
 }
 
+/// The indexed videos that can feed a plan for one city (GET /api/community/plan-sources). Reading it costs nothing.
+struct CommunityPlanSources: Decodable {
+    struct Video: Decodable, Identifiable, Hashable {
+        let key: String; let platform: String; let title: String; let author: String?; let usable: Int; let topPlaces: [String]
+        var id: String { key }
+        enum CodingKeys: String, CodingKey { case key, platform, title, author, usable; case topPlaces = "top_places" }
+    }
+    let videos: [Video]
+    let places: Int
+}
+
 enum CommunityVideosClient {
+    static func planSources(city: String, baseURL: String, token: String) async throws -> CommunityPlanSources {
+        var components = URLComponents(string: baseURL + "/api/community/plan-sources")
+        components?.queryItems = [URLQueryItem(name: "city", value: city)]
+        return try await get(components?.url, token: token)
+    }
     static func browse(city: String?, platform: String?, category: String?, query: String, baseURL: String, token: String) async throws -> CommunityBrowse {
         try await browse(CommunityFilters(city: city, platform: platform, category: category), query: query, baseURL: baseURL, token: token)
     }

@@ -143,6 +143,9 @@ private struct TripBrief: Codable, Equatable {
     var mobility: Set<String> = []
     var stayStyle: String = "Boutique / Hotel"
     var excludedLibraryNodeIDs: Set<String> = []
+    /// Community videos for this plan: "auto" (whatever fits), "picked" (only the ticked ones) or "off".
+    var communityUse = "auto"
+    var communityVideos: Set<String> = []
     /// Optional "HH:MM" landing and take-off times; the planner keeps those days light.
     var arrivalTime = ""
     var departureTime = ""
@@ -165,7 +168,7 @@ private struct TripBrief: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case destination, startDate, endDate, dateContext, dateIsUnknown, duration, travelers, group, vibes, interests, preferenceTags, budget, budgetBasis, budgetIncludes, notes, dietaryNeeds, mobility, stayStyle, excludedLibraryNodeIDs, arrivalTime, departureTime, paceMode, travelMode, mustSee
+        case destination, startDate, endDate, dateContext, dateIsUnknown, duration, travelers, group, vibes, interests, preferenceTags, budget, budgetBasis, budgetIncludes, notes, dietaryNeeds, mobility, stayStyle, excludedLibraryNodeIDs, communityUse, communityVideos, arrivalTime, departureTime, paceMode, travelMode, mustSee
     }
 
     init() {}
@@ -208,6 +211,8 @@ private struct TripBrief: Codable, Equatable {
         mobility = LegacyText.english(try c.decodeIfPresent(Set<String>.self, forKey: .mobility) ?? [])
         stayStyle = LegacyText.english(try c.decodeIfPresent(String.self, forKey: .stayStyle) ?? "Boutique / Hotel")
         excludedLibraryNodeIDs = try c.decodeIfPresent(Set<String>.self, forKey: .excludedLibraryNodeIDs) ?? []
+        communityUse = try c.decodeIfPresent(String.self, forKey: .communityUse) ?? "auto"
+        communityVideos = try c.decodeIfPresent(Set<String>.self, forKey: .communityVideos) ?? []
         arrivalTime = try c.decodeIfPresent(String.self, forKey: .arrivalTime) ?? ""
         departureTime = try c.decodeIfPresent(String.self, forKey: .departureTime) ?? ""
         paceMode = try c.decodeIfPresent(String.self, forKey: .paceMode) ?? ""
@@ -1638,6 +1643,11 @@ private struct TripFlowView: View {
     @State private var videosCommunity = false
     @Namespace private var videosScopeSpace
     @State private var selectedTravelNoteID: UUID?
+    /// The place whose sheet is open (Library): everything linked to it in one place.
+    @State private var atlasPlaceKey: String?
+    /// Indexed community videos for the trip being planned (the "Videos about <city>" choice in the trip form).
+    @State private var planSources: CommunityPlanSources?
+    @State private var planSourcesLoading = false
     @State private var processingShares = false
     @State private var runningSocialExtractions = false
     @State private var shareSummary: ShareSummary?
@@ -1819,6 +1829,7 @@ private struct TripFlowView: View {
             placeTakes = stored.socialLibrary.takes ?? [:]
             if let demo = StudioDemo.load() {
                 socialSources = demo.sources; socialPlaces = demo.places
+                for tipPost in demo.sources where !(tipPost.tips ?? []).isEmpty { upsertTipsNote(tipPost) }
                 if let first = demo.places.first {
                     placeTakes[PlaceKey.of(googlePlaceID: first.googlePlaceID, name: first.name, city: first.city)] =
                         PlaceTake(been: true, gotIn: "waited", tags: ["value_for_money", "traditional"])
@@ -1826,6 +1837,7 @@ private struct TripFlowView: View {
                 rootTab = "library"; librarySection = "Videos"
                 if StudioDemo.opensDetail { Task { try? await Task.sleep(for: .seconds(1.5)); selectedSocialSource = demo.sources.first } }
             }
+            backfillGuideNotes()
             cachedGeneralTripPins = makeGeneralTripPins()
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("-TrippyDirectionsDemo") { rootTab = "map" }
@@ -2059,6 +2071,12 @@ private struct TripFlowView: View {
         }
         .sheet(isPresented: Binding(get: { selectedTravelNoteID != nil }, set: { if !$0 { selectedTravelNoteID = nil } })) {
             TrippyScreen { if let id = selectedTravelNoteID { travelNoteDetail(id) } }
+        }
+        .sheet(isPresented: Binding(get: { atlasPlaceKey != nil }, set: { if !$0 { atlasPlaceKey = nil } })) {
+            TrippyScreen {
+                let atlas = libraryAtlas
+                if let place = atlas.place(atlasPlaceKey) { AtlasPlaceSheet(place: place, atlas: atlas, actions: atlasActions) }
+            }
         }
         .sheet(isPresented: $showImportLink) { TrippyScreen { importLinkSheet } }
         .sheet(isPresented: $showTripIdentity) { TrippyScreen { tripIdentityEditor } }
@@ -2958,10 +2976,64 @@ private struct TripFlowView: View {
         .padding(14).planningSurface(radius: 17, raised: true)
     }
 
+    /// Which indexed videos (TikTok and YouTube, read once for everyone) may add places to this plan.
+    private var planningCommunitySelection: some View {
+        let videos = planSources?.videos ?? []
+        let picked = brief.communityVideos.intersection(videos.map(\.key))
+        return VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Videos about \(MapCityGrouping.name(brief.destination))")
+            Text(videos.isEmpty ? (planSourcesLoading ? "Looking up what is already indexed for this city…" : "No indexed videos for this city yet. Share one and it helps every later plan.")
+                 : "\(videos.count) indexed \(videos.count == 1 ? "video knows" : "videos know") \(planSources?.places ?? 0) places here. They add ideas below your own library and cost nothing to use.")
+                .font(.custom("PlusJakartaSans-Regular", size: 12, relativeTo: .subheadline)).foregroundStyle(planning.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
+            if !videos.isEmpty {
+                PillFlowLayout {
+                    ForEach([("auto", "Use what fits"), ("picked", "Let me pick"), ("off", "Don’t use")], id: \.0) { value, title in
+                        Button { TrippyHaptics.selection(); withAnimation(.spring(response: 0.32, dampingFraction: 0.76)) { brief.communityUse = value } } label: {
+                            choicePill(title, selected: brief.communityUse == value)
+                        }
+                    }
+                }
+                if brief.communityUse == "picked" {
+                    VStack(spacing: 0) {
+                        ForEach(videos) { video in
+                            Toggle(isOn: Binding(get: { brief.communityVideos.contains(video.key) }, set: { on in
+                                if on { brief.communityVideos.insert(video.key) } else { brief.communityVideos.remove(video.key) }
+                            })) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(video.title).font(.custom("PlusJakartaSans-SemiBold", size: 13, relativeTo: .subheadline)).lineLimit(2)
+                                    Text("\(video.platform == "youtube" ? "YouTube" : "TikTok")\(video.author.map { " · " + $0 } ?? "") · \(video.usable) \(video.usable == 1 ? "place" : "places")")
+                                        .font(.caption).foregroundStyle(planning.secondaryInk).lineLimit(1)
+                                    if !video.topPlaces.isEmpty {
+                                        Text(video.topPlaces.joined(separator: " · ")).font(.caption2).foregroundStyle(planning.secondaryInk).lineLimit(1)
+                                    }
+                                }
+                            }
+                            .tint(planning.brand).padding(.vertical, 7)
+                        }
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    Text(picked.isEmpty ? "Tick the videos to use. With none ticked, the plan uses only your library and fresh suggestions."
+                         : "\(picked.count) ticked. Everything they recommend is considered, ranked just below your own videos.")
+                        .font(.caption).foregroundStyle(planning.secondaryInk).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(14).planningSurface(radius: 17, raised: true)
+        .task(id: brief.destination) {
+            let city = brief.destination.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !city.isEmpty, !bridgeToken.isEmpty else { planSources = nil; return }
+            planSourcesLoading = true
+            planSources = try? await CommunityVideosClient.planSources(city: city, baseURL: bridgeBaseURL, token: bridgeToken)
+            planSourcesLoading = false
+        }
+    }
+
     private var finalBriefStep: some View {
         VStack(alignment: .leading, spacing: 18) {
             PlanningDestinationCard(destination: brief.destination, dates: brief.libraryDateSummary, travelers: brief.travelers)
             planningLibrarySelection
+            planningCommunitySelection
             VStack(alignment: .leading, spacing: 8) {
                 sectionTitle("Anything else?")
                 Text("Limits, favorites, things to avoid, or anything that makes the trip yours.")
@@ -4824,6 +4896,7 @@ private struct TripFlowView: View {
         let briefContext: [String: Any] = [
             "planning_strategy": "personal_places",
             "library_nodes": planningLibraryNodes.map(\.payload),
+            "community": ["use": brief.communityUse, "videos": brief.communityUse == "picked" ? brief.communityVideos.sorted() : []] as [String: Any],
             "destination": brief.destination,
             "date_range": [
                 "arrival": brief.startDate.isEmpty ? NSNull() : brief.startDate as Any,
@@ -6904,7 +6977,7 @@ private extension TripFlowView {
         case "Videos" where videosCommunity: return "Search places, creators, titles"
         case "Notes": return "Search notes"
         case "Videos": return "Search videos"
-        case "Pins": return "Search pins and saves"
+        case "Pins": return "Search places, notes, videos"
         default: return "Search trips"
         }
     }
@@ -6921,7 +6994,7 @@ private extension TripFlowView {
     private var libraryAccent: Color { libraryTone.color(libraryScheme) }
     private var libraryCollectionTitle: String {
         switch librarySection {
-        case "Pins": "Pins and saves"
+        case "Pins": "Your places"
         case "Videos": videosCommunity ? "Community" : "Your videos"
         case "World": "Been to"
         case "Notes": "Your notes"
@@ -7119,13 +7192,12 @@ private extension TripFlowView {
         switch librarySection {
         case "Trips": libraryTripsCollection
         case "Pins":
-            savedLibrary
-            if libraryMapFilter == nil { socialSavedPlaces }
+            atlasPlacesLibrary
         case "Videos" where !videosCommunity: videoLibrary
         case "Videos":
             CommunityBrowseContent(baseURL: bridgeBaseURL, token: bridgeToken, initialCity: libraryCity, query: libraryQuery,
                                    preview: CommunityDemo.browse) { openCommunityVideo = CommunityVideoKey(id: $0) }
-        case "Notes": notesLibrary
+        case "Notes": atlasNotesLibrary
         case "World": WorldGlobeView(addRequestID: worldAddRequest)
         default: EmptyView()
         }
@@ -7516,110 +7588,110 @@ private extension TripFlowView {
         }
         return filteredLibraryPinRecords(librarySaveRecords + libraryPinRecords)
     }
-    var savedLibrary: some View {
-        let saves = filteredLibraryPinRecords(librarySaveRecords)
-        let pins = filteredLibraryPinRecords(libraryPinRecords)
-        let cityKeys = Set((saves + pins).map { MapCityGrouping.key($0.place.city) }).sorted()
-        return LazyVStack(alignment: .leading, spacing: 18) {
-            if cityKeys.isEmpty {
-                LibraryEmptyState(title: "No places match your filters", message: "", tone: .pins,
-                    actionTitle: "Find a place", action: { activeTripID = nil; stage = .library; rootTab = "map" })
-            }
-            ForEach(cityKeys, id: \.self) { key in
-                let citySaves = saves.filter { MapCityGrouping.key($0.place.city) == key }
-                let cityPins = pins.filter { MapCityGrouping.key($0.place.city) == key }
-                let city = (cityPins.first ?? citySaves.first)?.place.city ?? "Unassigned"
-                VStack(alignment: .leading, spacing: 14) {
-                    if !libraryHasSingleCity {
-                        HStack(spacing: 7) {
-                            MapFlagBadge(countryCode: libraryCountryCode(city), size: 22)
-                            Text(MapCityGrouping.name(city)).font(Sketch.display(.title3)).foregroundStyle(libraryInk)
-                            Spacer()
-                            Text((citySaves.count + cityPins.count).formatted()).font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .monospacedDigit().foregroundStyle(libraryMuted)
-                        }.padding(.bottom, 2)
-                    }
-                    if !citySaves.isEmpty {
-                        libraryPinCategoryList("Saves", symbol: "heart.fill", records: citySaves, sectionKey: "\(key):saves")
-                    }
-                    if !citySaves.isEmpty && !cityPins.isEmpty {
-                        Rectangle().fill(libraryMuted.opacity(0.19)).frame(height: 1).padding(.leading, 4)
-                    }
-                    if !cityPins.isEmpty {
-                        libraryPinCategoryList("Pins", symbol: "mappin.and.ellipse", records: cityPins, sectionKey: "\(key):pins")
-                    }
-                }
-                .sketchCard(padding: 14)
-            }
+    // MARK: Library atlas (one index behind Pins, Videos and Notes)
+    var libraryAtlas: LibraryAtlas {
+        func pin(_ place: PersonalPlace, _ trip: Trip?) -> AtlasPin {
+            AtlasPin(recordID: trip.map { "trip-pin:\($0.id):\(place.id)" } ?? (place.isSaved ? place.id : "personal-pin:" + place.id),
+                     placeID: place.id, name: place.name, city: place.city, address: place.address, category: place.categoryTitle,
+                     symbol: place.category.symbol, tint: place.category.tint, glyph: place.appearance, googlePlaceID: place.googlePlaceID,
+                     countryCode: place.boundaryCountryCode, latitude: place.latitude, longitude: place.longitude,
+                     mustDo: trip == nil ? place.isSaved : place.saved == true, tripID: trip?.id, tripTitle: trip?.title,
+                     sourceIDs: place.sourceIDs ?? [], savedAt: place.savedAt)
+        }
+        let pins = savedPlaces.map { pin($0, nil) } + trips.flatMap { trip in (trip.savedPins ?? []).map { pin($0, trip) } }
+        let videos = socialSources.map { source in
+            AtlasVideo(id: source.id, title: studioTitle(source), author: source.envelope.tiktok?.authorHandle, cover: studioCover(source),
+                       city: cityForSource(source), isTips: source.isTips, tripID: source.envelope.destination.tripID)
+        }
+        return LibraryAtlas(pins: pins, mentions: socialPlaces, videos: videos, notes: travelNotes, takes: placeTakes,
+                            trips: trips.map { AtlasTrip(id: $0.id, title: $0.title, city: $0.brief.destination) },
+                            mentionCity: cityForMention) { text in
+            let category = MapPlaceCategory(rawValue: text) ?? MapPlaceCategory.classify(text)
+            return (category.symbol, category.tint, category.rawValue)
         }
     }
-    private func libraryPinCategoryList(_ title: String, symbol: String, records: [MapLibraryPin], sectionKey: String) -> some View {
-        let isCollapsed = collapsedLibraryPinSections.contains(sectionKey)
-        return VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(reduceMotion ? nil : .snappy(duration: 0.24)) {
-                    if isCollapsed { collapsedLibraryPinSections.remove(sectionKey) }
-                    else { collapsedLibraryPinSections.insert(sectionKey) }
-                }
-            } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: symbol).font(.system(size: 12, weight: .bold)).foregroundStyle(libraryAccent)
-                        .frame(width: 28, height: 28).background(libraryAccent.opacity(0.1), in: Circle())
-                    Text(title).font(.custom("PlusJakartaSans-Bold", size: 13)).foregroundStyle(libraryInk)
-                    Text(records.count.formatted()).font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
-                        .foregroundStyle(libraryMuted).padding(.horizontal, 8).frame(height: 22).background(libraryMuted.opacity(0.09), in: Capsule())
-                    Spacer(minLength: 4)
-                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 10, weight: .bold)).foregroundStyle(libraryMuted)
-                        .frame(width: 26, height: 34)
-                }.contentShape(Rectangle()).padding(.horizontal, 4).padding(.vertical, 2)
-            }.buttonStyle(QuietPressStyle()).accessibilityLabel("\(isCollapsed ? "Expand" : "Collapse") \(title)")
-            if !isCollapsed {
-                VStack(spacing: 0) {
-                    ForEach(records) { record in
-                        libraryPinRow(record)
-                        if record.id != records.last?.id { Rectangle().fill(libraryMuted.opacity(0.12)).frame(height: 1).padding(.leading, 50) }
-                    }
-                }.transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }.animation(reduceMotion ? nil : .snappy(duration: 0.24), value: isCollapsed)
+    /// A link tapped inside the place sheet: close the sheet first, then go there.
+    private func afterPlaceSheet(_ run: @escaping () -> Void) {
+        guard atlasPlaceKey != nil else { run(); return }
+        atlasPlaceKey = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: run)
     }
-    private func libraryPinRow(_ record: MapLibraryPin) -> some View {
-        let place = record.place
-        return HStack(alignment: .center, spacing: 10) {
-            Button { editingLibraryPin = record } label: {
-                MarkIconWell(appearance: place.appearance, fallback: record.kind == .save ? "heart.fill" : "mappin", tone: .pins, size: 38)
-                    .raisedCircle()
-            }.buttonStyle(QuietPressStyle()).accessibilityLabel("Customize pin \(place.name)")
-            Button {
-                showTripDetails = false; activeTripID = nil; stage = .library
-                focusedSavedPlaceID = record.id; rootTab = "map"
-            } label: {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(place.name).font(Sketch.text(15, "Bold", relativeTo: .headline)).foregroundStyle(libraryInk).lineLimit(2)
-                    HStack(spacing: 5) {
-                        Text(place.address.nonEmpty ?? place.city).lineLimit(1)
-                        Text("·")
-                        Text(place.categoryTitle).lineLimit(1).foregroundStyle(LibraryTone.pins.color(libraryScheme))
-                    }.font(.system(size: 12, weight: .medium)).foregroundStyle(libraryMuted)
-                    if let tripTitle = record.tripTitle {
-                        Label(tripTitle, systemImage: "airplane").font(.system(size: 10, weight: .medium)).foregroundStyle(LibraryTone.trips.color(libraryScheme)).lineLimit(1)
+    var atlasActions: AtlasActions {
+        AtlasActions(
+            showOnMap: { place in
+                atlasPlaceKey = nil; showTripDetails = false; activeTripID = nil; stage = .library
+                focusedSavedPlaceID = (place.pins.first { $0.tripID == nil } ?? place.pins.first)?.recordID; rootTab = "map"
+            },
+            toggleMustDo: { place in
+                for pin in place.pins {
+                    if let tripID = pin.tripID {
+                        guard !place.pins.contains(where: { $0.tripID == nil }), let trip = trips.firstIndex(where: { $0.id == tripID }),
+                              let index = trips[trip].savedPins?.firstIndex(where: { $0.id == pin.placeID }) else { continue }
+                        trips[trip].savedPins?[index].saved = !place.mustDo; trips[trip].savedPins?[index].pinned = true
+                        trips[trip].updatedAt = .now; TripStorage.save(trips)
+                    } else if let index = savedPlaces.firstIndex(where: { $0.id == pin.placeID }) {
+                        // Taking the heart off keeps the place as a plain pin.
+                        savedPlaces[index].saved = !place.mustDo; savedPlaces[index].pinned = true
                     }
-                }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            }.buttonStyle(QuietPressStyle()).accessibilityLabel("\(place.name) · Show on map")
-            VStack(spacing: 4) {
-                Menu {
-                Button("Icon & category", systemImage: "paintpalette") { editingLibraryPin = record }
-                Button("Open in Apple Maps", systemImage: "map") {
-                    let item = MKMapItem(placemark: MKPlacemark(coordinate: place.coordinate)); item.name = place.name; item.openInMaps()
                 }
-                Button(record.kind == .save ? "Remove Save" : "Remove Pin", systemImage: "trash", role: .destructive) { deleteLibraryPin(record) }
-            } label: {
-                Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(libraryMuted)
-                    .frame(width: 44, height: 44)
-            }.accessibilityLabel("Options for \(place.name)")
-            }
-        }.padding(.horizontal, 4).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
+            },
+            putOnMap: { place in
+                guard let mention = socialPlaces.first(where: { place.mentionIDs.contains($0.id) && $0.latitude != nil }),
+                      let latitude = mention.latitude, let longitude = mention.longitude else { return }
+                let category = MapPlaceCategory(rawValue: mention.category ?? "") ?? MapPlaceCategory.classify(mention.category ?? "")
+                pinFromVideo(mention, latitude: latitude, longitude: longitude, category: category, tripID: mention.tripID, mustDo: false)
+                TrippyHaptics.success()
+            },
+            openVideo: { id in afterPlaceSheet { selectedSocialSource = socialSources.first { $0.id == id } } },
+            openNote: { id in afterPlaceSheet { selectedTravelNoteID = id } },
+            writeNote: { place in afterPlaceSheet { openPlaceNote(key: place.takeKey, name: place.name, city: place.city.nonEmpty, tripID: place.trips.first?.id) } },
+            openTrip: { id in atlasPlaceKey = nil; if let trip = trips.first(where: { $0.id == id }) { selectMapTrip(trip) } },
+            customize: { place in
+                guard let pin = place.pins.first(where: { $0.tripID == nil }) ?? place.pins.first else { return }
+                let stored = pin.tripID.flatMap { id in trips.first { $0.id == id }?.savedPins?.first { $0.id == pin.placeID } }
+                    ?? savedPlaces.first { $0.id == pin.placeID }
+                guard let stored else { return }
+                afterPlaceSheet { editingLibraryPin = MapLibraryPin(id: pin.recordID, place: stored, tripID: pin.tripID, tripTitle: pin.tripTitle, kind: pin.mustDo ? .save : .pin) }
+            },
+            remove: { place in
+                atlasPlaceKey = nil
+                if place.isOnMap {
+                    // Off the map everywhere it is kept; what the videos said about it stays with the videos.
+                    savedPlaces.removeAll { stored in place.pins.contains { $0.tripID == nil && $0.placeID == stored.id } }
+                    for pin in place.pins {
+                        guard let tripID = pin.tripID, let trip = trips.firstIndex(where: { $0.id == tripID }) else { continue }
+                        trips[trip].savedPins?.removeAll { $0.id == pin.placeID }; trips[trip].updatedAt = .now
+                    }
+                    if place.pins.contains(where: { $0.tripID != nil }) { TripStorage.save(trips) }
+                } else { place.mentionIDs.forEach(deleteSocialPlace) }
+            },
+            deleteNote: { deleteLibraryNote($0) },
+            newNote: {
+                let id = UUID(); travelNotes.insert(TravelNote(id: id, title: "New note", tripID: nil, sourceIDs: [], userText: "", updatedAt: .now), at: 0)
+                selectedTravelNoteID = id
+            },
+            findPlace: { activeTripID = nil; stage = .library; rootTab = "map" },
+            openPlace: { atlasPlaceKey = $0 },
+            take: { takeBinding($0) },
+            appendNote: { place, text in appendToPlaceNote(key: place.takeKey, name: place.name, city: place.city.nonEmpty, tripID: place.trips.first?.id, text: text) },
+            flag: { libraryCountryCode($0).map(MarkGlyphCatalog.flag) })
+    }
+    /// Pins tab: every place once, whatever brought it in.
+    var atlasPlacesLibrary: some View {
+        let atlas = libraryAtlas
+        let places = atlas.places.filter { place in
+            (selectedLibraryPinTypes.isEmpty || selectedLibraryPinTypes.contains(place.category))
+                && (libraryMapFilter.map { filter in place.pins.contains { filter.matchesMember(id: $0.recordID, city: $0.city) || filter.matchesMember(id: "personal-pin:" + $0.placeID, city: $0.city) } } ?? true)
+                && (libraryCity == nil || MapCityGrouping.key(place.city) == MapCityGrouping.key(libraryCity!))
+                && (libraryQuery.isEmpty || place.search.localizedCaseInsensitiveContains(libraryQuery))
+        }
+        return AtlasPlacesView(atlas: atlas, places: places, singleCity: libraryHasSingleCity, actions: atlasActions)
+    }
+    /// Notes tab: each note with what it is about and where it came from.
+    var atlasNotesLibrary: some View {
+        let atlas = libraryAtlas
+        let known = Dictionary(atlas.notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return AtlasNotesView(atlas: atlas, notes: filteredLibraryNotes.compactMap { known[$0.id] }, actions: atlasActions)
     }
     private func deleteLibraryPin(_ record: MapLibraryPin) {
         if let tripID = record.tripID, let index = trips.firstIndex(where: { $0.id == tripID }) {
@@ -12845,7 +12917,8 @@ private extension TripFlowView {
             }
         }
         dropStaleSections(of: source.id, keeping: keys)
-        if !tips.isEmpty { upsertTipsNote(current) }
+        upsertTipsNote(current)
+        upsertGuideNote(current, places: videoOnly ? [] : socialPlaces.filter { $0.sourceID == source.id })
         socialSources[sourceIndex].linkedPlaceIDs = linked
         if !result.places.isEmpty || !tips.isEmpty { TrippyHaptics.success() }
     }
@@ -12872,16 +12945,77 @@ private extension TripFlowView {
         travelNotes.insert(note, at: 0)
         return note.id
     }
+    /// General tips (no single venue is the point) live in one note per city: every video about Athens adds its
+    /// section to "Athens tips". Tips with no city go to the video's own tips note. A re-read with no tips left
+    /// takes this video's section out again.
     private func upsertTipsNote(_ source: ImportedSocialSource) {
+        let id = source.id.uuidString
+        let city = cityForSource(source).nonEmpty
+        let cityKey = city.map { MapCityGrouping.key(LibraryGrouping.cityTitle($0)) }
+        let tripID = source.envelope.destination.tripID
+        let own = travelNotes.firstIndex { $0.kind == "tips" && $0.sourceIDs.contains(source.id) }
+        guard !(source.tips ?? []).isEmpty else {
+            if let own { removeSection(id, of: source.id, at: own) }
+            return
+        }
         let section = AutoNote.tipsSection(source)
-        if let index = travelNotes.firstIndex(where: { $0.kind == "tips" && $0.sourceIDs.contains(source.id) }) {
-            travelNotes[index].fromSources = [source.id.uuidString: section]
+        let shared = cityKey.flatMap { key in
+            travelNotes.firstIndex { $0.kind == "tips" && $0.tripID == tripID && $0.city.map { MapCityGrouping.key(LibraryGrouping.cityTitle($0)) } == key }
+        }
+        if let index = own ?? shared {
+            travelNotes[index].fromSources = (travelNotes[index].fromSources ?? [:]).merging([id: section]) { $1 }
+            if !travelNotes[index].sourceIDs.contains(source.id) { travelNotes[index].sourceIDs.append(source.id) }
+            // A second video joining turns a video's tips note into the city's.
+            if let city, travelNotes[index].sourceIDs.count > 1,
+               socialSources.contains(where: { travelNotes[index].sourceIDs.contains($0.id) && $0.displayTitle == travelNotes[index].title }) {
+                travelNotes[index].title = "\(MapCityGrouping.name(city)) tips"
+            }
             travelNotes[index].updatedAt = .now
             return
         }
-        travelNotes.insert(TravelNote(id: UUID(), title: source.displayTitle ?? "Travel tips", tripID: source.envelope.destination.tripID,
-                                      sourceIDs: [source.id], userText: "", updatedAt: .now, city: cityForSource(source).nonEmpty,
-                                      kind: "tips", fromSources: [source.id.uuidString: section]), at: 0)
+        travelNotes.insert(TravelNote(id: UUID(), title: city.map { "\(MapCityGrouping.name($0)) tips" } ?? source.displayTitle ?? "Travel tips",
+                                      tripID: tripID, sourceIDs: [source.id], userText: "", updatedAt: .now, city: city,
+                                      kind: "tips", fromSources: [id: section]), at: 0)
+    }
+    /// The video as one page: its general tips, then every place it names with the tips for that place. It links to
+    /// all of those places; each place still keeps its own note. A video with no places has no guide.
+    private func upsertGuideNote(_ source: ImportedSocialSource, places: [SocialPlaceMention]) {
+        let id = source.id.uuidString
+        let existing = travelNotes.firstIndex { $0.kind == "guide" && $0.sourceIDs.contains(source.id) }
+        guard !places.isEmpty else {
+            if let existing { removeSection(id, of: source.id, at: existing) }
+            return
+        }
+        let section = AutoNote.guideSection(source, places: places)
+        let keys = places.map { PlaceKey.of(googlePlaceID: $0.googlePlaceID, name: $0.name, city: $0.city) }
+        let references = zip(places, keys).compactMap { place, key in
+            place.latitude.flatMap { latitude in place.longitude.map { longitude in
+                LinkedPlaceReference(id: key, name: place.name, address: place.address ?? "", latitude: latitude, longitude: longitude, googlePlaceID: place.googlePlaceID)
+            } }
+        }
+        if let existing {
+            travelNotes[existing].fromSources = [id: section]
+            travelNotes[existing].linkedPlaceIDs = keys; travelNotes[existing].linkedPlaces = references
+            travelNotes[existing].updatedAt = .now
+            return
+        }
+        travelNotes.insert(TravelNote(id: UUID(), title: source.displayTitle ?? "Saved video", tripID: source.envelope.destination.tripID,
+                                      sourceIDs: [source.id], userText: "", updatedAt: source.extractedAt ?? .now, city: cityForSource(source).nonEmpty,
+                                      linkedPlaceIDs: keys, linkedPlaces: references, kind: "guide", fromSources: [id: section]), at: 0)
+    }
+    private func removeSection(_ id: String, of sourceID: UUID, at index: Int) {
+        travelNotes[index].fromSources?[id] = nil
+        travelNotes[index].sourceIDs.removeAll { $0 == sourceID }
+        if travelNotes[index].fromSources?.isEmpty != false, travelNotes[index].userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            travelNotes.remove(at: index)
+        }
+    }
+    /// Videos read before guides existed get theirs the next time the library loads.
+    func backfillGuideNotes() {
+        for source in socialSources where source.extractionStatus == "ready" && source.envelope.destination.mode != "video" {
+            guard !travelNotes.contains(where: { $0.kind == "guide" && $0.sourceIDs.contains(source.id) }) else { continue }
+            upsertGuideNote(source, places: socialPlaces.filter { $0.sourceID == source.id })
+        }
     }
     /// A re-read that no longer finds a place removes only this video's section; a note left with nothing is removed.
     private func dropStaleSections(of sourceID: UUID, keeping keys: Set<String>) {
@@ -13085,6 +13219,7 @@ private extension TripFlowView {
         let tipPosts = sources.filter { !workingIDs.contains($0.id) && $0.isTips }
         let tipIDs = Set(tipPosts.map(\.id))
         let groups = LibraryGrouping.cities(sources.filter { !workingIDs.contains($0.id) && !tipIDs.contains($0.id) }, city: cityForSource)
+        let atlas = libraryAtlas
         return LazyVStack(alignment: .leading, spacing: 22) {
             studioHeader(sources)
             if !tipPosts.isEmpty {
@@ -13144,8 +13279,10 @@ private extension TripFlowView {
                         ForEach(group.items) { source in
                             Button { selectedSocialSource = source } label: {
                                 StudioPosterCard(title: studioTitle(source), author: source.envelope.tiktok?.authorHandle, cover: studioCover(source),
-                                                 placeCount: socialPlaces.filter { $0.sourceID == source.id }.count,
-                                                 evidence: StudioEvidence.of(source), isSlideshow: source.envelope.tiktok?.isSlideshow ?? (source.envelope.mediaKind == "slides"))
+                                                 placeCount: atlas.places(inVideo: source.id).count,
+                                                 evidence: StudioEvidence.of(source), isSlideshow: source.envelope.tiktok?.isSlideshow ?? (source.envelope.mediaKind == "slides"),
+                                                 noteCount: atlas.noteIDsByVideo[source.id]?.count ?? 0,
+                                                 trip: trips.first { $0.id == source.envelope.destination.tripID }?.title)
                             }
                             .buttonStyle(SketchPressStyle())
                             .contextMenu {
@@ -13434,93 +13571,6 @@ private extension TripFlowView {
     private func libraryNoteCity(_ note: TravelNote) -> String {
         note.city ?? trips.first { $0.id == note.tripID }?.brief.destination ?? ""
     }
-    var notesLibrary: some View {
-        let groups = LibraryGrouping.cities(filteredLibraryNotes, city: libraryNoteCity)
-        return LazyVStack(alignment: .leading, spacing: 18) {
-            if groups.isEmpty {
-                LibraryEmptyState(title: "A place for your ideas", message: "", tone: .notes,
-                    actionTitle: "New note", action: {
-                        let id = UUID(); travelNotes.insert(TravelNote(id: id, title: "New note", tripID: nil, sourceIDs: [], userText: "", updatedAt: .now), at: 0)
-                        selectedTravelNoteID = id
-                    })
-            }
-            ForEach(groups) { group in
-                LibrarySectionHeading(title: group.title == "Unassigned" ? "Personal notes" : group.title, count: group.items.count, tone: .notes)
-                ForEach(group.items) { note in libraryNoteRow(note) }
-            }
-        }
-    }
-    private func libraryNoteRow(_ note: TravelNote) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center) {
-                Text(note.updatedAt.formatted(.dateTime.day().month(.abbreviated)).uppercased()).font(Sketch.eyebrow).tracking(0.6)
-                    .foregroundStyle(LibraryTone.notes.color(libraryScheme))
-                Spacer()
-                Menu {
-                    Button("Open", systemImage: "square.and.pencil") { selectedTravelNoteID = note.id }
-                    Button("Delete", systemImage: "trash", role: .destructive) { deleteLibraryNote(note.id) }
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 13, weight: .bold)).foregroundStyle(libraryInk)
-                        .frame(width: 32, height: 32).raisedCircle()
-                }
-                .frame(width: 44, height: 44).accessibilityLabel("More for \(note.title)")
-            }
-            .frame(height: 28)
-            Button { selectedTravelNoteID = note.id } label: {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(note.title).font(Sketch.display(.title3)).foregroundStyle(libraryInk).lineLimit(2).multilineTextAlignment(.leading)
-                    Text(note.userText.nonEmpty ?? "Empty note").font(Sketch.text(14, relativeTo: .subheadline))
-                        .foregroundStyle(note.userText.nonEmpty == nil ? Sketch.inkFaint : libraryMuted)
-                        .lineSpacing(3).lineLimit(3).multilineTextAlignment(.leading)
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 6) { libraryNoteBadges(note) }
-                        VStack(alignment: .leading, spacing: 6) { libraryNoteBadges(note) }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.leading, 12)
-        .overlay(alignment: .leading) {
-            Capsule().fill(LibraryTone.notes.color(libraryScheme).opacity(0.7)).frame(width: 3).padding(.vertical, 4)
-        }
-        .sketchCard(padding: 16)
-    }
-    @ViewBuilder private func libraryNoteBadges(_ note: TravelNote) -> some View {
-        if !note.sourceIDs.isEmpty { SketchTag(text: "\(note.sourceIDs.count) sources", tint: Sketch.sky, symbol: "link") }
-        if let trip = trips.first(where: { $0.id == note.tripID }) { SketchTag(text: trip.title, tint: Sketch.plum, symbol: "suitcase") }
-        if let count = note.linkedPlaceIDs?.count, count > 0 { SketchTag(text: "\(count) places", tint: Sketch.coral, symbol: "mappin") }
-    }
-    var socialSavedPlaces: some View {
-        let places = socialPlaces.filter { place in
-            (libraryCity == nil || cityForMention(place).localizedCaseInsensitiveCompare(libraryCity!) == .orderedSame) &&
-                (libraryQuery.isEmpty || place.name.localizedCaseInsensitiveContains(libraryQuery))
-        }
-        return LazyVStack(alignment: .leading, spacing: 16) {
-            if !places.isEmpty {
-                LibrarySectionHeading(title: "From your videos", subtitle: "", count: places.count, tone: .videos)
-            }
-            ForEach(places) { place in
-                ZStack(alignment: .topTrailing) {
-                Button { openSocialPlace(place) } label: {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack(alignment: .top, spacing: 14) {
-                            LibraryIconWell(symbol: "mappin.and.ellipse", tone: .pins)
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(place.name).font(.system(.headline, design: .rounded)).foregroundStyle(libraryInk)
-                                Text(cityForMention(place)).font(.subheadline).foregroundStyle(libraryMuted)
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.trailing, 44)
-                        }
-                        if !place.summary.isEmpty { Text(place.summary).font(.subheadline).foregroundStyle(libraryMuted).lineLimit(3) }
-                        LibraryBadge(title: "From a post", symbol: "link", tone: .videos)
-                    }.padding(18).frame(maxWidth: .infinity, alignment: .leading).librarySurface()
-                }.buttonStyle(QuietPressStyle())
-                LibraryDeleteButton(title: place.name) { deleteSocialPlace(place.id) }.padding(12)
-                }
-            }
-        }
-    }
     func socialSourceDetail(_ initial: ImportedSocialSource) -> some View {
         let source = socialSources.first { $0.id == initial.id } ?? initial
         let post = source.envelope.tiktok
@@ -13805,7 +13855,7 @@ private extension TripFlowView {
                     }), axis: .vertical).font(.body)
                     if let sections = note?.fromSources, !sections.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text(note?.kind == "tips" ? "Tips from the video" : sections.count > 1 ? "From \(sections.count) videos" : "From the video")
+                            Text(note?.kind == "guide" ? "The whole video" : note?.kind == "tips" ? (sections.count > 1 ? "Tips from \(sections.count) videos" : "Tips from the video") : sections.count > 1 ? "From \(sections.count) videos" : "From the video")
                                 .font(.headline)
                             ForEach(sections.keys.sorted(), id: \.self) { sourceKey in
                                 VStack(alignment: .leading, spacing: 8) {
@@ -14951,6 +15001,9 @@ struct StudioPosterCard: View {
     let placeCount: Int
     let evidence: [StudioEvidence]
     let isSlideshow: Bool
+    /// Links out of the video: the notes it wrote and the trip it was saved to.
+    var noteCount = 0
+    var trip: String? = nil
     var body: some View {
         Color.clear
             .aspectRatio(9 / 14, contentMode: .fit)
@@ -14970,8 +15023,22 @@ struct StudioPosterCard: View {
                 .foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 5)
                 .background(.black.opacity(0.45), in: Capsule()).padding(8)
             }
+            .overlay(alignment: .topTrailing) {
+                if noteCount > 0 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "note.text").font(.system(size: 9, weight: .bold))
+                        Text("\(noteCount)").font(Sketch.text(11, "Bold", relativeTo: .caption2))
+                    }
+                    .foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(.black.opacity(0.45), in: Capsule()).padding(8)
+                }
+            }
             .overlay(alignment: .bottomLeading) {
                 VStack(alignment: .leading, spacing: 5) {
+                    if let trip {
+                        Label(trip, systemImage: "airplane").font(Sketch.text(10, "Bold", relativeTo: .caption2)).lineLimit(1)
+                            .padding(.horizontal, 7).padding(.vertical, 3).background(.white.opacity(0.22), in: Capsule())
+                    }
                     Text(title).font(Sketch.text(13, "Bold", relativeTo: .footnote)).lineLimit(2).multilineTextAlignment(.leading)
                     HStack(spacing: 6) {
                         if let author { Text("@\(author)").font(Sketch.text(11, "Medium", relativeTo: .caption2)).opacity(0.85).lineLimit(1) }

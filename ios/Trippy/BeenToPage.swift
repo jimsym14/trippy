@@ -43,7 +43,11 @@ struct WorldGlobeView: View {
     @State private var lastAddedTask: Task<Void, Never>?
     /// The visit whose month and year is being picked on the wheels (the country, or one of its cities).
     @State private var whenTarget: WhenTarget?
-    struct WhenTarget: Identifiable { let id: String; let title: String; let isCountry: Bool }
+    struct WhenTarget: Identifiable { let place: String; let title: String; let slot: Int; let existing: Bool
+        var id: String { "\(place):\(slot)" } }
+    /// Cities added from the card of the country just added (Undo takes them too).
+    @State private var addedAlong: [String] = []
+    @State private var drainID: UUID?
     @State private var cardDrag: CGFloat = 0
     @State private var geometries: [CountryGeometry] = []
     @State private var shapes: CountryShapesOverlay?
@@ -88,7 +92,10 @@ struct WorldGlobeView: View {
     }
     /// 3D pins standing on the globe: crisp at any zoom, unlike dots painted into the texture.
     private var globePins: GlobeOverlay {
-        GlobeOverlay(pins: showCities ? snapshot.cities.map { GlobeOverlay.Pin(id: $0.id, coordinate: $0.coordinate, style: $0.isLived ? .lived : .city) } : [])
+        // Linked cities are joined by arcs, like flight paths.
+        GlobeOverlay(pins: showCities ? snapshot.cities.map { GlobeOverlay.Pin(id: $0.id, coordinate: $0.coordinate, style: $0.isLived ? .lived : .city) } : [],
+                     routes: showCities ? BeenRoutes(snapshot.cities).links.map { [$0.from, $0.to] } : [],
+                     color: UIColor(sketchHex: GlobeAppearance.stored.accent.hex), lift: 0.05)
     }
     static func flag(_ code: String?) -> String {
         guard let code, code.count == 2, code.allSatisfy({ $0.isASCII && $0.isLetter }) else { return "🌍" }
@@ -121,7 +128,7 @@ struct WorldGlobeView: View {
                             .transition(.opacity)
                     }
                     Spacer(minLength: 0)
-                    if !passportOpen && fillMode != .visited && showFill && !snapshot.countries.isEmpty {
+                    if !passportOpen && lastAdded == nil && fillMode != .visited && showFill && !snapshot.countries.isEmpty {
                         BeenLegend(mode: fillMode, snapshot: snapshot).transition(.opacity)
                     }
                 }
@@ -151,10 +158,10 @@ struct WorldGlobeView: View {
                 visits.append(visit)
             }
             storage = VisitedPlace.encode(visits)
-            showAdded(country); lastAddedTask?.cancel()
+            showAdded(country); pauseAdded()
             if ProcessInfo.processInfo.arguments.contains("-TrippyBeenWhenDemo") {
                 try? await Task.sleep(for: .seconds(1))
-                whenTarget = WhenTarget(id: country.id, title: "When did you go to Italy?", isCountry: true)
+                whenTarget = WhenTarget(place: country.id, title: "Italy", slot: 1, existing: false)
             }
         }
         #endif
@@ -183,6 +190,16 @@ struct WorldGlobeView: View {
             case "scan": showScan = true
             case "city": cityDetail = all.cities.first { $0.isLived } ?? all.cities.first
             default: break
+            }
+            // `-TrippyBeenFocus Paris [-TrippyBeenFocusKm 180] [-TrippyBeenAddedCard YES]`: fly to a saved city, optionally with its "added" card.
+            if let name = UserDefaults.standard.string(forKey: "TrippyBeenFocus"), let city = all.cities.first(where: { $0.name == name }) {
+                let km = max(20, UserDefaults.standard.double(forKey: "TrippyBeenFocusKm"))
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2.5))
+                    camera = BeenCameraRequest(latitude: city.latitude, longitude: city.longitude, distance: km * 3000, points: [city.coordinate],
+                                               minimumMeters: km * 1000, bottomInset: Self.tabBarClearance)
+                    if UserDefaults.standard.bool(forKey: "TrippyBeenAddedCard") { showAdded(city); pauseAdded() }
+                }
             }
             if ProcessInfo.processInfo.arguments.contains("-TrippyBeenOpen") { passportOpen = true }
             if ProcessInfo.processInfo.arguments.contains("-TrippyBeenAdded"), let country = PlaceCatalog.country("IT"),
@@ -240,7 +257,8 @@ struct WorldGlobeView: View {
                                  if key != viewKey { viewKey = key }
                              },
                              addVisits: all.visits, onAdd: { addZoomed($0) },
-                             cityShapes: cityShapes, cityShapesID: cityShapesID, heat: heat)
+                             cityShapes: cityShapes, cityShapesID: cityShapesID, heat: heat,
+                             routes: BeenRoutes(showCities ? snapshot.cities : []))
                     .transition(.opacity)
             }
         }
@@ -558,138 +576,172 @@ struct WorldGlobeView: View {
         showAdded(target.place)
     }
 
+    /// How long the card stays once you stop touching it. Everything is saved the moment it is added;
+    /// the card only offers Undo and the dates.
+    private static let addedSeconds = 6.0
+
     private func showAdded(_ place: VisitedPlace) {
+        if lastAdded?.id != place.id { addedAlong = [] }
         withAnimation(.spring(response: 0.42, dampingFraction: 0.72)) { lastAdded = place }
+        keepAdded()
+    }
+    /// Restarts the countdown (any tap on the card counts as still using it).
+    private func keepAdded() {
         lastAddedTask?.cancel()
-        lastAddedTask = Task { try? await Task.sleep(for: .seconds(9)); guard !Task.isCancelled else { return }
+        drainID = UUID()
+        lastAddedTask = Task { try? await Task.sleep(for: .seconds(Self.addedSeconds)); guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.3)) { lastAdded = nil } }
     }
-
-    private var isCountryVisit: Bool {
-        lastAdded?.isCountry ?? false
-    }
-
-    /// The month a visit was in, when one was picked (stored as the 1st at noon), else nil ("any time").
-    private func pickedDate(_ id: String) -> Date? {
-        all.visits.first { $0.id == id }?.when
-    }
-    private func setPicked(_ value: Date?, for ids: [String]) {
-        var visits = all.visits
-        for id in ids { if let index = visits.firstIndex(where: { $0.id == id }) { visits[index].setWhen(value) } }
-        storage = VisitedPlace.encode(visits)
-    }
-    /// Cities of the just-added country that are in the been list.
-    private func addedCities(of place: VisitedPlace) -> [VisitedPlace] {
-        all.visits.filter { !$0.isCountry && $0.countryCode?.uppercased() == place.countryCode?.uppercased() && $0.id != place.id }
-    }
+    private func pauseAdded() { lastAddedTask?.cancel(); drainID = nil }
     private func closeAdded() {
         lastAddedTask?.cancel()
         withAnimation(.easeOut(duration: 0.25)) { lastAdded = nil }
     }
+    private var isCountryVisit: Bool { lastAdded?.isCountry ?? false }
 
-    /// Shown right after adding: "Italy · When? · Remove · ✓". For a country, its cities to add too; every added
-    /// city gets its own month and year (tap it), and new cities start with the country's date. The tick closes it.
-    private func addedBubble(_ place: VisitedPlace) -> some View {
-        let cities = isCountryVisit ? Array(PlaceCatalog.cities(in: place.countryCode ?? "").prefix(12)) : []
+    /// A visit's date by slot: 0 is the first visit, 1… are the further ones.
+    private func visitDate(_ id: String, slot: Int) -> VisitSpan? {
+        guard let place = all.visits.first(where: { $0.id == id }) else { return nil }
+        if slot == 0 { return place.when.map { VisitSpan(start: $0, until: place.until) } }
+        return place.extra.flatMap { slot - 1 < $0.count ? $0[slot - 1] : nil }
+    }
+    /// Sets, adds or (nil) removes a visit's date. Removing the first visit moves the next one up.
+    private func setVisit(_ date: Date?, id: String, slot: Int) {
+        var visits = all.visits
+        guard let index = visits.firstIndex(where: { $0.id == id }) else { return }
+        var extra = visits[index].extra ?? []
+        if slot == 0 {
+            if let date { visits[index].setWhen(date) }
+            else if let next = extra.first { visits[index].setWhen(next.start, until: next.until); extra.removeFirst() }
+            else { visits[index].setWhen(nil) }
+        } else if let date {
+            if visits[index].when == nil { visits[index].setWhen(date) }
+            else if slot - 1 < extra.count { extra[slot - 1] = VisitSpan(start: date) } else { extra.append(VisitSpan(start: date)) }
+        } else if slot - 1 < extra.count { extra.remove(at: slot - 1) }
+        visits[index].extra = extra.isEmpty ? nil : extra
+        // A country's date also goes to the cities added with it that have none yet.
+        if visits[index].isCountry, let date {
+            for i in visits.indices where addedAlong.contains(visits[i].id) && visits[i].when == nil { visits[i].setWhen(date) }
+        }
+        storage = VisitedPlace.encode(visits)
+    }
+
+    /// Shown right after adding a place from the map. It is already saved; the card is for second thoughts:
+    /// Undo, when you went (as many visits as you like), and for a country its cities. Left alone, it goes away.
+    private func addedBubble(_ added: VisitedPlace) -> some View {
+        let place = all.visits.first { $0.id == added.id } ?? added
+        let cities = place.isCountry ? Array(PlaceCatalog.cities(in: place.countryCode ?? "").prefix(12)) : []
+        let dates = [visitDate(place.id, slot: 0)].compactMap { $0 } + (place.extra ?? [])
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Text(Self.flag(place.countryCode)).font(.system(size: 24))
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(place.name).font(Sketch.text(15, "Bold", relativeTo: .subheadline)).lineLimit(1)
-                    Text("Added").font(Sketch.text(11, relativeTo: .caption2)).foregroundStyle(BeenPalette.secondary(scheme))
+                PlaceMark(place: place, size: 38)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(place.name).font(Sketch.text(16, "Bold", relativeTo: .headline)).lineLimit(1).minimumScaleFactor(0.8)
+                    Label("Saved", systemImage: "checkmark.circle.fill").font(Sketch.text(11, "SemiBold", relativeTo: .caption2))
+                        .foregroundStyle(BeenLook.lived).labelStyle(.titleAndIcon)
                 }
+                .layoutPriority(1)
                 Spacer(minLength: 4)
                 Button {
-                    lastAddedTask?.cancel()
-                    whenTarget = WhenTarget(id: place.id, title: "When did you go to \(place.name)?", isCountry: isCountryVisit)
+                    TrippyHaptics.selection()
+                    let gone = Set([place.id] + addedAlong)
+                    storage = VisitedPlace.encode(all.visits.filter { !gone.contains($0.id) })
+                    closeAdded()
                 } label: {
-                    Label(pickedDate(place.id).map { $0.formatted(.dateTime.month(.abbreviated).year()) } ?? "When?", systemImage: "calendar")
-                        .font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).foregroundStyle(Sketch.ink)
-                        .padding(.horizontal, 10).frame(minHeight: 34).background(Capsule().fill(Sketch.card))
+                    Label("Undo", systemImage: "arrow.uturn.backward").font(Sketch.text(13, "Bold", relativeTo: .footnote)).lineLimit(1).fixedSize()
+                        .foregroundStyle(Sketch.coral).padding(.horizontal, 12).frame(minHeight: 40)
+                        .background(Capsule().fill(Sketch.coral.opacity(0.12)))
                 }
                 .buttonStyle(.plain)
-                Button("Remove") {
-                    storage = VisitedPlace.encode(all.visits.filter { $0.id != place.id })
-                    closeAdded()
+                Button { closeAdded(); cityDetail = place } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 15, weight: .bold)).foregroundStyle(BeenPalette.ink(scheme))
+                        .frame(width: 40, height: 40).background(Circle().fill(BeenPalette.ink(scheme).opacity(0.07)))
                 }
-                .font(Sketch.text(13, "Bold", relativeTo: .footnote)).foregroundStyle(Sketch.coral).frame(minHeight: 44)
-                Button { TrippyHaptics.selection(); closeAdded() } label: {
-                    Image(systemName: "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(BeenPalette.base(scheme))
-                        .frame(width: 34, height: 34).background(Circle().fill(BeenPalette.ink(scheme)))
-                }
-                .accessibilityLabel("Done")
+                .buttonStyle(.plain).accessibilityLabel("More: lived here, stops and photos")
             }
+            // When you went: one chip per visit, and a chip to add the next.
+            ScrollView(.horizontal) {
+                HStack(spacing: 6) {
+                    ForEach(Array(dates.enumerated()), id: \.offset) { slot, span in
+                        Button {
+                            pauseAdded()
+                            whenTarget = WhenTarget(place: place.id, title: place.name, slot: slot, existing: true)
+                        } label: {
+                            Label(span.text, systemImage: "calendar").font(Sketch.text(13, "Bold", relativeTo: .footnote)).lineLimit(1).fixedSize()
+                                .foregroundStyle(.white).padding(.horizontal, 12).frame(minHeight: 38).background(Capsule().fill(Sketch.sage))
+                        }
+                        .buttonStyle(BubblePressStyle()).accessibilityHint("Change or remove this visit")
+                    }
+                    Button {
+                        pauseAdded()
+                        whenTarget = WhenTarget(place: place.id, title: place.name, slot: dates.count, existing: false)
+                    } label: {
+                        Label(dates.isEmpty ? "When?" : "Another visit", systemImage: "plus").font(Sketch.text(13, "Bold", relativeTo: .footnote)).lineLimit(1).fixedSize()
+                            .foregroundStyle(BeenPalette.ink(scheme)).padding(.horizontal, 12).frame(minHeight: 38)
+                            .background(Capsule().strokeBorder(BeenPalette.ink(scheme).opacity(0.35), style: StrokeStyle(lineWidth: 1.2, dash: [4, 3])))
+                    }
+                    .buttonStyle(BubblePressStyle())
+                    if dates.isEmpty {
+                        Text("Optional").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(BeenPalette.secondary(scheme)).fixedSize()
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
             if !cities.isEmpty {
-                Text("Cities you went to? Tap an added one to set when.").font(Sketch.text(11, "Bold", relativeTo: .caption2))
-                    .foregroundStyle(BeenPalette.secondary(scheme))
                 ScrollView(.horizontal) {
                     HStack(spacing: 6) {
+                        Text("Cities:").font(Sketch.text(12, "Bold", relativeTo: .caption)).foregroundStyle(BeenPalette.secondary(scheme)).fixedSize()
                         ForEach(cities) { city in
-                            let visit = all.visits.first { VisitedPlace.normalized($0.name) == VisitedPlace.normalized(city.name) && $0.countryCode?.uppercased() == city.countryCode }
+                            let visit = all.visits.first { !$0.isCountry && VisitedPlace.normalized($0.name) == VisitedPlace.normalized(city.name) && $0.countryCode?.uppercased() == city.countryCode }
                             Button {
-                                TrippyHaptics.selection()
-                                lastAddedTask?.cancel()
+                                TrippyHaptics.selection(); keepAdded()
                                 if let visit {
-                                    whenTarget = WhenTarget(id: visit.id, title: "When did you go to \(visit.name)?", isCountry: false)
+                                    guard addedAlong.contains(visit.id) else { return }
+                                    addedAlong.removeAll { $0 == visit.id }
+                                    storage = VisitedPlace.encode(all.visits.filter { $0.id != visit.id })
                                 } else {
-                                    // A new city starts with the country's month, so one date covers the whole trip.
-                                    var added = VisitedPlace(name: city.name, countryCode: city.countryCode, latitude: city.latitude, longitude: city.longitude)
-                                    added.kind = .city; added.setWhen(pickedDate(place.id))
-                                    storage = VisitedPlace.encode(VisitedPlace.adding(added, to: all.visits))
+                                    // A new city starts with the country's date, so one date covers the whole trip.
+                                    var new = VisitedPlace(name: city.name, countryCode: city.countryCode, latitude: city.latitude, longitude: city.longitude, kind: .city)
+                                    new.setWhen(place.when)
+                                    addedAlong.append(new.id)
+                                    storage = VisitedPlace.encode(VisitedPlace.adding(new, to: all.visits))
                                 }
                             } label: {
                                 HStack(spacing: 5) {
-                                    Image(systemName: visit == nil ? "plus" : "checkmark").font(.system(size: 11, weight: .bold))
+                                    Image(systemName: visit == nil ? "plus" : "checkmark").font(.system(size: 10, weight: .heavy))
                                     Text(city.name).font(Sketch.text(12, "Bold", relativeTo: .caption)).lineLimit(1)
-                                    if let visit, let date = pickedDate(visit.id) {
-                                        Text(date.formatted(.dateTime.month(.abbreviated).year(.twoDigits)))
-                                            .font(Sketch.text(11, "SemiBold", relativeTo: .caption2)).opacity(0.85)
-                                    }
                                 }
                                 .foregroundStyle(visit != nil ? Color.white : BeenPalette.ink(scheme))
-                                .padding(.horizontal, 10).frame(minHeight: 34)
+                                .padding(.horizontal, 10).frame(minHeight: 36)
                                 .background(Capsule().fill(visit != nil ? Sketch.sage : BeenPalette.ink(scheme).opacity(0.06)))
                             }
                             .buttonStyle(BubblePressStyle())
-                            .accessibilityHint(visit == nil ? "Adds \(city.name)" : "Sets when you went, or removes it")
+                            .accessibilityLabel(city.name).accessibilityValue(visit == nil ? "Not added" : "Added")
                         }
                     }
                 }
                 .scrollIndicators(.hidden)
             }
+            // The line runs down while the card waits; touching the card refills it.
+            if let drainID { DrainBar(seconds: Self.addedSeconds, tint: BeenPalette.ink(scheme)).id(drainID) }
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.regularMaterial))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(BeenPalette.ink(scheme).opacity(0.08), lineWidth: 0.7))
-        .shadow(color: .black.opacity(0.14), radius: 14, y: 6)
+        .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 10)
+        .background(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(.regularMaterial))
+        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(BeenPalette.ink(scheme).opacity(0.08), lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.16), radius: 16, y: 6)
         .frame(maxWidth: 560)
+        .simultaneousGesture(TapGesture().onEnded { if whenTarget == nil { keepAdded() } })
     }
 
-    /// The wheels for one visit. For the country: "Same date for its cities". For a city: Remove.
-    @ViewBuilder private func whenSheet(_ target: WhenTarget) -> some View {
-        let country = lastAdded
-        let cityIDs = country.map { addedCities(of: $0).map(\.id) } ?? []
-        WhenPickerSheet(title: target.title, date: Binding(get: { pickedDate(target.id) }, set: { setPicked($0, for: [target.id]) })) {
-            if target.isCountry && !cityIDs.isEmpty {
-                Button {
-                    setPicked(pickedDate(target.id), for: cityIDs); TrippyHaptics.selection(); whenTarget = nil
-                } label: {
-                    Label("Same date for the \(cityIDs.count) \(cityIDs.count == 1 ? "city" : "cities") you added", systemImage: "square.on.square")
-                        .font(Sketch.text(14, "Bold", relativeTo: .subheadline)).frame(maxWidth: .infinity, minHeight: 46)
-                        .foregroundStyle(Sketch.ink).background(Capsule().fill(Sketch.paperDeep))
-                }
-                .buttonStyle(.plain)
-            } else if !target.isCountry {
-                Button(role: .destructive) {
-                    storage = VisitedPlace.encode(all.visits.filter { $0.id != target.id }); whenTarget = nil
-                } label: {
-                    Label("Remove this city", systemImage: "trash").font(Sketch.text(14, "Bold", relativeTo: .subheadline))
-                        .frame(maxWidth: .infinity, minHeight: 46).foregroundStyle(Sketch.coral)
-                        .background(Capsule().fill(Sketch.coral.opacity(0.1)))
-                }
-                .buttonStyle(.plain)
-            }
+    /// Month and year for one visit. Saving closes it and the card's countdown starts again.
+    private func whenSheet(_ target: WhenTarget) -> some View {
+        VisitMonthSheet(title: target.existing ? "Change this visit to \(target.title)" : "When did you go to \(target.title)?",
+                        initial: visitDate(target.place, slot: target.slot)?.start, removable: target.existing) { date in
+            setVisit(date, id: target.place, slot: target.slot)
+            TrippyHaptics.selection()
+            whenTarget = nil
         }
+        .onDisappear { if lastAdded != nil { keepAdded() } }
     }
 
     /// When every visit is in one continent, open on that continent rather than the empty world.
@@ -852,8 +904,13 @@ extension WorldGlobeView {
         var france = VisitedPlace(name: "France", countryCode: "FR", latitude: 48.86, longitude: 2.35, kind: .country, dated: false)
         france.setWhen(VisitedPlace.month(9, 2022))
         let norway = VisitedPlace(name: "Norway", countryCode: "NO", latitude: 59.91, longitude: 10.75, kind: .country, dated: false)
-        return [athens, berlin, france, norway,
-                city("Paris", "FR", 48.86, 2.35, 9, 2022, days: 7), city("Lyon", "FR", 45.76, 4.84, 9, 2022, days: 2),
+        var paris = city("Paris", "FR", 48.86, 2.35, 9, 2022, days: 7), lyon = city("Lyon", "FR", 45.76, 4.84, 9, 2022, days: 2)
+        paris.extra = [VisitSpan(start: VisitedPlace.month(5, 2019) ?? .now)]
+        paris.stops = [PlaceStop(name: "Lyon", latitude: 45.76, longitude: 4.84, cityID: lyon.id),
+                       PlaceStop(name: "Versailles", latitude: 48.80, longitude: 2.12), PlaceStop(name: "Giverny", latitude: 49.08, longitude: 1.53),
+                       PlaceStop(name: "Fontainebleau", latitude: 48.40, longitude: 2.70)]
+        lyon.stops = [PlaceStop(name: "Paris", latitude: 48.86, longitude: 2.35, cityID: paris.id)]
+        return [athens, berlin, france, norway, paris, lyon,
                 city("Sofia", "BG", 42.70, 23.32, 4, 2019, days: 26, trips: 7), city("Thessaloniki", "GR", 40.64, 22.94, 7, 2020, days: 9, trips: 4),
                 city("Rome", "IT", 41.90, 12.50, 6, 2023, days: 4), city("Milan", "IT", 45.46, 9.19), city("Tromsø", "NO", 69.65, 18.96, 2, 2024, days: 5),
                 city("Lisbon", "PT", 38.72, -9.14, 5, 2018, days: 5), city("Istanbul", "TR", 41.01, 28.98, 10, 2017, days: 3, trips: 2),
@@ -1326,5 +1383,66 @@ struct SegmentedPill: View {
             }
         }
         .padding(4).raisedCapsule()
+    }
+}
+
+
+// MARK: - Added card pieces
+
+/// A thin line that empties over `seconds`: how long the card will stay.
+struct DrainBar: View {
+    let seconds: Double
+    let tint: Color
+    @State private var full = true
+    var body: some View {
+        GeometryReader { proxy in
+            Capsule().fill(tint.opacity(0.28)).frame(width: full ? proxy.size.width : 0)
+        }
+        .frame(height: 3).background(Capsule().fill(tint.opacity(0.07)))
+        .onAppear { withAnimation(.linear(duration: seconds)) { full = false } }
+        .accessibilityHidden(true)
+    }
+}
+
+/// Month and year wheels for one visit.
+struct VisitMonthSheet: View {
+    let title: String
+    let initial: Date?
+    var removable = false
+    var onDone: (Date?) -> Void
+    @State private var month = Calendar.current.component(.month, from: .now)
+    @State private var year = Calendar.current.component(.year, from: .now)
+    private let thisYear = Calendar.current.component(.year, from: .now)
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Text(title).font(Sketch.text(17, "ExtraBold", relativeTo: .headline)).foregroundStyle(Sketch.ink).fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button { onDone(min(VisitedPlace.month(month, year) ?? .now, PlaceDraft.thisMonth)) } label: {
+                    Label("Save", systemImage: "checkmark").font(Sketch.text(15, "Bold", relativeTo: .subheadline)).foregroundStyle(Sketch.paper)
+                        .padding(.horizontal, 16).frame(height: 44).background(Capsule().fill(Sketch.ink))
+                }
+                .buttonStyle(.plain)
+            }
+            HStack(spacing: 0) {
+                Picker("Month", selection: $month) { ForEach(1...12, id: \.self) { Text(Calendar.current.standaloneMonthSymbols[$0 - 1]).tag($0) } }
+                Picker("Year", selection: $year) { ForEach(Array(stride(from: thisYear, through: thisYear - 90, by: -1)), id: \.self) { Text(String($0)).tag($0) } }
+                    .frame(maxWidth: 130)
+            }
+            .pickerStyle(.wheel).frame(height: 150)
+            if removable {
+                Button(role: .destructive) { onDone(nil) } label: {
+                    Label("Remove this visit", systemImage: "calendar.badge.minus").font(Sketch.text(14, "Bold", relativeTo: .subheadline))
+                        .frame(maxWidth: .infinity, minHeight: 46).foregroundStyle(Sketch.coral).background(Capsule().fill(Sketch.coral.opacity(0.1)))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 8)
+        .presentationDetents([.height(removable ? 340 : 280)]).presentationDragIndicator(.visible).presentationBackground(Sketch.paper)
+        .onAppear {
+            if let initial { month = Calendar.current.component(.month, from: initial); year = Calendar.current.component(.year, from: initial) }
+        }
     }
 }

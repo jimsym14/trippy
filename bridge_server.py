@@ -28,7 +28,7 @@ from trippy.planner.ai_adapter import AzureIntentAdapter
 import base64
 from trippy.social.extract import ExtractionQueue
 from trippy.social.index import PlaceTakes, VideoIndex, video_key
-from trippy.social.community import CommunityVideos, plan_nodes, endorsed_nodes
+from trippy.social.community import CommunityVideos, plan_nodes, plan_sources, endorsed_nodes
 from trippy.social.gemini import GeminiPool
 
 
@@ -523,7 +523,7 @@ def read_job(job_id):
     return job
 
 
-KNOWN_PATHS={'/api/status','/api/research','/api/social/extract','/api/social/status','/api/places/retain','/api/places/takes','/api/community/videos','/api/community/video','/api/community/place','/api/community/map',
+KNOWN_PATHS={'/api/status','/api/research','/api/social/extract','/api/social/status','/api/places/retain','/api/places/takes','/api/community/videos','/api/community/video','/api/community/place','/api/community/map','/api/community/plan-sources',
              '/api/places/search','/api/places/match','/api/places/ios-key','/api/places/kit-load','/api/places/details','/api/places/photo','/api/places/hours','/api/usage/report',
              '/api/admin/summary','/api/admin/controls','/api/admin/planner-estimate','/admin','/api/me','/api/auth/email/start','/api/auth/email/verify',
              '/api/auth/apple','/api/auth/refresh','/api/auth/delete','/api/auth/google/start','/api/auth/exchange','/api/account/data'}
@@ -891,9 +891,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             from trippy.usage import credits
             self.send_json(200,{'user_id':person.user_id,'email':person.email,'admin':person.admin,
                                 'credits':credits(recorder,controls,person.user_id,admin=person.admin)}); return
-        if target.path in ('/api/community/videos','/api/community/video','/api/community/place','/api/community/map'):
+        if target.path in ('/api/community/videos','/api/community/video','/api/community/place','/api/community/map','/api/community/plan-sources'):
             if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
             query=parse_qs(target.query); arg=lambda name:(query.get(name,[''])[0] or '')[:120]
+            if target.path=='/api/community/plan-sources':
+                self.send_json(200,plan_sources(arg('city'),videos=community_videos().all())); return
             if target.path=='/api/community/place':
                 self.send_json(200,community_videos().for_place(google_id=arg('id'),name=arg('name'),city=arg('city'))); return
             if target.path=='/api/community/video':

@@ -14,6 +14,18 @@ struct VisitSpan: Codable, Equatable, Identifiable, Hashable {
     }
 }
 
+/// Somewhere you went from a city on the same trip. A stop that is a city in its own right points at that
+/// city's own record (`cityID`) and the two are joined on the map; a smaller one (a village, a beach, a
+/// winery) belongs to the city and shows around it when you zoom in.
+struct PlaceStop: Codable, Equatable, Identifiable, Hashable {
+    var name: String
+    var latitude: Double
+    var longitude: Double
+    var cityID: String? = nil
+    var id: String { cityID ?? "\(VisitedPlace.normalized(name)):\(Int(latitude * 1000)):\(Int(longitude * 1000))" }
+    var coordinate: CLLocationCoordinate2D { .init(latitude: latitude, longitude: longitude) }
+}
+
 struct VisitedPlace: Codable, Equatable, Identifiable {
     enum Kind: String, Codable { case country, city }
     var name: String
@@ -38,6 +50,12 @@ struct VisitedPlace: Codable, Equatable, Identifiable {
     var auto: Bool? = nil
     /// Other visits to this place, besides the one in `visitedAt`.
     var extra: [VisitSpan]? = nil
+    /// Stops made from here: linked cities and smaller places.
+    var stops: [PlaceStop]? = nil
+    /// Every dated visit, first to last.
+    var visitDates: [VisitSpan] {
+        ((when.map { [VisitSpan(start: $0, until: until)] } ?? []) + (extra ?? [])).sorted { $0.start < $1.start }
+    }
     /// How many separate visits are recorded (an undated place counts as one).
     var visitCount: Int { max(1, (when == nil ? 0 : 1) + (extra?.count ?? 0)) }
 

@@ -458,6 +458,7 @@ struct BeenVisitDetail: View {
     @State private var confirmDelete = false
     @State private var picks: [PhotosPickerItem] = []
     @State private var viewing: PinnedPhoto?
+    @State private var addingStop = false
     struct PinnedPhoto: Identifiable { let id: String }
 
     private var current: VisitedPlace { VisitedPlace.decode(storage).first { $0.id == place.id } ?? place }
@@ -491,6 +492,7 @@ struct BeenVisitDetail: View {
                 }
                 PlaceWhenEditor(draft: $draft, isCountry: place.isCountry).padding(16).beenSurface(radius: 22)
                 if !place.isLived { otherVisits(place) }
+                if !place.isCountry { stopsSection(place) }
                 photoStrip
             }
         }
@@ -514,6 +516,9 @@ struct BeenVisitDetail: View {
                 }
                 picks = []
             }
+        }
+        .sheet(isPresented: $addingStop) {
+            PlaceSearchSheet(title: "Add a stop", prompt: "A city, village, beach, anything", addresses: true) { addStop($0) }
         }
         .fullScreenCover(item: $viewing) { photo in
             PinnedPhotoViewer(name: photo.id) { photoIndex = PlacePhotoStore.remove(photo.id, from: place.id, in: photoIndex); viewing = nil }
@@ -564,6 +569,89 @@ struct BeenVisitDetail: View {
             if spans.isEmpty { Text("Been here more than once? Add each trip and they all show on the timeline.").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(BeenPalette.secondary(scheme)) }
         }
         .padding(16).beenSurface(radius: 22)
+    }
+
+    /// Where else the trip went from here. A city becomes its own pin joined to this one; a smaller place
+    /// stays with this city and appears around it when the map is zoomed in.
+    private func stopsSection(_ place: VisitedPlace) -> some View {
+        let stops = place.stops ?? []
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("STOPS FROM HERE").font(Sketch.eyebrow).tracking(0.8).foregroundStyle(BeenPalette.secondary(scheme))
+                Spacer()
+                if !stops.isEmpty { Text("\(stops.count)").font(Sketch.text(12, "Bold", relativeTo: .caption)).monospacedDigit().foregroundStyle(BeenPalette.accent(scheme)) }
+            }
+            ForEach(stops) { stop in
+                let km = Int(Geo.km(place.coordinate, stop.coordinate).rounded())
+                HStack(spacing: 12) {
+                    // The rail: this city at the top, each stop hanging off it.
+                    ZStack {
+                        Circle().fill((stop.cityID != nil ? BeenPalette.amber : BeenLook.lived).opacity(0.18)).frame(width: 36, height: 36)
+                        Image(systemName: stop.cityID != nil ? "mappin.and.ellipse" : "smallcircle.filled.circle").font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(stop.cityID != nil ? BeenPalette.accent(scheme) : BeenLook.lived)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(stop.name).font(Sketch.text(15, "Bold", relativeTo: .subheadline)).lineLimit(1)
+                        Text(stop.cityID != nil ? "City · joined to \(place.name) on the map · \(km) km" : "Shows around \(place.name) when you zoom in · \(km) km")
+                            .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(BeenPalette.secondary(scheme)).lineLimit(2)
+                    }
+                    Spacer(minLength: 0)
+                    Button { withAnimation(.snappy) { removeStop(stop) } } label: {
+                        Image(systemName: "minus.circle.fill").font(.system(size: 22)).foregroundStyle(BeenPalette.secondary(scheme)).frame(width: 44, height: 44)
+                    }.buttonStyle(.plain).accessibilityLabel("Remove stop \(stop.name)")
+                }
+                .transition(.asymmetric(insertion: .scale(scale: 0.85).combined(with: .opacity), removal: .opacity))
+            }
+            Button { addingStop = true } label: {
+                Label("Add a stop", systemImage: "plus").font(Sketch.text(14, "Bold", relativeTo: .subheadline))
+                    .frame(maxWidth: .infinity, minHeight: 46).foregroundStyle(BeenPalette.accent(scheme))
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(BeenPalette.accent(scheme).opacity(0.5), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
+            }
+            .buttonStyle(.plain)
+            if stops.isEmpty {
+                Text("Day trips and other places on the same trip. A city gets its own pin, joined to this one; a small place stays with \(place.name).")
+                    .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(BeenPalette.secondary(scheme)).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16).beenSurface(radius: 22)
+        .sensoryFeedback(.impact(weight: .light), trigger: stops.count)
+    }
+
+    private func addStop(_ point: JourneyPoint) {
+        var records = VisitedPlace.decode(storage)
+        guard let index = records.firstIndex(where: { $0.id == place.id }) else { return }
+        var stops = records[index].stops ?? []
+        if let city = PlaceCatalog.significantCity(name: point.name, countryCode: point.countryCode, latitude: point.latitude, longitude: point.longitude) {
+            // A city in its own right: make sure it is on the map, and join the two both ways.
+            var other = VisitedPlace(name: city.name, countryCode: city.countryCode, latitude: city.latitude, longitude: city.longitude, kind: .city)
+            guard other.id != place.id else { return }
+            if let saved = records.first(where: { $0.id == other.id }) { other = saved }
+            else { other.setWhen(records[index].when, until: records[index].until) }
+            if !stops.contains(where: { $0.cityID == other.id }) { stops.append(PlaceStop(name: other.name, latitude: other.latitude, longitude: other.longitude, cityID: other.id)) }
+            var back = other.stops ?? []
+            if !back.contains(where: { $0.cityID == place.id }) {
+                back.append(PlaceStop(name: records[index].name, latitude: records[index].latitude, longitude: records[index].longitude, cityID: place.id))
+            }
+            other.stops = back
+            records[index].stops = stops
+            records = VisitedPlace.saving(other, in: records)
+        } else {
+            let stop = PlaceStop(name: point.name, latitude: point.latitude, longitude: point.longitude)
+            if !stops.contains(where: { $0.id == stop.id }) { stops.append(stop) }
+            records[index].stops = stops
+        }
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { storage = VisitedPlace.encode(records) }
+    }
+
+    private func removeStop(_ stop: PlaceStop) {
+        var records = VisitedPlace.decode(storage)
+        for i in records.indices {
+            if records[i].id == place.id { records[i].stops?.removeAll { $0.id == stop.id } }
+            // The other end of a city link goes too; the city itself stays.
+            if records[i].id == stop.cityID { records[i].stops?.removeAll { $0.cityID == place.id } }
+            if records[i].stops?.isEmpty == true { records[i].stops = nil }
+        }
+        storage = VisitedPlace.encode(records)
     }
 
     private func mutate(_ change: (inout VisitedPlace) -> Void) {

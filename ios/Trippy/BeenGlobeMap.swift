@@ -53,6 +53,8 @@ struct BeenGlobeMap: UIViewRepresentable {
     var cityShapes: [BeenCityPolygon] = []
     var cityShapesID = 0
     var heat: BeenHeatOverlay? = nil
+    /// Lines between linked cities, and the small stops around a city.
+    var routes = BeenRoutes([])
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> MKMapView {
         let map = BeenNativeMapView()
@@ -67,6 +69,7 @@ struct BeenGlobeMap: UIViewRepresentable {
         map.register(BeenMarkerAnnotationView.self, forAnnotationViewWithReuseIdentifier: "been-city")
         map.register(BeenMarkerAnnotationView.self, forAnnotationViewWithReuseIdentifier: "been-cluster")
         map.register(BeenAddMarkerView.self, forAnnotationViewWithReuseIdentifier: BeenAddMarkerView.reuse)
+        map.register(BeenSpotView.self, forAnnotationViewWithReuseIdentifier: BeenSpotView.reuse)
         map.layoutMargins = UIEdgeInsets(top: 105, left: 12, bottom: 145, right: 12)
         context.coordinator.apply(self, to: map)
         return map
@@ -81,6 +84,10 @@ struct BeenGlobeMap: UIViewRepresentable {
         private weak var shownShapes: CountryShapesOverlay?
         private weak var shownHeat: BeenHeatOverlay?
         private var shownCityShapes = -1
+        private var routesKey = ""
+        private var spotsShown = false
+        /// Lines already drawn once; only new ones animate in.
+        private var drawn = Set<String>()
         private var compact = true
         init(_ parent: BeenGlobeMap) { self.parent = parent }
         func apply(_ next: BeenGlobeMap, to map: MKMapView) {
@@ -130,6 +137,19 @@ struct BeenGlobeMap: UIViewRepresentable {
                 shownCityShapes = next.cityShapesID
                 map.removeOverlays(map.overlays.filter { $0 is BeenCityPolygon })
                 map.addOverlays(next.cityShapes, level: .aboveRoads)
+            }
+            if next.routes.key != routesKey {
+                routesKey = next.routes.key
+                map.removeOverlays(map.overlays.filter { ($0 as? MKPolyline)?.title == BeenRoutes.linkTitle })
+                map.addOverlays(next.routes.links.map { link in
+                    // MapKit hands back its own geodesic class, so the line is told apart by its title, not its type.
+                    let line = MKGeodesicPolyline(coordinates: [link.from, link.to], count: 2)
+                    line.title = BeenRoutes.linkTitle; line.subtitle = link.id; return line
+                }, level: .aboveLabels)
+                spotsShown = false
+                map.removeAnnotations(map.annotations.filter { $0 is BeenSpotAnnotation })
+                map.removeOverlays(map.overlays.filter { $0 is BeenSpotLine })
+                updateSpots(on: map)
             }
             updateMarkerStyle(on: map)
             updateAddMarkers(on: map)
@@ -202,7 +222,8 @@ struct BeenGlobeMap: UIViewRepresentable {
             // Pills already on screen go first, then the rest in size order; each must clear the others and the chrome.
             let showing = Set(existing.map { Self.key($0.target) })
             let ordered = candidates.filter { showing.contains(Self.key($0)) } + candidates.filter { !showing.contains(Self.key($0)) }
-            var placed: [CGPoint] = []
+            // Your own pins come first: a pill never sits on one.
+            var placed: [CGPoint] = parent.visits.map { map.convert($0.coordinate, toPointTo: map) }.filter { map.bounds.contains($0) }
             var targets: [ZoomAddTarget] = []
             let safe = map.bounds.inset(by: UIEdgeInsets(top: 215, left: 40, bottom: 190, right: 40))
             for target in ordered {
@@ -227,7 +248,45 @@ struct BeenGlobeMap: UIViewRepresentable {
                 }) { _ in map.removeAnnotation(annotation); view.alpha = 1; view.transform = .identity }
             }
         }
+        /// The small stops around a city, with a line out to each, once you are close enough to tell them apart.
+        func updateSpots(on map: MKMapView) {
+            let show = !map.bounds.isEmpty && map.region.span.latitudeDelta < 2.4 && !parent.routes.spots.isEmpty
+            guard show != spotsShown else { return }
+            spotsShown = show
+            if show {
+                map.addOverlays(parent.routes.spots.map { spot in
+                    let line = BeenSpotLine(coordinates: [spot.origin, spot.coordinate], count: 2); line.key = spot.id; line.heat = spot.heat; return line
+                }, level: .aboveRoads)
+                map.addAnnotations(parent.routes.spots.enumerated().map { BeenSpotAnnotation($0.element, order: $0.offset) })
+            } else {
+                for annotation in map.annotations.compactMap({ $0 as? BeenSpotAnnotation }) {
+                    guard let view = map.view(for: annotation), !parent.reduceMotion else { map.removeAnnotation(annotation); continue }
+                    UIView.animate(withDuration: 0.2, animations: { view.alpha = 0; view.transform = CGAffineTransform(scaleX: 0.4, y: 0.4) }) { _ in
+                        map.removeAnnotation(annotation); view.alpha = 1; view.transform = .identity
+                    }
+                }
+                map.removeOverlays(map.overlays.filter { $0 is BeenSpotLine })
+                drawn = drawn.filter { !$0.hasPrefix("spot:") }
+            }
+        }
+        /// Draws a line from its start to its end, easing out.
+        private func drawIn(_ renderer: MKPolylineRenderer, key: String, duration: Double) {
+            guard !parent.reduceMotion, drawn.insert(key).inserted else { return }
+            renderer.strokeEnd = 0
+            let start = CACurrentMediaTime()
+            Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak renderer] timer in
+                guard let renderer else { timer.invalidate(); return }
+                let t = min(1, (CACurrentMediaTime() - start) / duration)
+                renderer.strokeEnd = CGFloat(1 - pow(1 - t, 3)); renderer.setNeedsDisplay()
+                if t >= 1 { timer.invalidate() }
+            }
+        }
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if let spot = annotation as? BeenSpotAnnotation {
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: BeenSpotView.reuse, for: spot) as! BeenSpotView
+                view.configure(spot, dark: parent.dark)
+                return view
+            }
             if let add = annotation as? BeenAddAnnotation {
                 let view = mapView.dequeueReusableAnnotationView(withIdentifier: BeenAddMarkerView.reuse, for: add) as! BeenAddMarkerView
                 view.configure(add, dark: parent.dark, pop: false)
@@ -244,6 +303,15 @@ struct BeenGlobeMap: UIViewRepresentable {
         }
         func mapView(_ mapView: MKMapView, didAdd views: [MKAnnotationView]) {
             // New "+" pills spring in.
+            // Stops pop out from their city, one after another, as their lines reach them.
+            for view in views where view is BeenSpotView {
+                guard !parent.reduceMotion else { continue }
+                let order = Double((view.annotation as? BeenSpotAnnotation)?.order ?? 0)
+                view.transform = CGAffineTransform(scaleX: 0.2, y: 0.2); view.alpha = 0
+                UIView.animate(withDuration: 0.5, delay: 0.25 + 0.06 * order, usingSpringWithDamping: 0.55, initialSpringVelocity: 0.9, options: [.allowUserInteraction]) {
+                    view.transform = .identity; view.alpha = 1
+                }
+            }
             // New "+" pills rise in one after another, biggest place first.
             for view in views where view is BeenAddMarkerView {
                 guard !parent.reduceMotion else { continue }
@@ -257,6 +325,12 @@ struct BeenGlobeMap: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             guard let annotation = view.annotation else { return }
             mapView.deselectAnnotation(annotation, animated: false)
+            if let spot = annotation as? BeenSpotAnnotation {
+                // A stop opens the city it belongs to.
+                TrippyHaptics.selection()
+                if let city = parent.visits.first(where: { $0.id == spot.spot.cityID }) { parent.onVisit(city) }
+                return
+            }
             if let add = annotation as? BeenAddAnnotation {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 // The pill pops away; the city's own marker appears from the saved visit.
@@ -278,6 +352,7 @@ struct BeenGlobeMap: UIViewRepresentable {
         }
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             updateAddMarkers(on: mapView)
+            updateSpots(on: mapView)
             let region = mapView.region
             DispatchQueue.main.async { [weak self] in self?.parent.onRegion?(region) }
             compact = mapView.region.span.latitudeDelta >= 9
@@ -293,6 +368,21 @@ struct BeenGlobeMap: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let shapes = overlay as? CountryShapesOverlay { return CountryShapesRenderer(shapes: shapes) }
             if overlay is BeenHeatOverlay { return BeenHeatRenderer(overlay: overlay) }
+            if let link = overlay as? MKPolyline, link.title == BeenRoutes.linkTitle {
+                // A dotted route between two cities of the same trip.
+                let renderer = MKPolylineRenderer(polyline: link)
+                renderer.strokeColor = parent.dark ? UIColor(white: 1, alpha: 0.92) : UIColor(red: 0.16, green: 0.14, blue: 0.11, alpha: 0.9)
+                renderer.lineWidth = 3.5; renderer.lineCap = .round; renderer.lineDashPattern = [0.1, 8]
+                drawIn(renderer, key: "link:" + (link.subtitle ?? ""), duration: 0.9)
+                return renderer
+            }
+            if let spot = overlay as? BeenSpotLine {
+                let renderer = MKPolylineRenderer(polyline: spot)
+                renderer.strokeColor = BeenLook.heat(spot.heat).withAlphaComponent(0.95)
+                renderer.lineWidth = 2; renderer.lineCap = .round
+                drawIn(renderer, key: "spot:" + spot.key, duration: 0.55)
+                return renderer
+            }
             if let city = overlay as? BeenCityPolygon {
                 let colour = city.lived ? UIColor(sketchHex: BeenLook.livedHex) : BeenLook.heat(city.heat)
                 let renderer = MKPolygonRenderer(polygon: city)
@@ -358,7 +448,7 @@ final class BeenMarkerAnnotationView: MKAnnotationView {
         plate.frame = CGRect(x: (width - labelWidth) / 2, y: size.height - 1, width: labelWidth, height: labelHeight)
         label.frame = plate.bounds.insetBy(dx: 5, dy: 0)
         // The pin's tip, not the middle of the view, sits on the place.
-        centerOffset = CGPoint(x: 0, y: frame.height / 2 - (size.height - 3))
+        centerOffset = cluster != nil ? .zero : CGPoint(x: 0, y: frame.height / 2 - (size.height - 3))
         zPriority = lived ? .max : cluster != nil ? .defaultSelected : .defaultUnselected
         accessibilityLabel = cluster != nil ? "\(count) places. Tap to expand." : "\(city?.visit.name ?? ""), \(lived ? "lived here" : "visited")"
     }
@@ -1349,5 +1439,83 @@ final class BeenAddMarkerView: MKAnnotationView {
             transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
             UIView.animate(withDuration: 0.45, delay: 0, usingSpringWithDamping: 0.45, initialSpringVelocity: 1.2) { self.transform = .identity }
         }
+    }
+}
+
+
+// MARK: - Trips: linked cities and the stops around a city
+
+/// What to draw for stops: a line for every pair of linked cities, and each small stop with the city it hangs off.
+struct BeenRoutes {
+    struct Link { let id: String; let from: CLLocationCoordinate2D; let to: CLLocationCoordinate2D }
+    struct Spot { let id: String; let name: String; let coordinate: CLLocationCoordinate2D; let origin: CLLocationCoordinate2D; let cityID: String; let heat: Double }
+    var links: [Link] = []
+    var spots: [Spot] = []
+    var key = ""
+    static let linkTitle = "been-link"
+    init(_ cities: [VisitedPlace]) {
+        let byID = Dictionary(cities.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var seen = Set<String>()
+        for city in cities {
+            for stop in city.stops ?? [] {
+                if let other = stop.cityID {
+                    // Both cities list each other; draw the pair once, and only when both are showing.
+                    let pair = [city.id, other].sorted().joined(separator: ">")
+                    guard let target = byID[other], seen.insert(pair).inserted else { continue }
+                    links.append(Link(id: pair, from: city.coordinate, to: target.coordinate))
+                } else {
+                    spots.append(Spot(id: city.id + ">" + stop.id, name: stop.name, coordinate: stop.coordinate, origin: city.coordinate, cityID: city.id, heat: city.heat))
+                }
+            }
+        }
+        key = (links.map(\.id) + spots.map(\.id)).joined(separator: "|")
+    }
+}
+
+final class BeenSpotLine: MKPolyline { var key = ""; var heat = 0.4 }
+
+final class BeenSpotAnnotation: NSObject, MKAnnotation {
+    let spot: BeenRoutes.Spot
+    let order: Int
+    init(_ spot: BeenRoutes.Spot, order: Int) { self.spot = spot; self.order = order }
+    var coordinate: CLLocationCoordinate2D { spot.coordinate }
+    var title: String? { spot.name }
+}
+
+/// A small bead with its name: a stop that belongs to a city.
+final class BeenSpotView: MKAnnotationView {
+    static let reuse = "been-spot"
+    private let bead = UIView()
+    private let core = UIView()
+    private let plate = UIView()
+    private let label = UILabel()
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        canShowCallout = false; collisionMode = .circle; displayPriority = .defaultHigh
+        bead.backgroundColor = .white; bead.layer.cornerRadius = 8
+        bead.layer.shadowColor = UIColor.black.cgColor; bead.layer.shadowOpacity = 0.3; bead.layer.shadowRadius = 2; bead.layer.shadowOffset = CGSize(width: 0, height: 1)
+        core.layer.cornerRadius = 5
+        plate.layer.cornerRadius = 8
+        label.font = UIFont(name: "PlusJakartaSans-Bold", size: 10.5) ?? .systemFont(ofSize: 10.5, weight: .semibold)
+        label.textAlignment = .center
+        addSubview(plate); plate.addSubview(label); addSubview(bead); bead.addSubview(core)
+        isAccessibilityElement = true; accessibilityTraits = .button
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    func configure(_ annotation: BeenSpotAnnotation, dark: Bool) {
+        self.annotation = annotation
+        core.backgroundColor = BeenLook.heat(annotation.spot.heat)
+        label.text = annotation.spot.name
+        label.textColor = dark ? UIColor(white: 0.96, alpha: 1) : UIColor(red: 0.16, green: 0.14, blue: 0.11, alpha: 1)
+        plate.backgroundColor = (dark ? UIColor(white: 0.1, alpha: 1) : UIColor(red: 1, green: 0.99, blue: 0.96, alpha: 1)).withAlphaComponent(0.92)
+        let width = max(16, min(140, label.intrinsicContentSize.width + 12))
+        frame.size = CGSize(width: width, height: 16 + 3 + 17)
+        bead.frame = CGRect(x: (width - 16) / 2, y: 0, width: 16, height: 16)
+        core.frame = bead.bounds.insetBy(dx: 3, dy: 3)
+        plate.frame = CGRect(x: 0, y: 19, width: width, height: 17)
+        label.frame = plate.bounds.insetBy(dx: 5, dy: 0)
+        // The bead, not the middle of the view, sits on the place.
+        centerOffset = CGPoint(x: 0, y: frame.height / 2 - 8)
+        accessibilityLabel = "\(annotation.spot.name), a stop"
     }
 }

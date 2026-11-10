@@ -38,6 +38,33 @@ struct PlaceMark: View {
     }
 }
 
+extension BeenPinArt {
+    /// Several places merged: a round counter, not a pin. A pin points at one exact spot, and a group has none.
+    fileprivate static func cluster(_ count: Int, colour: UIColor, size: CGSize) -> UIImage {
+        UIGraphicsImageRenderer(size: size).image { renderer in
+            let ctx = renderer.cgContext
+            let disc = CGRect(origin: .zero, size: size).insetBy(dx: 5, dy: 5)
+            // A soft halo says "an area", then the solid counter.
+            ctx.setFillColor(colour.withAlphaComponent(0.28).cgColor); ctx.fillEllipse(in: CGRect(origin: .zero, size: size).insetBy(dx: 0.5, dy: 0.5))
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: 0, height: 1.5), blur: 3, color: UIColor.black.withAlphaComponent(0.3).cgColor)
+            ctx.setFillColor(UIColor.white.cgColor); ctx.fillEllipse(in: disc)
+            ctx.restoreGState()
+            ctx.saveGState(); ctx.addEllipse(in: disc.insetBy(dx: 2, dy: 2)); ctx.clip()
+            let colours = [colour.mixed(with: .white, amount: 0.22).cgColor, colour.darker.cgColor] as CFArray
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colours, locations: [0, 1]) {
+                ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: disc.minY), end: CGPoint(x: 0, y: disc.maxY), options: [])
+            }
+            ctx.restoreGState()
+            let text = (count > 99 ? "99+" : String(count)) as NSString
+            let font = UIFont(name: "PlusJakartaSans-ExtraBold", size: count > 99 ? 10 : 13.5) ?? .systemFont(ofSize: 13, weight: .heavy)
+            let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: UIColor.white]
+            let box = text.size(withAttributes: attributes)
+            text.draw(at: CGPoint(x: size.width / 2 - box.width / 2, y: size.height / 2 - box.height / 2), withAttributes: attributes)
+        }
+    }
+}
+
 /// Map pins, drawn once per look and cached.
 enum BeenPinArt {
     enum Style: Hashable { case city, lived, cluster(Int) }
@@ -47,7 +74,7 @@ enum BeenPinArt {
         switch style {
         case .city: CGSize(width: 28, height: 38)
         case .lived: CGSize(width: 34, height: 46)
-        case .cluster: CGSize(width: 38, height: 50)
+        case .cluster: CGSize(width: 40, height: 40)
         }
     }
 
@@ -56,6 +83,11 @@ enum BeenPinArt {
         let key = "\(style):\(bucket)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
         let size = size(style)
+        if case .cluster(let count) = style {
+            let image = cluster(count, colour: BeenLook.heat(Double(bucket) / 6), size: size)
+            cache.setObject(image, forKey: key)
+            return image
+        }
         let image = UIGraphicsImageRenderer(size: size).image { renderer in
             let ctx = renderer.cgContext
             let w = size.width, r = w / 2 - 3

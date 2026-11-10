@@ -392,6 +392,36 @@ def wanted_by_brief(place, takes_summary, preference_tags):
     return True
 
 
+def community_choice(brief):
+    """('auto' | 'off' | 'picked', the ticked video keys): the traveller's choice of community knowledge for this trip."""
+    choice = brief.get("community") or {}
+    return choice.get("use", "auto"), set(choice.get("videos") or [])
+
+
+def plan_sources(city, *, videos, limit=60):
+    """The videos that could feed a plan for this city, for the app's "Use these videos" list.
+
+    Nothing here costs a call: it counts what is already indexed. `usable` is the number of places a plan could
+    actually use (real coordinates, and the creator recommended them or was mixed)."""
+    wanted = (city or "").split(",")[0].strip().casefold()
+    out, seen = [], {}
+    for video in videos:
+        if not wanted or video["city"].casefold() != wanted:
+            continue
+        usable = [p for p in video["places"] if p.get("latitude") is not None and p["stance"] in ("recommended", "mixed")
+                  and PLAN_CATEGORY.get(p["category"])]
+        if not usable:
+            continue
+        categories = Counter(PLAN_CATEGORY[p["category"]] for p in usable)
+        for p in usable:
+            seen[p.get("google_place_id") or _fold(p["name"])] = True
+        out.append({"key": video["key"], "platform": video["platform"], "title": video["title"], "author": video.get("author"),
+                    "url": video["url"], "usable": len(usable), "categories": dict(categories.most_common()),
+                    "top_places": list(dict.fromkeys(p["name"] for p in usable))[:4], "savers": video.get("savers") or 0})
+    out.sort(key=lambda v: (-v["usable"], v["title"]))
+    return {"city": city, "videos": out[:limit], "places": len(seen)}
+
+
 def plan_nodes(brief, *, videos, takes=None, plan_categories=(), limit=40):
     """Community library nodes for one trip (place_graph.library_graph's community_nodes).
 
@@ -403,9 +433,12 @@ def plan_nodes(brief, *, videos, takes=None, plan_categories=(), limit=40):
     wanted = set(plan_categories)
     excluded = set(brief.get("excluded_place_ids") or [])
     preference = brief.get("preference_tags") or []
+    use, picked = community_choice(brief)
+    if use == "off":
+        return []
     nodes = []
     for video in videos:
-        if video["city"].casefold() != city:
+        if video["city"].casefold() != city or (use == "picked" and video["key"] not in picked):
             continue
         ids = [p["google_place_id"] for p in video["places"] if p.get("google_place_id")]
         summaries = takes.summary(ids) if takes is not None and ids else {}
@@ -413,7 +446,9 @@ def plan_nodes(brief, *, videos, takes=None, plan_categories=(), limit=40):
         for p in video["places"]:
             if p.get("latitude") is None or p["stance"] not in ("recommended", "mixed"):
                 continue
-            if PLAN_CATEGORY.get(p["category"]) not in wanted or p["id"] in excluded:
+            # A video the traveller ticked counts for everything it recommends, not only the trip's categories.
+            category = PLAN_CATEGORY.get(p["category"])
+            if category is None or (use != "picked" and category not in wanted) or p["id"] in excluded:
                 continue
             community = summaries.get(p.get("google_place_id"))
             if place_verdict(community) == "skip" or not wanted_by_brief(p, community, preference):
@@ -425,7 +460,8 @@ def plan_nodes(brief, *, videos, takes=None, plan_categories=(), limit=40):
             text = "\n".join(filter(None, [video["title"], video.get("summary"),
                                            *(f"{p['name']}: {p['summary']}" for p in video["places"] if p["name"] in {c['name'] for c in chosen})]))
             nodes.append({"id": "community:" + video["key"], "kind": "community", "published": True, "city": brief.get("destination", ""),
-                          "url": video["url"] if video["url"].startswith("https://") else None, "text": text[:8000], "places": chosen})
+                          "url": video["url"] if video["url"].startswith("https://") else None, "text": text[:8000], "places": chosen,
+                          "picked": use == "picked"})
         if sum(len(n["places"]) for n in nodes) >= limit:
             break
     return nodes
@@ -435,6 +471,9 @@ def endorsed_nodes(root, brief, plan_categories=()):
     """YouTube creator venues already linked to catalog identities (planner/endorsements.py) as community nodes,
     so live providers get the same creator knowledge the local catalog provider already ranks with."""
     from trippy.planner.endorsements import load
+    # The creators' combined picks are an "auto" source: off, or a hand-picked list, leaves them out.
+    if community_choice(brief)[0] != "auto":
+        return []
     city = (brief.get("destination") or "").split(",")[0].strip()
     try:
         data = load(root, city)

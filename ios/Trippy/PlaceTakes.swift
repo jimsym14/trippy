@@ -196,6 +196,26 @@ enum AutoNote {
         return lines.joined(separator: "\n")
     }
 
+    /// A whole video on one page: what it is, its general tips, then each place with the tips for that place.
+    static func guideSection(_ source: ImportedSocialSource, places: [SocialPlaceMention]) -> String {
+        let who = source.envelope.tiktok?.authorHandle.map { "@" + $0 } ?? "a saved video"
+        var lines = ["From \(who)"]
+        if let summary = source.summary?.nonEmptyNote { lines.append(summary) }
+        if let tips = source.tips, !tips.isEmpty {
+            lines.append(""); lines.append("General tips")
+            lines += tips.map { "• " + $0.title + ($0.detail.nonEmptyNote.map { ": " + $0 } ?? "") }
+        }
+        for place in places {
+            lines.append("")
+            lines.append("📍 " + place.name + (place.neighborhood?.nonEmptyNote.map { " · " + $0 } ?? ""))
+            if let tldr = place.summary.nonEmptyNote { lines.append(tldr) }
+            let tips = (place.mustTry ?? []).map { "Try: " + $0 } + (place.proTips ?? []) + (place.goodToKnow ?? [])
+            lines += tips.prefix(5).map { "• " + $0 }
+            if let price = place.priceHint?.nonEmptyNote { lines.append("• Price: " + price) }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     /// "Dimitri's notes: …" appended to the note without opening it.
     static func appending(_ text: String, to body: String, owner: String) -> String {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)

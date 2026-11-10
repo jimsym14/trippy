@@ -59,6 +59,7 @@
 		C700000000000000000000C1 /* GooglePlacesSwift in Frameworks */ = {isa = PBXBuildFile; productRef = C700000000000000000000C2 /* GooglePlacesSwift */; };
 		C700000000000000000000C4 /* PlaceSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000C4 /* PlaceSources.swift */; };
 		C7000000000000000000F002 /* CommunityVideos.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F002 /* CommunityVideos.swift */; };
+		C7000000000000000000F0A1 /* LibraryAtlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0A1 /* LibraryAtlas.swift */; };
 		C7000000000000000000F003 /* LibraryWheel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F003 /* LibraryWheel.swift */; };
 		C7000000000000000000F004 /* DirectionsMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F004 /* DirectionsMode.swift */; };
 		C7000000000000000000F005 /* ZoomAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F005 /* ZoomAdd.swift */; };
@@ -145,6 +146,7 @@
 		C800000000000000000000B8 /* BriefDemos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BriefDemos.swift; sourceTree = "<group>"; };
 		C800000000000000000000C4 /* PlaceSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceSources.swift; sourceTree = "<group>"; };
 		C8000000000000000000F002 /* CommunityVideos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommunityVideos.swift; sourceTree = "<group>"; };
+		C8000000000000000000F0A1 /* LibraryAtlas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryAtlas.swift; sourceTree = "<group>"; };
 		C8000000000000000000F003 /* LibraryWheel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWheel.swift; sourceTree = "<group>"; };
 		C8000000000000000000F004 /* DirectionsMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectionsMode.swift; sourceTree = "<group>"; };
 		C8000000000000000000F005 /* ZoomAdd.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomAdd.swift; sourceTree = "<group>"; };
@@ -261,6 +263,7 @@
 				C8000000000000000000F005 /* ZoomAdd.swift */,
 				C8000000000000000000F004 /* DirectionsMode.swift */,
 				C8000000000000000000F003 /* LibraryWheel.swift */,
+				C8000000000000000000F0A1 /* LibraryAtlas.swift */,
 				C8000000000000000000F002 /* CommunityVideos.swift */,
 				C800000000000000000000C4 /* PlaceSources.swift */,
 				C80000000000000000000001 /* TripGuideModel.swift */,
@@ -459,6 +462,7 @@
 				C7000000000000000000F005 /* ZoomAdd.swift in Sources */,
 				C7000000000000000000F004 /* DirectionsMode.swift in Sources */,
 				C7000000000000000000F003 /* LibraryWheel.swift in Sources */,
+				C7000000000000000000F0A1 /* LibraryAtlas.swift in Sources */,
 				C7000000000000000000F002 /* CommunityVideos.swift in Sources */,
 				C700000000000000000000C4 /* PlaceSources.swift in Sources */,
 				C70000000000000000000001 /* TripGuideModel.swift in Sources */,
