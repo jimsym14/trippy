@@ -6,6 +6,14 @@ struct BeenCameraRequest: Equatable {
     var latitude: Double = 25
     var longitude: Double = 15
     var distance: Double = 78_000_000
+    /// When set, the camera fits these places (a continent's, a country's or one city) into the part of the map
+    /// the passport panel leaves visible, instead of centring a fixed distance behind the panel.
+    var points: [CLLocationCoordinate2D] = []
+    /// Smallest box to show around the points, so one city doesn't zoom to street level.
+    var minimumMeters: Double = 60_000
+    /// Height covered at the bottom (panel + tab bar).
+    var bottomInset: CGFloat = 0
+    static func == (a: Self, b: Self) -> Bool { a.id == b.id }
 }
 struct BeenNativeBoundaryLayer {
     let polygons: [MKPolygon]
@@ -36,6 +44,15 @@ struct BeenGlobeMap: UIViewRepresentable {
     let reduceMotion: Bool
     let onVisit: (VisitedPlace) -> Void
     let onCluster: ([VisitedPlace]) -> Void
+    /// The map came to rest (for the zoom-in "+" bubble).
+    var onRegion: ((MKCoordinateRegion) -> Void)? = nil
+    /// "+" pills on countries (country zoom) and big cities (city zoom); every visit, unfiltered, decides ✓ or +.
+    var addVisits: [VisitedPlace]? = nil
+    var onAdd: ((ZoomAddTarget) -> Void)? = nil
+    /// Outlines of the visited cities in view, and the glow layer.
+    var cityShapes: [BeenCityPolygon] = []
+    var cityShapesID = 0
+    var heat: BeenHeatOverlay? = nil
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> MKMapView {
         let map = BeenNativeMapView()
@@ -49,6 +66,7 @@ struct BeenGlobeMap: UIViewRepresentable {
         map.cameraZoomRange = .init(minCenterCoordinateDistance: 20_000, maxCenterCoordinateDistance: 120_000_000)
         map.register(BeenMarkerAnnotationView.self, forAnnotationViewWithReuseIdentifier: "been-city")
         map.register(BeenMarkerAnnotationView.self, forAnnotationViewWithReuseIdentifier: "been-cluster")
+        map.register(BeenAddMarkerView.self, forAnnotationViewWithReuseIdentifier: BeenAddMarkerView.reuse)
         map.layoutMargins = UIEdgeInsets(top: 105, left: 12, bottom: 145, right: 12)
         context.coordinator.apply(self, to: map)
         return map
@@ -61,6 +79,8 @@ struct BeenGlobeMap: UIViewRepresentable {
         private var markerStyleKey = ""
         private var styleKey = ""
         private weak var shownShapes: CountryShapesOverlay?
+        private weak var shownHeat: BeenHeatOverlay?
+        private var shownCityShapes = -1
         private var compact = true
         init(_ parent: BeenGlobeMap) { self.parent = parent }
         func apply(_ next: BeenGlobeMap, to map: MKMapView) {
@@ -100,17 +120,119 @@ struct BeenGlobeMap: UIViewRepresentable {
                 map.removeOverlays(old.filter { $0 !== next.shapes })
                 shownShapes = next.shapes
             }
+            if next.heat !== shownHeat {
+                let old = map.overlays.filter { $0 is BeenHeatOverlay }
+                if let heat = next.heat { map.addOverlay(heat, level: .aboveRoads) }
+                map.removeOverlays(old.filter { $0 !== next.heat })
+                shownHeat = next.heat
+            }
+            if next.cityShapesID != shownCityShapes {
+                shownCityShapes = next.cityShapesID
+                map.removeOverlays(map.overlays.filter { $0 is BeenCityPolygon })
+                map.addOverlays(next.cityShapes, level: .aboveRoads)
+            }
             updateMarkerStyle(on: map)
+            updateAddMarkers(on: map)
             if !map.bounds.isEmpty && lastCamera != next.camera.id {
                 let initial = lastCamera == nil
                 lastCamera = next.camera.id
-                map.setCamera(.init(lookingAtCenter: .init(latitude: next.camera.latitude, longitude: next.camera.longitude), fromDistance: next.camera.distance, pitch: next.globe3D ? 12 : 0, heading: 0), animated: !initial && !next.reduceMotion)
+                let animated = !initial && !next.reduceMotion
+                if !next.camera.points.isEmpty {
+                    map.setVisibleMapRect(Self.fit(next.camera.points, minimumMeters: next.camera.minimumMeters),
+                                          edgePadding: UIEdgeInsets(top: 200, left: 36, bottom: next.camera.bottomInset + 28, right: 36), animated: animated)
+                } else {
+                    map.setCamera(.init(lookingAtCenter: .init(latitude: next.camera.latitude, longitude: next.camera.longitude), fromDistance: next.camera.distance, pitch: next.globe3D ? 12 : 0, heading: 0), animated: animated)
+                }
             }
+        }
+        /// The smallest map rect holding every point, at least `minimumMeters` across. Longitudes are unwrapped
+        /// around the first point so places on both sides of the antimeridian (Fiji, Alaska) stay together.
+        static func fit(_ points: [CLLocationCoordinate2D], minimumMeters: Double) -> MKMapRect {
+            let reference = points[0].longitude
+            let worldWidth = MKMapSize.world.width
+            var rect = MKMapRect.null
+            for point in points {
+                var mapPoint = MKMapPoint(point)
+                let delta = point.longitude - reference
+                if delta > 180 { mapPoint.x -= worldWidth } else if delta < -180 { mapPoint.x += worldWidth }
+                rect = rect.union(MKMapRect(origin: mapPoint, size: MKMapSize(width: 0, height: 0)))
+            }
+            let minimum = minimumMeters * MKMapPointsPerMeterAtLatitude(points[0].latitude)
+            return rect.insetBy(dx: -max(0, (minimum - rect.width) / 2), dy: -max(0, (minimum - rect.height) / 2))
         }
         func applyInitialCamera(to map: MKMapView) {
             if lastCamera == nil && !map.bounds.isEmpty { apply(parent, to: map) }
         }
+        /// "+" pills, kept few so the map stays calm:
+        ///   · zoomed out past a continent: none
+        ///   · from there down: countries you haven't added; inside one you have, its biggest cities instead
+        ///   · close in (a region): the cities in view
+        /// At most seven at once, the biggest first, never closer than a thumb apart, and never under the header
+        /// or the tab bar. Pills already showing keep their place, so panning doesn't make them flicker.
+        private var addKey = ""
+        private static func key(_ t: ZoomAddTarget) -> String { "\(t.level)\(t.name)\(t.countryCode)" }
+        func updateAddMarkers(on map: MKMapView) {
+            let existing = map.annotations.compactMap { $0 as? BeenAddAnnotation }
+            let span = map.region.span.latitudeDelta
+            guard let visits = parent.addVisits, parent.onAdd != nil, !map.bounds.isEmpty, span < 18 else {
+                if !existing.isEmpty { remove(existing, from: map); addKey = "" }
+                return
+            }
+            let rect = map.visibleMapRect
+            let visitedCodes = Set(visits.compactMap { $0.countryCode?.uppercased() })
+            var candidates: [ZoomAddTarget] = []
+            func city(_ c: CityEntry) -> ZoomAddTarget {
+                ZoomAddTarget(level: .city, name: c.name, countryCode: c.countryCode, coordinate: .init(latitude: c.latitude, longitude: c.longitude))
+            }
+            if span < 2.2 {
+                candidates = PlaceCatalog.cities.filter { rect.contains(MKMapPoint(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude))) }.map(city)
+            } else {
+                for country in PlaceCatalog.countries where !visitedCodes.contains(country.code) {
+                    guard let lat = country.latitude, let lon = country.longitude else { continue }
+                    let point = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                    if rect.contains(MKMapPoint(point)) { candidates.append(ZoomAddTarget(level: .country, name: country.name, countryCode: country.code, coordinate: point)) }
+                }
+                // A country you've already added offers its cities, once it fills a good part of the screen.
+                if span < 10 {
+                    candidates += PlaceCatalog.cities.filter { visitedCodes.contains($0.countryCode) && rect.contains(MKMapPoint(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude))) }
+                        .prefix(40).map(city)
+                }
+            }
+            candidates = candidates.filter { !$0.isAdded(in: visits) }
+            // Pills already on screen go first, then the rest in size order; each must clear the others and the chrome.
+            let showing = Set(existing.map { Self.key($0.target) })
+            let ordered = candidates.filter { showing.contains(Self.key($0)) } + candidates.filter { !showing.contains(Self.key($0)) }
+            var placed: [CGPoint] = []
+            var targets: [ZoomAddTarget] = []
+            let safe = map.bounds.inset(by: UIEdgeInsets(top: 215, left: 40, bottom: 190, right: 40))
+            for target in ordered {
+                let point = map.convert(target.coordinate, toPointTo: map)
+                guard safe.contains(point), !placed.contains(where: { abs($0.x - point.x) < 120 && abs($0.y - point.y) < 54 }) else { continue }
+                placed.append(point); targets.append(target)
+                if targets.count == 7 { break }
+            }
+            let key = targets.map(Self.key).joined(separator: "|")
+            guard key != addKey else { return }
+            addKey = key
+            let wanted = Set(targets.map(Self.key))
+            remove(existing.filter { !wanted.contains(Self.key($0.target)) }, from: map)
+            map.addAnnotations(targets.enumerated().filter { !showing.contains(Self.key($0.element)) }.map { BeenAddAnnotation($0.element, rank: $0.offset) })
+        }
+        /// Pills leave by shrinking away, not by vanishing.
+        private func remove(_ annotations: [BeenAddAnnotation], from map: MKMapView) {
+            for annotation in annotations {
+                guard let view = map.view(for: annotation), !parent.reduceMotion else { map.removeAnnotation(annotation); continue }
+                UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseIn, .beginFromCurrentState], animations: {
+                    view.alpha = 0; view.transform = CGAffineTransform(scaleX: 0.6, y: 0.6)
+                }) { _ in map.removeAnnotation(annotation); view.alpha = 1; view.transform = .identity }
+            }
+        }
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if let add = annotation as? BeenAddAnnotation {
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: BeenAddMarkerView.reuse, for: add) as! BeenAddMarkerView
+                view.configure(add, dark: parent.dark, pop: false)
+                return view
+            }
             guard annotation is BeenVisitAnnotation || annotation is MKClusterAnnotation else { return nil }
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: annotation is MKClusterAnnotation ? "been-cluster" : "been-city", for: annotation) as! BeenMarkerAnnotationView
             view.clusteringIdentifier = annotation is BeenVisitAnnotation ? "been-visits" : nil
@@ -120,9 +242,30 @@ struct BeenGlobeMap: UIViewRepresentable {
             view.configure(compact: compact || !parent.showCities, dark: parent.dark)
             return view
         }
+        func mapView(_ mapView: MKMapView, didAdd views: [MKAnnotationView]) {
+            // New "+" pills spring in.
+            // New "+" pills rise in one after another, biggest place first.
+            for view in views where view is BeenAddMarkerView {
+                guard !parent.reduceMotion else { continue }
+                let rank = Double((view.annotation as? BeenAddAnnotation)?.rank ?? 0)
+                view.transform = CGAffineTransform(translationX: 0, y: 8).scaledBy(x: 0.6, y: 0.6); view.alpha = 0
+                UIView.animate(withDuration: 0.42, delay: 0.05 * rank, usingSpringWithDamping: 0.72, initialSpringVelocity: 0.4, options: [.allowUserInteraction]) {
+                    view.transform = .identity; view.alpha = 1
+                }
+            }
+        }
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             guard let annotation = view.annotation else { return }
             mapView.deselectAnnotation(annotation, animated: false)
+            if let add = annotation as? BeenAddAnnotation {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                // The pill pops away; the city's own marker appears from the saved visit.
+                UIView.animate(withDuration: 0.22, animations: { view.transform = CGAffineTransform(scaleX: 1.25, y: 1.25); view.alpha = 0 }) { _ in
+                    mapView.removeAnnotation(add); view.transform = .identity; view.alpha = 1
+                }
+                parent.onAdd?(add.target)
+                return
+            }
             if let cluster = annotation as? MKClusterAnnotation {
                 TrippyHaptics.selection()
                 let members = cluster.memberAnnotations.compactMap { $0 as? BeenVisitAnnotation }
@@ -134,7 +277,10 @@ struct BeenGlobeMap: UIViewRepresentable {
             } else if let city = annotation as? BeenVisitAnnotation { TrippyHaptics.selection(); parent.onVisit(city.visit) }
         }
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
-            compact = mapView.region.span.latitudeDelta >= 12
+            updateAddMarkers(on: mapView)
+            let region = mapView.region
+            DispatchQueue.main.async { [weak self] in self?.parent.onRegion?(region) }
+            compact = mapView.region.span.latitudeDelta >= 9
             updateMarkerStyle(on: mapView)
         }
         private func updateMarkerStyle(on map: MKMapView) {
@@ -146,6 +292,15 @@ struct BeenGlobeMap: UIViewRepresentable {
         }
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let shapes = overlay as? CountryShapesOverlay { return CountryShapesRenderer(shapes: shapes) }
+            if overlay is BeenHeatOverlay { return BeenHeatRenderer(overlay: overlay) }
+            if let city = overlay as? BeenCityPolygon {
+                let colour = city.lived ? UIColor(sketchHex: BeenLook.livedHex) : BeenLook.heat(city.heat)
+                let renderer = MKPolygonRenderer(polygon: city)
+                renderer.fillColor = colour.withAlphaComponent(0.2 + 0.25 * city.heat)
+                renderer.strokeColor = colour.darker; renderer.lineWidth = 2; renderer.lineJoin = .round
+                renderer.lineDashPattern = city.lived ? nil : [6, 3]
+                return renderer
+            }
             let amber = UIColor(red: 0.94, green: 0.66, blue: 0.24, alpha: 1)
             if let polygon = overlay as? MKPolygon {
                 let renderer = MKPolygonRenderer(polygon: polygon); renderer.fillColor = amber.withAlphaComponent(parent.dark ? 0.43 : 0.35); return renderer
@@ -160,21 +315,19 @@ final class BeenVisitAnnotation: NSObject, MKAnnotation {
     var title: String? { visit.name }
     init(_ visit: VisitedPlace) { self.visit = visit }
 }
+/// A city is a pin (amber to red by how much time it has had), somewhere you lived is a green home pin,
+/// and several close together are one pin with a count. The name sits under the pin once zoomed in.
 final class BeenMarkerAnnotationView: MKAnnotationView {
+    private let pin = UIImageView()
     private let label = UILabel()
-    private let bubble = UIView()
-    private let dot = UIView()
+    private let plate = UIView()
     private var signature = ""
     override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
-        addSubview(bubble); bubble.addSubview(label); addSubview(dot)
+        addSubview(plate); plate.addSubview(label); addSubview(pin)
         label.textAlignment = .center
         label.numberOfLines = 1
-        bubble.layer.borderWidth = 0.8
-        bubble.layer.shadowColor = UIColor.black.cgColor
-        bubble.layer.shadowOpacity = 0.16
-        bubble.layer.shadowRadius = 2
-        bubble.layer.shadowOffset = .init(width: 0, height: 1)
+        plate.layer.cornerRadius = 8
         isAccessibilityElement = true
         accessibilityTraits = .button
     }
@@ -183,29 +336,72 @@ final class BeenMarkerAnnotationView: MKAnnotationView {
     func configure(compact: Bool, dark: Bool) {
         let cluster = annotation as? MKClusterAnnotation
         let city = annotation as? BeenVisitAnnotation
+        let members = cluster?.memberAnnotations.compactMap { ($0 as? BeenVisitAnnotation)?.visit } ?? []
         let count = cluster?.memberAnnotations.count ?? 1
-        let isBlob = compact || cluster != nil
-        let text = isBlob ? count.formatted() : (city?.visit.name ?? "")
-        let key = "\(text):\(isBlob):\(dark)"
+        let lived = city?.visit.isLived ?? false
+        let heat = city?.visit.heat ?? (members.map(\.heat).max() ?? 0.4)
+        let name = cluster == nil && !compact ? (city?.visit.name ?? "") : ""
+        let key = "\(count):\(lived):\(Int(heat * 6)):\(name):\(dark)"
         guard signature != key else { return }; signature = key
-        let amber = UIColor(red: 0.94, green: 0.66, blue: 0.24, alpha: 1)
-        label.text = text
-        label.font = UIFont(name: "PlusJakartaSans-Bold", size: isBlob ? 12 : 10) ?? .systemFont(ofSize: isBlob ? 12 : 10, weight: .semibold)
-        label.textColor = UIColor(red: 0.2, green: 0.15, blue: 0.07, alpha: 1)
-        let width = isBlob ? max(29, label.intrinsicContentSize.width + 16) : min(230, label.intrinsicContentSize.width + 20)
-        let height: CGFloat = isBlob ? 29 : 25
-        frame = CGRect(x: 0, y: 0, width: width, height: isBlob ? height : height + 9)
-        bubble.frame = .init(x: 0, y: 0, width: width, height: height)
-        bubble.backgroundColor = amber
-        bubble.layer.cornerRadius = height / 2
-        bubble.layer.borderColor = UIColor.white.withAlphaComponent(dark ? 0.55 : 0.85).cgColor
-        bubble.layer.shadowPath = UIBezierPath(roundedRect: bubble.bounds, cornerRadius: height / 2).cgPath
-        label.frame = bubble.bounds.insetBy(dx: 6, dy: 0)
-        dot.isHidden = isBlob
-        dot.frame = .init(x: width / 2 - 2.5, y: height + 4, width: 5, height: 5)
-        dot.backgroundColor = amber; dot.layer.cornerRadius = 2.5; dot.layer.borderWidth = 0.7; dot.layer.borderColor = UIColor.white.cgColor
-        centerOffset = isBlob ? .zero : .init(x: 0, y: -frame.height / 2)
-        accessibilityLabel = cluster != nil ? "\(count) cities. Tap to expand." : "\(city?.visit.name ?? ""), visited"
+        let style: BeenPinArt.Style = cluster != nil ? .cluster(count) : lived ? .lived : .city
+        let size = BeenPinArt.size(style)
+        pin.image = BeenPinArt.image(style, heat: heat)
+        label.text = name
+        label.font = UIFont(name: "PlusJakartaSans-Bold", size: 10.5) ?? .systemFont(ofSize: 10.5, weight: .semibold)
+        label.textColor = dark ? UIColor(white: 0.96, alpha: 1) : UIColor(red: 0.16, green: 0.14, blue: 0.11, alpha: 1)
+        plate.backgroundColor = (dark ? UIColor(white: 0.1, alpha: 1) : UIColor(red: 1, green: 0.99, blue: 0.96, alpha: 1)).withAlphaComponent(0.9)
+        plate.isHidden = name.isEmpty
+        let labelWidth = name.isEmpty ? 0 : min(150, label.intrinsicContentSize.width + 12)
+        let width = max(size.width, labelWidth), labelHeight: CGFloat = name.isEmpty ? 0 : 17
+        frame = CGRect(x: 0, y: 0, width: width, height: size.height + labelHeight)
+        pin.frame = CGRect(x: (width - size.width) / 2, y: 0, width: size.width, height: size.height)
+        plate.frame = CGRect(x: (width - labelWidth) / 2, y: size.height - 1, width: labelWidth, height: labelHeight)
+        label.frame = plate.bounds.insetBy(dx: 5, dy: 0)
+        // The pin's tip, not the middle of the view, sits on the place.
+        centerOffset = CGPoint(x: 0, y: frame.height / 2 - (size.height - 3))
+        zPriority = lived ? .max : cluster != nil ? .defaultSelected : .defaultUnselected
+        accessibilityLabel = cluster != nil ? "\(count) places. Tap to expand." : "\(city?.visit.name ?? ""), \(lived ? "lived here" : "visited")"
+    }
+}
+
+// MARK: - City borders and heat
+
+/// A visited city's own outline, coloured by how much time it has had.
+final class BeenCityPolygon: MKPolygon {
+    var heat = 0.4
+    var lived = false
+}
+
+/// A soft glow around every visited city, so regions you know well read as warm from far away.
+final class BeenHeatOverlay: NSObject, MKOverlay {
+    struct Spot { let point: MKMapPoint; let heat: Double; let lived: Bool }
+    let spots: [Spot]
+    let coordinate = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+    let boundingMapRect = MKMapRect.world
+    init(_ visits: [VisitedPlace]) {
+        spots = visits.filter { !$0.isCountry }.map { Spot(point: MKMapPoint($0.coordinate), heat: $0.heat, lived: $0.isLived) }
+    }
+}
+
+final class BeenHeatRenderer: MKOverlayRenderer {
+    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
+        guard let overlay = overlay as? BeenHeatOverlay else { return }
+        // A fixed size on screen, never smaller than about 12 km on the ground.
+        let space = CGColorSpaceCreateDeviceRGB()
+        context.setBlendMode(.normal)
+        for spot in overlay.spots {
+            let ground = 12_000 * MKMapPointsPerMeterAtLatitude(spot.point.coordinate.latitude)
+            let radius = max(ground, Double(30 + 34 * spot.heat) / Double(zoomScale)) * (spot.lived ? 1.25 : 1)
+            let box = MKMapRect(x: spot.point.x - radius, y: spot.point.y - radius, width: radius * 2, height: radius * 2)
+            guard box.intersects(mapRect) else { continue }
+            let colour = spot.lived ? UIColor(sketchHex: BeenLook.livedHex) : BeenLook.heat(spot.heat)
+            let alpha = 0.2 + 0.3 * spot.heat
+            let colours = [colour.withAlphaComponent(alpha).cgColor, colour.withAlphaComponent(alpha * 0.45).cgColor, colour.withAlphaComponent(0).cgColor] as CFArray
+            guard let gradient = CGGradient(colorsSpace: space, colors: colours, locations: [0, 0.45, 1]) else { continue }
+            let centre = point(for: spot.point)
+            let r = rect(for: box).width / 2
+            context.drawRadialGradient(gradient, startCenter: centre, startRadius: 0, endCenter: centre, endRadius: r, options: [])
+        }
     }
 }
 
@@ -462,7 +658,13 @@ struct GeneralNativeMap: UIViewRepresentable {
             if let camera = parent.position.camera {
                 map.setCamera(.init(lookingAtCenter: camera.centerCoordinate, fromDistance: camera.distance, pitch: camera.pitch, heading: camera.heading), animated: animate)
             } else if let region = parent.position.region { map.setRegion(region, animated: animate) }
-            else if let rect = parent.position.rect { map.setVisibleMapRect(rect, edgePadding: map.layoutMargins, animated: animate) }
+            else if let rect = parent.position.rect {
+                // Deferred a turn: issued in the same pass that adds an overlay (a new route), MapKit drops the move.
+                DispatchQueue.main.async { [weak map] in
+                    // Callers frame their own room (panels, cards); the map's layout margins also carry safe-area insets.
+                    map?.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16), animated: animate)
+                }
+            }
             else if !annotations.isEmpty { map.showAnnotations(Array(annotations.values), animated: animate) }
             else { map.setRegion(.init(center: .init(latitude: 40.6, longitude: 22.9), span: .init(latitudeDelta: 9, longitudeDelta: 9)), animated: false) }
         }
@@ -1086,5 +1288,66 @@ final class VisitedStarView: MKAnnotationView {
         }
         cache[dark] = image
         return image
+    }
+}
+
+
+// MARK: - "+" pills for adding places at the zoom where they matter
+
+final class BeenAddAnnotation: NSObject, MKAnnotation {
+    let target: ZoomAddTarget
+    let rank: Int
+    var visited = false
+    init(_ target: ZoomAddTarget, rank: Int) { self.target = target; self.rank = rank }
+    var coordinate: CLLocationCoordinate2D { target.coordinate }
+    var title: String? { target.name }
+}
+
+/// A small pill: round "+" (or ✓) and the place's name, sitting where the map writes that name.
+final class BeenAddMarkerView: MKAnnotationView {
+    static let reuse = "been-add"
+    private let pill = UIView()
+    private let badge = UIView()
+    private let icon = UIImageView()
+    private let label = UILabel()
+
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        canShowCallout = false
+        collisionMode = .rectangle
+        pill.layer.cornerRadius = 15; pill.layer.cornerCurve = .continuous
+        pill.layer.shadowColor = UIColor.black.cgColor; pill.layer.shadowOpacity = 0.14; pill.layer.shadowRadius = 5; pill.layer.shadowOffset = CGSize(width: 0, height: 2)
+        badge.layer.cornerRadius = 11
+        icon.contentMode = .center; icon.tintColor = .white
+        label.font = UIFont(name: "PlusJakartaSans-Bold", size: 12) ?? .systemFont(ofSize: 12, weight: .bold)
+        addSubview(pill); pill.addSubview(badge); badge.addSubview(icon); pill.addSubview(label)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(_ annotation: BeenAddAnnotation, dark: Bool, pop: Bool) {
+        self.annotation = annotation
+        let ink = dark ? UIColor(white: 0.95, alpha: 1) : UIColor(red: 0.12, green: 0.11, blue: 0.1, alpha: 1)
+        let sage = UIColor(red: 0.29, green: 0.46, blue: 0.38, alpha: 1)
+        pill.backgroundColor = dark ? UIColor(white: 0.12, alpha: 0.92) : UIColor(white: 1, alpha: 0.94)
+        badge.backgroundColor = annotation.visited ? sage : ink
+        icon.tintColor = dark && !annotation.visited ? .black : .white
+        icon.image = UIImage(systemName: annotation.visited ? "checkmark" : "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .heavy))
+        label.text = annotation.target.name
+        label.textColor = ink
+        label.sizeToFit()
+        let width = 4 + 22 + 6 + min(130, label.bounds.width) + 10
+        frame.size = CGSize(width: width, height: 30)
+        pill.frame = bounds
+        badge.frame = CGRect(x: 4, y: 4, width: 22, height: 22)
+        icon.frame = badge.bounds
+        label.frame = CGRect(x: 32, y: 0, width: min(130, label.bounds.width), height: 30)
+        // Countries outrank cities, bigger ones (listed first) outrank smaller; MapKit hides what collides.
+        displayPriority = .required   // which pills show is decided before they are added; MapKit must not hide more
+        accessibilityLabel = annotation.visited ? "\(annotation.target.name), visited" : "Add \(annotation.target.name)"
+        isAccessibilityElement = true
+        if pop {
+            transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
+            UIView.animate(withDuration: 0.45, delay: 0, usingSpringWithDamping: 0.45, initialSpringVelocity: 1.2) { self.transform = .identity }
+        }
     }
 }

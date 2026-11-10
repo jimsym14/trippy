@@ -5,21 +5,35 @@ import UIKit
 // A snapshot is rebuilt on storage changes, never while the globe is moving.
 struct BeenPassportSnapshot {
     let revision = UUID()
+    /// Every record: countries, cities and places lived in. Dated ones newest first, then the undated.
     let visits: [VisitedPlace]
+    /// Cities only: a country added on its own is not a city.
+    let cities: [VisitedPlace]
+    let lived: [VisitedPlace]
     let countries: [VisitedCountryGroup]
     let continents: [String]
     let years: [Int]
     init(_ visits: [VisitedPlace] = []) {
-        self.visits = visits.sorted { $0.visitedAt == $1.visitedAt ? $0.id < $1.id : $0.visitedAt > $1.visitedAt }
+        self.visits = visits.sorted { a, b in
+            switch (a.when, b.when) {
+            case let (x?, y?): x == y ? a.id < b.id : x > y
+            case (_?, nil): true
+            case (nil, _?): false
+            default: a.name.localizedStandardCompare(b.name) == .orderedAscending
+            }
+        }
+        cities = self.visits.filter { !$0.isCountry }
+        lived = self.visits.filter(\.isLived)
         countries = VisitedCountryGroup.groups(visits).filter { $0.countryCode != nil }
         continents = Set(visits.map { WorldContinentCatalog.name(for: $0.countryCode) }).filter { $0 != "Other" }.sorted()
-        years = Set(visits.map { Calendar.current.component(.year, from: $0.visitedAt) }).sorted(by: >)
+        years = Set(visits.compactMap(\.year)).sorted(by: >)
     }
     var countryCount: Int { countries.count }
+    var undated: [VisitedPlace] { visits.filter { $0.when == nil } }
     func countries(in continent: String?) -> [VisitedCountryGroup] {
         countries.filter { continent == nil || WorldContinentCatalog.name(for: $0.countryCode) == continent }
     }
-    var shareText: String { "Been to · Trippy · \(countryCount) countries & regions · \(visits.count) cities · \(continents.count) continents" }
+    var shareText: String { "Been to · Trippy · \(countryCount) countries & regions · \(cities.count) cities · \(continents.count) continents" }
 }
 
 enum BeenCollection: String, Identifiable, CaseIterable {
@@ -30,9 +44,9 @@ enum BeenCollection: String, Identifiable, CaseIterable {
         case .countries: "Countries"
         case .continents: "Continents"
         case .cities: "Cities"
-        case .timeline: "Timeline"
+        case .timeline: "Stats & timeline"
         case .flags: "Flags"
-        case .milestones: "Milestones"
+        case .milestones: "Badges"
         }
     }
     var symbol: String {
@@ -123,7 +137,7 @@ struct BeenPassportSummary: View {
             HStack(spacing: 0) {
                 metric(snapshot.countryCount, "countries & regions")
                 Rectangle().fill(BeenPalette.ink(scheme).opacity(0.1)).frame(width: 1, height: 36).padding(.horizontal, 14)
-                metric(snapshot.visits.count, "cities")
+                metric(snapshot.cities.count, "cities")
                 Spacer(minLength: 8)
                 ZStack {
                     Circle().stroke(BeenPalette.ink(scheme).opacity(0.09), lineWidth: 5)
@@ -246,8 +260,8 @@ struct BeenEmptyPassport: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Image(systemName: "globe.europe.africa").font(.system(size: 32, weight: .light)).foregroundStyle(BeenPalette.accent(scheme))
-            Text("Your first city starts here.").font(.custom("PlusJakartaSans-Bold", size: 20)).fixedSize(horizontal: false, vertical: true)
-            Button(action: action) { Label("Add a city", systemImage: "plus").font(.subheadline.weight(.semibold)).padding(.vertical, 10) }
+            Text("Your first place starts here.").font(.custom("PlusJakartaSans-Bold", size: 20)).fixedSize(horizontal: false, vertical: true)
+            Button(action: action) { Label("Add a place", systemImage: "plus").font(.subheadline.weight(.semibold)).padding(.vertical, 10) }
                 .buttonStyle(.borderedProminent).tint(BeenPalette.accent(scheme))
         }.padding(22).frame(maxWidth: .infinity, alignment: .leading).beenSurface(radius: 26)
     }
@@ -258,9 +272,9 @@ struct BeenCountryRow: View {
     @Environment(\.colorScheme) private var scheme
     /// "3 cities · 2019–2024 · Europe"
     private var summary: String {
-        let years = group.visits.map { Calendar.current.component(.year, from: $0.visitedAt) }
+        let years = group.visits.compactMap(\.year)
         let span = years.min().map { first in years.max().map { $0 == first ? String(first) : "\(first)–\($0)" } ?? String(first) } ?? ""
-        return ["\(group.visits.count) \(group.visits.count == 1 ? "city" : "cities")", span, BeenContinentName.title(WorldContinentCatalog.name(for: group.countryCode))]
+        return ["\(group.cities.count) \(group.cities.count == 1 ? "city" : "cities")", span, BeenContinentName.title(WorldContinentCatalog.name(for: group.countryCode))]
             .filter { !$0.isEmpty }.joined(separator: " · ")
     }
     var body: some View {
@@ -272,7 +286,7 @@ struct BeenCountryRow: View {
                     Text(summary).font(.system(size: 12)).foregroundStyle(BeenPalette.secondary(scheme)).lineLimit(2)
                 }
                 Spacer(minLength: 6)
-                Text(group.visits.count.formatted()).font(.custom("PlusJakartaSans-Bold", size: 19)).monospacedDigit().foregroundStyle(BeenPalette.accent(scheme))
+                Text(group.cities.count.formatted()).font(.custom("PlusJakartaSans-Bold", size: 19)).monospacedDigit().foregroundStyle(BeenPalette.accent(scheme))
                 Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold)).foregroundStyle(BeenPalette.secondary(scheme))
             }.padding(16).beenSurface(radius: 23)
         }.buttonStyle(BeenHapticStyle())
@@ -285,7 +299,7 @@ struct BeenVisitRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 14) {
-                Text(WorldGlobeView.flag(place.countryCode)).font(.system(size: 25)).frame(width: 42, height: 44)
+                PlaceMark(place: place, size: 42)
                 VStack(alignment: .leading, spacing: 5) {
                     Text(place.name).font(.custom("PlusJakartaSans-Bold", size: 16)).fixedSize(horizontal: false, vertical: true)
                     Text(place.countryCode.flatMap { Locale(identifier: "en").localizedString(forRegionCode: $0) } ?? "Unknown country")
@@ -293,8 +307,9 @@ struct BeenVisitRow: View {
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 3) {
-                    Text(place.visitedAt, format: .dateTime.day().month(.abbreviated)).font(.system(size: 11, weight: .semibold))
-                    Text(place.visitedAt, format: .dateTime.year()).font(.custom("PlusJakartaSans-Bold", size: 13)).foregroundStyle(BeenPalette.accent(scheme))
+                    if place.isLived { Text("LIVED").font(.system(size: 9, weight: .heavy)).tracking(0.8).foregroundStyle(BeenLook.lived) }
+                    Text(place.visitCount > 1 ? "\(place.visitCount) visits" : place.whenText).font(.custom("PlusJakartaSans-Bold", size: 12)).multilineTextAlignment(.trailing)
+                        .foregroundStyle(place.when == nil ? BeenPalette.secondary(scheme) : BeenPalette.accent(scheme))
                 }
                 Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(BeenPalette.secondary(scheme))
             }.padding(16).frame(minHeight: 82).beenSurface(radius: 22)
@@ -327,10 +342,10 @@ struct BeenCollectionSheet: View {
         switch collection {
         case .countries: "\(snapshot.countryCount) countries · \(Int((Double(snapshot.countryCount) / 195 * 100).rounded()))% of the world"
         case .continents: "\(snapshot.continents.count) of 6 continents"
-        case .cities: "\(snapshot.visits.count) cities, newest first"
-        case .timeline: "\(snapshot.years.count) years of travel"
+        case .cities: "\(snapshot.cities.count) cities, newest first"
+        case .timeline: snapshot.years.isEmpty ? "Add dates to see your years" : "\(snapshot.years.count) years of travel"
         case .flags: "\(snapshot.countryCount) flags"
-        case .milestones: "Goals you’ve reached and what’s next"
+        case .milestones: "Patches you’ve earned and what’s next"
         }
     }
     @ViewBuilder private var content: some View {
@@ -338,7 +353,7 @@ struct BeenCollectionSheet: View {
         case .countries:
             LazyVStack(spacing: 12) { ForEach(snapshot.countries) { group in BeenCountryRow(group: group) { country = group } } }
         case .cities:
-            LazyVStack(spacing: 12) { ForEach(snapshot.visits) { place in BeenVisitRow(place: place) { city = place } } }
+            LazyVStack(spacing: 12) { ForEach(snapshot.cities) { place in BeenVisitRow(place: place) { city = place } } }
         case .continents:
             VStack(spacing: 18) {
                 ForEach(["Europe", "Asia", "Africa", "North America", "South America", "Oceania"], id: \.self) { continent in
@@ -349,7 +364,7 @@ struct BeenCollectionSheet: View {
                             ContinentIcon(name: continent, size: 40, selected: !groups.isEmpty)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(BeenContinentName.title(continent)).font(.custom("PlusJakartaSans-Bold", size: 20))
-                                Text("\(groups.count) of \(total) countries · \(groups.reduce(0) { $0 + $1.visits.count }) cities")
+                                Text("\(groups.count) of \(total) countries · \(groups.reduce(0) { $0 + $1.cities.count }) cities")
                                     .font(.system(size: 12)).foregroundStyle(BeenPalette.secondary(scheme))
                             }
                             Spacer()
@@ -361,29 +376,7 @@ struct BeenCollectionSheet: View {
                 }
             }
         case .timeline:
-            VStack(alignment: .leading, spacing: 22) {
-                Picker("Timeline view", selection: $chronology) {
-                    Text("By year").tag(false)
-                    Text("Chronology").tag(true)
-                }.pickerStyle(.segmented)
-                if chronology {
-                    LazyVStack(spacing: 12) {
-                        ForEach(snapshot.visits.reversed()) { place in BeenVisitRow(place: place) { city = place } }
-                    }
-                } else {
-                    ForEach(snapshot.years, id: \.self) { year in
-                        let visits = snapshot.visits.filter { Calendar.current.component(.year, from: $0.visitedAt) == year }
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(String(year)).font(.custom("PlusJakartaSans-ExtraBold", size: 34)).tracking(-1).foregroundStyle(BeenPalette.accent(scheme))
-                                Spacer()
-                                Text("\(visits.count) cities").font(.caption).foregroundStyle(BeenPalette.secondary(scheme))
-                            }.padding(.horizontal, 4)
-                            ForEach(visits) { place in BeenVisitRow(place: place) { city = place } }
-                        }
-                    }
-                }
-            }
+            BeenTimeline(snapshot: snapshot) { city = $0 }
         case .flags:
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 12)], spacing: 12) {
                 ForEach(snapshot.countries) { group in
@@ -391,72 +384,16 @@ struct BeenCollectionSheet: View {
                         VStack(spacing: 12) {
                             Text(WorldGlobeView.flag(group.countryCode)).font(.system(size: 52))
                             Text(group.name).font(.custom("PlusJakartaSans-Bold", size: 14)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-                            Text("\(group.visits.count) cities").font(.system(size: 11)).foregroundStyle(BeenPalette.secondary(scheme))
+                            Text("\(group.cities.count) cities").font(.system(size: 11)).foregroundStyle(BeenPalette.secondary(scheme))
                         }.frame(maxWidth: .infinity).frame(minHeight: 148).padding(14).beenSurface(radius: 24)
                     }.buttonStyle(BeenHapticStyle())
                 }
             }
         case .milestones:
-            VStack(spacing: 14) {
-                milestone("First steps", subtitle: "Your first city", symbol: "shoeprints.fill", count: snapshot.visits.count, target: 1)
-                milestone("City collector", subtitle: "10 different cities", symbol: "building.2.fill", count: snapshot.visits.count, target: 10)
-                milestone("Across borders", subtitle: "5 countries or regions", symbol: "globe.europe.africa.fill", count: snapshot.countryCount, target: 5)
-                milestone("A bigger world", subtitle: "3 continents", symbol: "globe.americas.fill", count: snapshot.continents.count, target: 3)
-                milestone("World citizen", subtitle: "All 6 continents", symbol: "seal.fill", count: snapshot.continents.count, target: 6)
-            }
+            BeenBadgeGrid(snapshot: snapshot)
         }
     }
-    private func milestone(_ title: String, subtitle: String, symbol: String, count: Int, target: Int) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 14) {
-                Image(systemName: symbol).font(.system(size: 24)).foregroundStyle(count >= target ? BeenPalette.accent(scheme) : BeenPalette.secondary(scheme))
-                    .frame(width: 48, height: 48).beenSurface(radius: 18, inset: true)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(title).font(.custom("PlusJakartaSans-Bold", size: 16))
-                    Text(subtitle).font(.system(size: 12)).foregroundStyle(BeenPalette.secondary(scheme))
-                }
-                Spacer(minLength: 4)
-                if count >= target { Image(systemName: "checkmark.seal.fill").foregroundStyle(BeenPalette.amber) }
-            }
-            ProgressView(value: Double(min(count, target)), total: Double(target)).tint(BeenPalette.amber)
-            Text(count >= target ? "Visited." : "\(min(count, target)) / \(target)").font(.system(size: 11, weight: .semibold)).foregroundStyle(BeenPalette.secondary(scheme))
-        }.padding(20).beenSurface(radius: 26)
-    }
     private func reload() { snapshot = BeenPassportSnapshot(VisitedPlace.decode(storage)) }
-}
-
-struct BeenVisitDetail: View {
-    let place: VisitedPlace
-    @AppStorage("trippy.native.visitedPlaces.v1") private var storage = "[]"
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var scheme
-    @State private var date = Date()
-    @State private var confirmDelete = false
-    var body: some View {
-        BeenSheetFrame(title: place.name, subtitle: "\(WorldGlobeView.flag(place.countryCode))  \(place.countryCode.flatMap { Locale(identifier: "en").localizedString(forRegionCode: $0) } ?? "Unknown country")") {
-            VStack(alignment: .leading, spacing: 18) {
-                Label("I was here", systemImage: "checkmark.seal.fill").font(.custom("PlusJakartaSans-Bold", size: 19)).foregroundStyle(BeenPalette.accent(scheme))
-                DatePicker("Visit date", selection: $date, in: ...Date(), displayedComponents: .date)
-                    .font(.subheadline).tint(BeenPalette.accent(scheme))
-                Button("Save date", systemImage: "checkmark") {
-                    var visits = VisitedPlace.decode(storage)
-                    if let index = visits.firstIndex(where: { $0.id == place.id }) { visits[index].visitedAt = date; storage = VisitedPlace.encode(visits) }
-                    dismiss()
-                }.buttonStyle(.borderedProminent).tint(BeenPalette.accent(scheme))
-            }.padding(22).beenSurface(radius: 26)
-            Button { openMap() } label: { Label("Open in Apple Maps", systemImage: "map").frame(maxWidth: .infinity, minHeight: 50) }
-                .buttonStyle(.bordered).tint(BeenPalette.accent(scheme))
-            Button("Remove visit", systemImage: "trash", role: .destructive) { confirmDelete = true }
-                .font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 44)
-        }.presentationDetents([.medium, .large])
-            .onAppear { date = VisitedPlace.decode(storage).first(where: { $0.id == place.id })?.visitedAt ?? place.visitedAt }
-            .confirmationDialog("Remove visit to \(place.name);", isPresented: $confirmDelete, titleVisibility: .visible) {
-                Button("Remove visit", role: .destructive) { storage = VisitedPlace.encode(VisitedPlace.decode(storage).filter { $0.id != place.id }); dismiss() }
-            }
-    }
-    private func openMap() {
-        let item = MKMapItem(placemark: MKPlacemark(coordinate: place.coordinate)); item.name = place.name; item.openInMaps()
-    }
 }
 
 struct BeenVisitSearchField: View {
@@ -467,9 +404,9 @@ struct BeenVisitSearchField: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .medium)).foregroundStyle(BeenPalette.accent(scheme))
-            TextField("City or place", text: $query).font(.custom("PlusJakartaSans-Medium", size: 17))
+            TextField("Country or city", text: $query).font(.custom("PlusJakartaSans-Medium", size: 17))
                 .autocorrectionDisabled().submitLabel(.search).focused(focused)
-                .accessibilityLabel("Search city or place")
+                .accessibilityLabel("Search for a country or city")
             if loading { ProgressView().controlSize(.small).tint(BeenPalette.accent(scheme)).accessibilityLabel("Search") }
             if !query.isEmpty {
                 Button { query = ""; focused.wrappedValue = true } label: {
@@ -566,7 +503,7 @@ struct BeenPassportContents: View {
                             Divider().opacity(0.4)
                             BeenCollectionRow(title: "Continents", subtitle: "", symbol: "globe.americas", value: "\(snapshot.continents.count)/6") { onCollection(.continents) }
                             Divider().opacity(0.4)
-                            BeenCollectionRow(title: "Cities", subtitle: "", symbol: "building.2", value: snapshot.visits.count.formatted()) { onCollection(.cities) }
+                            BeenCollectionRow(title: "Cities", subtitle: "", symbol: "building.2", value: snapshot.cities.count.formatted()) { onCollection(.cities) }
                         }.padding(.horizontal, 16).beenSurface(radius: 24, inset: true)
                         if let continent = selectedContinent {
                             Text(BeenContinentName.title(continent)).font(.custom("PlusJakartaSans-Bold", size: 20))

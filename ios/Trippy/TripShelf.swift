@@ -47,6 +47,9 @@ struct TripShelfView: View {
     var onComplete: (UUID) -> Void
     var onDelete: (UUID) -> Void
     var onNew: () -> Void
+    var journeys: [SavedJourney] = []
+    var onWhereNext: (() -> Void)? = nil
+    var onJourney: (() -> Void)? = nil
 
     @State private var looks = ShelfLookStore.load()
     @State private var styling: ShelfTrip?
@@ -58,7 +61,9 @@ struct TripShelfView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 30) {
+            if onWhereNext != nil || onJourney != nil { starters }
             if trips.isEmpty { emptyShelf }
+            if !journeys.isEmpty { journeyRow }
             if let next = upcoming.first {
                 NextTripCard(trip: next, look: look(next)) { onOpen(next.id) }
                     .contextMenu { menu(next) }
@@ -133,6 +138,70 @@ struct TripShelfView: View {
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned)
             .scrollClipDisabled()
+        }
+    }
+
+    /// Two other ways to start: not sure where, or several places in one go.
+    private var starters: some View {
+        HStack(spacing: 12) {
+            if let onWhereNext { starter("Where next?", "Picks made for you", doodle: .map, tint: Sketch.clay, action: onWhereNext) }
+            if let onJourney { starter("Journey", "Several stops, one trip", doodle: .train, tint: Sketch.sky, action: onJourney) }
+        }
+    }
+
+    private func starter(_ title: String, _ detail: String, doodle: Doodle, tint: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 6) {
+                DoodleView(doodle: doodle, tint: tint, lineWidth: 2).frame(width: 44, height: 44)
+                Text(title).font(Sketch.display(.title3, weight: .bold)).foregroundStyle(Sketch.ink)
+                Text(detail).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .sketchCard(tint: tint, padding: 14)
+        }
+        .buttonStyle(SketchPressStyle())
+    }
+
+    private var journeyRow: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Journeys").font(Sketch.display(.title3)).accessibilityAddTraits(.isHeader)
+            ForEach(journeys) { journey in
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: journey.mode.symbol).font(.system(size: 13, weight: .bold)).foregroundStyle(Sketch.sky)
+                            .frame(width: 32, height: 32).background(Circle().fill(Sketch.sky.opacity(0.14)))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(journey.name).font(Sketch.text(16, "Bold", relativeTo: .body)).lineLimit(1)
+                            Text("\(GuideDates.format(journey.startDate, "d MMM")) – \(GuideDates.format(journey.endDate, "d MMM"))" + (journey.origin.map { " · from \($0)" } ?? ""))
+                                .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
+                        }
+                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(Array(zip(journey.tripIDs, journey.cities).enumerated()), id: \.element.0) { index, stop in
+                                let planned = trips.first { $0.id == stop.0 }?.hasPlan ?? false
+                                if index > 0 { Image(systemName: "arrow.right").font(.system(size: 10, weight: .bold)).foregroundStyle(Sketch.inkFaint) }
+                                Button { onOpen(stop.0) } label: {
+                                    HStack(spacing: 6) {
+                                        Text("\(index + 1)").font(Sketch.text(11, "Bold", relativeTo: .caption2)).foregroundStyle(.white)
+                                            .frame(width: 20, height: 20).background(Circle().fill(Sketch.dayColor(index)))
+                                        Text(stop.1).lineLimit(1)
+                                        Image(systemName: planned ? "checkmark.circle.fill" : "circle.dashed").font(.system(size: 12))
+                                            .foregroundStyle(planned ? Sketch.sage : Sketch.inkFaint)
+                                    }
+                                    .font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).foregroundStyle(Sketch.ink)
+                                    .padding(.horizontal, 10).frame(minHeight: 44).background(Capsule().fill(Sketch.paperDeep))
+                                }
+                                .buttonStyle(SketchPressStyle())
+                                .accessibilityLabel("Stop \(index + 1), \(stop.1), \(planned ? "planned" : "not planned yet")")
+                            }
+                        }
+                    }
+                    .scrollClipDisabled()
+                }
+                .sketchCard(padding: 14)
+            }
         }
     }
 

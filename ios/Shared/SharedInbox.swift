@@ -60,7 +60,16 @@ struct ImportedSocialSource: Codable, Identifiable, Equatable {
     var summary: String? = nil
     var country: String? = nil
     var countryCode: String? = nil
+    /// "places", "tips" or "mixed". Tips posts live in the Tips shelf of Videos, with their own note.
+    var postKind: String? = nil
+    var tips: [SocialTip]? = nil
+    /// True when the server handed back an earlier read of the same post (indexed once for everyone).
+    var fromIndex: Bool? = nil
+    var isTips: Bool { postKind == "tips" }
 }
+/// One beat of a post's timeline: when ("0:12", "slide 3", "caption") and what was said or shown.
+struct SocialMoment: Codable, Equatable, Hashable { var at: String; var text: String }
+struct SocialTip: Codable, Equatable, Hashable { var title: String; var detail: String; var at: String? = nil }
 struct SocialPlaceMention: Codable, Identifiable, Equatable {
     var id: UUID
     var name: String
@@ -87,6 +96,7 @@ struct SocialPlaceMention: Codable, Identifiable, Equatable {
     var whyGo: [String]? = nil
     var priceHint: String? = nil
     var evidence: [String]? = nil
+    var moments: [SocialMoment]? = nil
 }
 
 /// Response shape of GET /api/social/extract (see trippy/social/extract.py).
@@ -96,8 +106,9 @@ struct SocialExtractionJob: Decodable {
         let name: String; let nameLatin: String?; let category: String; let neighborhood: String?; let city: String?; let country: String?
         let countryCode: String?; let addressHint: String?; let vibeTags: [String]; let tldr: String; let proTips: [String]; let goodToKnow: [String]
         let mustTry: [String]; let whyGo: [String]; let priceHint: String?; let evidence: [String]; let confidence: Double; let google: Google?
+        let moments: [SocialMoment]?
         enum CodingKeys: String, CodingKey {
-            case name, category, neighborhood, city, country, tldr, evidence, confidence, google
+            case name, category, neighborhood, city, country, tldr, evidence, confidence, google, moments
             case nameLatin = "name_latin", countryCode = "country_code", addressHint = "address_hint", vibeTags = "vibe_tags"
             case proTips = "pro_tips", goodToKnow = "good_to_know", mustTry = "must_try", whyGo = "why_go", priceHint = "price_hint"
         }
@@ -105,14 +116,19 @@ struct SocialExtractionJob: Decodable {
     struct Result: Decodable {
         let postTitle: String; let postSummary: String; let city: String; let country: String; let countryCode: String?
         let places: [Place]; let model: String?
-        enum CodingKeys: String, CodingKey { case city, country, places, model; case postTitle = "post_title", postSummary = "post_summary", countryCode = "country_code" }
+        let postKind: String?; let tips: [SocialTip]?
+        enum CodingKeys: String, CodingKey {
+            case city, country, places, model, tips
+            case postTitle = "post_title", postSummary = "post_summary", countryCode = "country_code", postKind = "post_kind"
+        }
     }
     let jobID: String
     let status: String
     let error: String?
     let note: String?
     let result: Result?
-    enum CodingKeys: String, CodingKey { case status, error, note, result; case jobID = "job_id" }
+    let cached: Bool?
+    enum CodingKeys: String, CodingKey { case status, error, note, result, cached; case jobID = "job_id" }
 }
 struct LinkedPlaceReference: Codable, Equatable, Identifiable {
     var id: String
@@ -133,6 +149,12 @@ struct TravelNote: Codable, Identifiable, Equatable {
     var city: String? = nil
     var linkedPlaceIDs: [String]? = nil
     var linkedPlaces: [LinkedPlaceReference]? = nil
+    /// "place" (one venue, written automatically from videos), "tips" (a tips post) or nil (your own note).
+    var kind: String? = nil
+    /// Same key as the place's pin and take, so one venue has one note however many videos mention it.
+    var placeKey: String? = nil
+    /// What each video said, keyed by source ID. Re-reading a video replaces its section, never duplicates it.
+    var fromSources: [String: String]? = nil
 }
 
 // One immutable envelope per share. Atomic writes survive extension termination.

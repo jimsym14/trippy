@@ -17,13 +17,30 @@ struct TrippyTabBar: View {
     @Binding var selection: String
     /// nil on the map: the map has no add action of its own.
     var action: TabBarAction?
+    /// Optional button on the left (the profile in the Library). Left and right slots are the same width,
+    /// so the Map/Library pill always sits in the exact centre and all three share one centre line.
+    var leading: AnyView? = nil
     @Namespace private var pill
+    private let slot: CGFloat = 58
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let tabs: [(id: String, title: String, icon: TrippyIcon)] = [("map", "Map", .map), ("library", "Library", .library)]
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
+            sideSlot { if let leading { leading.transition(.scale(scale: 0.6).combined(with: .opacity)) } }
+            tabsPill
+            sideSlot { actionButton }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, 6)
+    }
+
+    private func sideSlot<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        ZStack { content() }.frame(width: slot, height: slot)
+    }
+
+    private var tabsPill: some View {
             HStack(spacing: 4) {
                 ForEach(tabs, id: \.id) { tab in
                     let selected = selection == tab.id
@@ -58,7 +75,9 @@ struct TrippyTabBar: View {
             }
             .padding(5)
             .background(BarSurface(shape: Capsule()))
+    }
 
+    @ViewBuilder private var actionButton: some View {
             if let action {
             Button {
                 action.run()
@@ -81,8 +100,6 @@ struct TrippyTabBar: View {
             .accessibilityLabel(action.label)
             .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
-        }
-        .padding(.bottom, 6)
     }
 }
 

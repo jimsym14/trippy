@@ -8,6 +8,8 @@ struct SocialLibraryDocument: Codable {
     var sources: [ImportedSocialSource] = []
     var places: [SocialPlaceMention] = []
     var notes: [TravelNote] = []
+    /// Your quick take per real place (PlaceKey), shared by every pin, save, note and video of that place.
+    var takes: [String: PlaceTake]? = nil
 }
 enum SocialLibraryStore {
     static var file: URL {
@@ -108,7 +110,10 @@ enum SocialExtractionClient {
             evidence.append(["origin": block.origin, "text": block.text])
         }
         var body: [String: Any] = ["source_id": source.id.uuidString, "url": source.envelope.sourceURL ?? "",
-                                   "author": post?.authorHandle ?? "", "evidence": evidence]
+                                   "author": post?.authorHandle ?? "", "evidence": evidence, "video_id": post?.postID ?? ""]
+        // Every post is read once for everyone: ask first, so an indexed post costs no upload and no credit.
+        if let probe = try? await send(jsonRequest(url, body: body.merging(["probe": true]) { $1 }, token: token, timeout: 20)),
+           probe.status != "unindexed" { return probe }
         body["images"] = await Task.detached(priority: .utility) { slideImages(source) }.value
         // Videos go as a shrunken copy (1 fps, 540 px, mono audio) so Gemini can read place names drawn on the
         // frames, not just the speech. If that fails, fall back to audio only (when there is no transcript).
@@ -127,6 +132,17 @@ enum SocialExtractionClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await send(request)
+    }
+
+    private static func jsonRequest(_ url: URL, body: [String: Any], token: String, timeout: TimeInterval) throws -> URLRequest {
+        var request = URLRequest(url: url, timeoutInterval: timeout)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
+        if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
     }
 
     static func poll(_ jobID: String, baseURL: String, token: String) async throws -> SocialExtractionJob? {

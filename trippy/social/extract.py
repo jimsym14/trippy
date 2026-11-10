@@ -23,6 +23,8 @@ Every place the post recommends or names as a venue gets its own card, in the or
 (slideshows usually show one place per slide; the place name is often drawn on the image or
 pinned with 📍; in videos, read the text drawn over the frames as carefully as you listen to the speech).
 Do not invent places, dishes, prices or facts that the evidence does not support.
+Some posts are not about venues at all but give travel tips (packing, scams, transport, etiquette, money,
+booking hacks); keep those as tips. A post can have both.
 Write card text in English, short and concrete, like a friend's notes. Keep proper names in their
 original spelling; add the Latin-script name if the original is Greek or another script."""
 
@@ -44,7 +46,13 @@ For each place:
 - price_hint: e.g. "€10–15" only if stated.
 - evidence: which inputs support this card, e.g. ["slide 3", "caption", "transcript", "on-screen text", "video 0:12", "audio"]
   (for text read off a video frame, give its timestamp as "video m:ss").
+- moments: the timeline of this place in the post, in order: each {{at, text}} where "at" is "m:ss" for video
+  (or "slide N" for slideshows, "caption" for the caption) and text is what was said or shown about the place
+  at that moment (short, in English; quote the creator when it is punchy). Empty if there is no timing.
 - confidence: 0–1 that this is a real, findable venue.
+Also classify the post: post_kind = "places" (recommends venues), "tips" (general travel advice, no venue is
+the point), or "mixed". For tips, return tips: each {{title, detail, at}} — a short headline, one or two
+sentences of advice, and where it appears ("0:24", "slide 3", "caption").
 Leave a list empty rather than guessing. Also return post_title (short), post_summary (one sentence),
 transcript (verbatim speech in its original language if audio or video was provided, else ""), and
 unresolved: names mentioned that you could not confirm as venues.
@@ -54,6 +62,11 @@ Author: {author}
 {evidence}"""
 
 _LIST = {"type": "ARRAY", "items": {"type": "STRING"}}
+_MOMENTS = {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {"at": {"type": "STRING"}, "text": {"type": "STRING"}},
+                                       "required": ["at", "text"]}}
+_TIPS = {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+    "title": {"type": "STRING"}, "detail": {"type": "STRING"}, "at": {"type": "STRING"}}, "required": ["title", "detail"]}}
+POST_KINDS = ["places", "tips", "mixed"]
 SCHEMA = {
     "type": "OBJECT",
     "properties": {
@@ -63,6 +76,8 @@ SCHEMA = {
         "city": {"type": "STRING"},
         "country": {"type": "STRING"},
         "country_code": {"type": "STRING"},
+        "post_kind": {"type": "STRING", "enum": POST_KINDS},
+        "tips": _TIPS,
         "places": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
             "name": {"type": "STRING"}, "name_latin": {"type": "STRING"},
             "category": {"type": "STRING", "enum": CATEGORIES},
@@ -70,12 +85,12 @@ SCHEMA = {
             "country_code": {"type": "STRING"}, "address_hint": {"type": "STRING"}, "search_query": {"type": "STRING"},
             "vibe_tags": _LIST, "tldr": {"type": "STRING"}, "pro_tips": _LIST, "good_to_know": _LIST,
             "must_try": _LIST, "why_go": _LIST, "price_hint": {"type": "STRING"}, "evidence": _LIST,
-            "confidence": {"type": "NUMBER"}},
+            "moments": _MOMENTS, "confidence": {"type": "NUMBER"}},
             "required": ["name", "category", "search_query", "vibe_tags", "tldr", "pro_tips", "good_to_know",
                          "must_try", "why_go", "evidence", "confidence"]}},
         "unresolved": _LIST,
     },
-    "required": ["post_title", "post_summary", "transcript", "city", "country", "places", "unresolved"],
+    "required": ["post_title", "post_summary", "transcript", "city", "country", "post_kind", "tips", "places", "unresolved"],
 }
 
 
@@ -121,6 +136,8 @@ def clean(result):
         for field in ("vibe_tags", "pro_tips", "good_to_know", "must_try", "why_go", "evidence"):
             place[field] = [str(x).strip() for x in place.get(field) or [] if str(x).strip()][:8]
         place["vibe_tags"] = place["vibe_tags"][:3]
+        place["moments"] = [{"at": str(m.get("at") or "").strip()[:20], "text": str(m.get("text") or "").strip()[:300]}
+                            for m in place.get("moments") or [] if isinstance(m, dict) and str(m.get("text") or "").strip()][:12]
         if place.get("category") not in CATEGORIES:
             place["category"] = "Other"
         place["city"] = place.get("city") or result.get("city") or ""
@@ -128,6 +145,15 @@ def clean(result):
         place["country_code"] = (place.get("country_code") or result.get("country_code") or "").upper()[:2]
         places.append(place)
     result["places"] = places
+    result["tips"] = [{"title": str(t.get("title") or "").strip()[:120], "detail": str(t.get("detail") or "").strip()[:500],
+                       "at": str(t.get("at") or "").strip()[:20]}
+                      for t in result.get("tips") or [] if isinstance(t, dict) and str(t.get("title") or "").strip()][:20]
+    kind = result.get("post_kind")
+    if kind not in POST_KINDS:
+        kind = "mixed" if places and result["tips"] else "tips" if result["tips"] else "places"
+    if kind == "tips" and places:
+        kind = "mixed"
+    result["post_kind"] = kind
     return result
 
 
@@ -226,11 +252,14 @@ def refine(pool, result, details):
 class ExtractionQueue:
     """One worker thread; jobs persist as JSON so a restart can report them (not re-run them)."""
 
-    def __init__(self, pool_factory, search=None, directory=None, clock=time.time, details=None):
+    def __init__(self, pool_factory, search=None, directory=None, clock=time.time, details=None, index=None, takes=None):
         self._pool_factory = pool_factory
         self._pool = None
         self._search = search
         self._details = details
+        self._index = index  # VideoIndex: one Gemini read per post, shared by every saver
+        self._takes = takes  # PlaceTakes: which places each post covers, for the community view
+        self._aliases = {}   # source_id -> job_id of the first saver of the same post while it is being read
         self._jobs = {}
         self._order = []
         self._lock = threading.Condition()
@@ -240,12 +269,30 @@ class ExtractionQueue:
             self._dir.mkdir(parents=True, exist_ok=True)
         threading.Thread(target=self._run, daemon=True, name="social-extract").start()
 
-    def submit(self, source_id, source):
+    def cached(self, video_key):
+        return self._index.get(video_key) if self._index and video_key else None
+
+    def submit(self, source_id, source, video_key=""):
         with self._lock:
+            hit = self.cached(video_key)
+            if hit is not None:
+                # Already read for someone: hand over the same result, no Gemini call, no Places call.
+                self._index.count_reader(video_key)
+                job = {"job_id": source_id, "status": "ready", "result": hit, "cached": True,
+                       "submitted_at": self._clock(), "finished_at": self._clock(), "video_key": video_key}
+                self._jobs[source_id] = job
+                return self.public(job)
+            if video_key:
+                for other in self._jobs.values():
+                    if other.get("video_key") == video_key and other["status"] in ("queued", "running") and other["job_id"] != source_id:
+                        self._aliases[source_id] = other["job_id"]
+                        view = self.public(other)
+                        view["job_id"] = source_id
+                        return view
             existing = self._jobs.get(source_id)
             if existing and existing["status"] in ("queued", "running", "ready"):
                 return self.public(existing)
-            job = {"job_id": source_id, "status": "queued", "submitted_at": self._clock(), "source": source}
+            job = {"job_id": source_id, "status": "queued", "submitted_at": self._clock(), "source": source, "video_key": video_key}
             self._jobs[source_id] = job
             self._order.append(source_id)
             self._lock.notify()
@@ -253,6 +300,13 @@ class ExtractionQueue:
 
     def get(self, job_id):
         with self._lock:
+            alias = self._aliases.get(job_id)
+            if alias and alias in self._jobs:
+                view = self.public(self._jobs[alias])
+                view["job_id"] = job_id
+                if view["status"] == "ready":
+                    view["cached"] = True
+                return view
             job = self._jobs.get(job_id)
             if job:
                 return self.public(job)
@@ -284,7 +338,13 @@ class ExtractionQueue:
                             refine(self._pool, result, self._details)
                         except GeminiUnavailable as error:
                             result["refine_error"] = str(error)[:200]  # the post-only cards are still good
+                source = job.get("source") or {}
+                result["source"] = {"url": source.get("url") or "", "author": source.get("author") or ""}
                 job.update(status="ready", result=result, finished_at=self._clock())
+                if self._index and job.get("video_key"):
+                    self._index.put(job["video_key"], result)
+                    if self._takes:
+                        self._takes.add_video(job["video_key"], result.get("places"))
             except GeminiUnavailable as error:
                 if error.retry_at and error.retry_at - self._clock() < 6 * 3600:
                     # Every free model is parked: wait for the first to free up, keep the job queued.

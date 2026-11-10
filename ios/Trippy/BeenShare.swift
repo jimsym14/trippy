@@ -73,7 +73,7 @@ struct BeenShareCard: View {
     private var stats: some View {
         HStack(alignment: .firstTextBaseline, spacing: 22) {
             metric(snapshot.countryCount, snapshot.countryCount == 1 ? "country" : "countries")
-            metric(snapshot.visits.count, snapshot.visits.count == 1 ? "city" : "cities")
+            metric(snapshot.cities.count, snapshot.cities.count == 1 ? "city" : "cities")
             metric(snapshot.continents.count, snapshot.continents.count == 1 ? "continent" : "continents")
         }
     }
@@ -100,7 +100,7 @@ private struct PassportStamps: View {
                 VStack(spacing: 1) {
                     Text(group.countryCode ?? "—").font(.system(size: 20, weight: .heavy, design: .rounded))
                     Text(String(firstYear(group))).font(.system(size: 8, weight: .bold)).tracking(1)
-                    Text("\(group.visits.count) \(group.visits.count == 1 ? "CITY" : "CITIES")").font(.system(size: 6, weight: .bold)).tracking(0.8)
+                    Text("\(group.cities.count) \(group.cities.count == 1 ? "CITY" : "CITIES")").font(.system(size: 6, weight: .bold)).tracking(0.8)
                 }
                 .foregroundStyle(color)
                 .frame(width: 78, height: round ? 78 : 64)
@@ -115,7 +115,7 @@ private struct PassportStamps: View {
         .frame(maxHeight: .infinity, alignment: .center)
     }
     private func firstYear(_ group: VisitedCountryGroup) -> Int {
-        group.visits.map { Calendar.current.component(.year, from: $0.visitedAt) }.min() ?? 0
+        group.visits.compactMap(\.year).min() ?? 0
     }
 }
 
@@ -124,7 +124,7 @@ private struct FlagWall: View {
     let theme: BeenShareTheme
     let limit: Int
     var body: some View {
-        let groups = Array(snapshot.countries.sorted { $0.visits.count > $1.visits.count }.prefix(limit))
+        let groups = Array(snapshot.countries.sorted { $0.cities.count > $1.cities.count }.prefix(limit))
         VStack(spacing: 10) {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 12) {
                 ForEach(groups) { group in
@@ -243,7 +243,8 @@ struct BeenShareSheet: View {
         var image = texture
         if image == nil {
             image = await GlobeTextureBuilder.shared.texture(key: GlobeTextureKey(dark: true, satellite: false, style: "share:\(snapshot.countries.map(\.id).joined())"),
-                                                            shapes: nil, visits: snapshot.visits)
+                                                            shapes: nil, visits: snapshot.visits,
+                                                            visitedCodes: Set(snapshot.visits.compactMap { $0.countryCode?.uppercased() }))
         }
         let center = snapshot.visits.isEmpty ? CLLocationCoordinate2D(latitude: 35, longitude: 15)
             : CLLocationCoordinate2D(latitude: snapshot.visits.map(\.latitude).reduce(0, +) / Double(snapshot.visits.count),

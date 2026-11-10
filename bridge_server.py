@@ -27,6 +27,8 @@ from trippy.planner.travel_provider import GoogleTravelProvider
 from trippy.planner.ai_adapter import AzureIntentAdapter
 import base64
 from trippy.social.extract import ExtractionQueue
+from trippy.social.index import PlaceTakes, VideoIndex, video_key
+from trippy.social.community import CommunityVideos, plan_nodes, endorsed_nodes
 from trippy.social.gemini import GeminiPool
 
 
@@ -224,8 +226,70 @@ def social_queue():
                 shared=gemini_pool()
                 if shared is None: raise ValueError('GEMINI_API_KEY is not configured')
                 return shared
-            _social_queue=ExtractionQueue(pool,search=social_place_search,details=social_place_details,directory=root()/'.local/social-jobs')
+            _social_queue=ExtractionQueue(pool,search=social_place_search,details=social_place_details,directory=root()/'.local/social-jobs',
+                                          index=video_index(),takes=place_takes())
         return _social_queue
+
+
+_community_videos=None
+def community_videos():
+    """Every indexed video (TikTok shares + YouTube creators), organised and public to app users."""
+    global _community_videos
+    with _place_takes_lock:
+        if _community_videos is None:
+            _community_videos=CommunityVideos(root(),video_index(),takes=None)
+    _community_videos.takes=place_takes()
+    return _community_videos
+
+
+def community_plan_nodes(brief,directory=None):
+    """What the community knows about this trip's city, filtered by its categories and the user's own input.
+    Kept with the job, so a resumed job plans with the same community input it started with."""
+    saved=Path(directory)/'community-nodes.json' if directory else None
+    if saved and saved.is_file():
+        try: return json.loads(saved.read_text())
+        except (OSError,ValueError): pass
+    nodes=_community_plan_nodes(brief)
+    if saved:
+        try: saved.parent.mkdir(parents=True,exist_ok=True); saved.write_text(json.dumps(nodes,ensure_ascii=False))
+        except OSError: pass
+    return nodes
+
+
+def _community_plan_nodes(brief):
+    try:
+        from trippy.planner.planning_contract import categories as plan_categories
+        normal=normalized_brief(brief); wanted=plan_categories(normal)
+        return plan_nodes(normal,videos=community_videos().all(),takes=place_takes(),plan_categories=wanted)+endorsed_nodes(root(),normal,wanted)
+    except Exception as error:
+        print('community knowledge skipped:',type(error).__name__,str(error)[:200],flush=True)
+        return []
+
+
+_place_takes=None
+_place_takes_lock=threading.RLock()   # re-entrant: community_videos() builds video_index() while holding it
+_video_index=None
+
+
+def _social_database_url():
+    """Indexed videos and takes live in Postgres on the server (Render's disk is wiped on restart); a local file otherwise."""
+    return (_env_at_start.get('TRIPPY_STATS_DATABASE_URL') or '').strip() or None
+
+
+def video_index():
+    """Every TikTok post read once, shared by the share pipeline and the Community browser."""
+    global _video_index
+    with _place_takes_lock:
+        if _video_index is None:
+            _video_index=VideoIndex(root()/'.local/social-index/videos.sqlite',database_url=_social_database_url())
+        return _video_index
+def place_takes():
+    """Everyone's quick takes on a place (been / got in / overhyped ...), counted by Google place_id."""
+    global _place_takes
+    with _place_takes_lock:
+        if _place_takes is None:
+            _place_takes=PlaceTakes(root()/'.local/social-index/takes.sqlite',database_url=_social_database_url())
+        return _place_takes
 
 
 _catalog_engine = None
@@ -397,6 +461,7 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
             # Free OpenStreetMap venues stand in when the main source fails (a spent daily quota).
             fallback=FallbackChain(root()) if place_provider is not None and planner['place_finder']!='open_data' else None
             result=execute_personal_plan(brief_data,place_provider=place_provider,intelligence=provider,
+                community_nodes=community_plan_nodes(brief_data,job_directory(job_id)),
                 ai_adapter=ai_adapter,notes_pool=gemini_pool(),fallback_provider=fallback,
                 directory=job_directory(job_id),root=root(),route_provider=route_provider,progress=report_progress)
         else:
@@ -458,7 +523,7 @@ def read_job(job_id):
     return job
 
 
-KNOWN_PATHS={'/api/status','/api/research','/api/social/extract','/api/social/status','/api/places/retain',
+KNOWN_PATHS={'/api/status','/api/research','/api/social/extract','/api/social/status','/api/places/retain','/api/places/takes','/api/community/videos','/api/community/video','/api/community/place','/api/community/map',
              '/api/places/search','/api/places/match','/api/places/ios-key','/api/places/kit-load','/api/places/details','/api/places/photo','/api/places/hours','/api/usage/report',
              '/api/admin/summary','/api/admin/controls','/api/admin/planner-estimate','/admin','/api/me','/api/auth/email/start','/api/auth/email/verify',
              '/api/auth/apple','/api/auth/refresh','/api/auth/delete','/api/auth/google/start','/api/auth/exchange','/api/account/data'}
@@ -472,6 +537,13 @@ class RequestHandler(BaseHTTPRequestHandler):
     @property
     def client_id(self):
         return clean_client(self.headers.get('X-Trippy-Client'))
+
+    @property
+    def voter_id(self):
+        """Takes count once per person: the account when signed in, else the install."""
+        person=session_person(self)
+        if person is not None: return 'user:'+str(person.user_id)
+        return None if self.client_id=='unknown' else 'install:'+self.client_id
 
     def count(self,nbytes):
         if self.counted: return
@@ -819,6 +891,29 @@ class RequestHandler(BaseHTTPRequestHandler):
             from trippy.usage import credits
             self.send_json(200,{'user_id':person.user_id,'email':person.email,'admin':person.admin,
                                 'credits':credits(recorder,controls,person.user_id,admin=person.admin)}); return
+        if target.path in ('/api/community/videos','/api/community/video','/api/community/place','/api/community/map'):
+            if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
+            query=parse_qs(target.query); arg=lambda name:(query.get(name,[''])[0] or '')[:120]
+            if target.path=='/api/community/place':
+                self.send_json(200,community_videos().for_place(google_id=arg('id'),name=arg('name'),city=arg('city'))); return
+            if target.path=='/api/community/video':
+                video=community_videos().get(arg('key'))
+                if video is None: self.send_json(404,{'error':'video_not_found'})
+                else: self.send_json(200,video)
+                return
+            def bbox():
+                try:
+                    box=[float(x) for x in arg('bbox').split(',')]
+                    return tuple(box) if len(box)==4 and -90<=box[0]<=box[2]<=90 and -180<=box[1]<=box[3]<=180 else None
+                except ValueError: return None
+            if target.path=='/api/community/map':
+                self.send_json(200,community_videos().map_places(city=arg('city'),platform=arg('platform'),category=arg('category'),bbox=bbox())); return
+            self.send_json(200,community_videos().browse(city=arg('city'),platform=arg('platform'),category=arg('category'),query=arg('q'),
+                place=arg('place'),area=arg('area'),only=arg('only'),sort=arg('sort'),bbox=bbox())); return
+        if target.path=='/api/places/takes':
+            if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
+            ids=[i for i in (parse_qs(target.query).get('ids',[''])[0]).split(',') if i][:60]
+            self.send_json(200,{'places':place_takes().summary(ids,voter=self.voter_id)}); return
         if target.path.startswith('/api/places/'): self.google_places(target); return
         if target.path in ('/api/social/extract','/api/social/status'):
             if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
@@ -869,13 +964,24 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not places_access_allowed(self): self.send_json(401, {'error': 'access_token_required'}); return
             refusal=controls.refusal(self.client_id)
             if refusal: self.refuse(refusal); return
-            if not self.spend_credit('videos','credit:video'): return
-            usage.hit('social:extract',self.client_id)
             try:
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 < length <= 24_000_000: raise ValueError('invalid_length')
                 body = json.loads(self.rfile.read(length))
                 source_id = str(UUID(str(body.get('source_id'))))
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+                self.send_json(422, {'error': 'invalid_social_source'}); return
+            key = video_key(str(body.get('url') or ''), str(body.get('video_id') or ''))
+            if social_queue().cached(key) is not None:
+                # Indexed once already (by anyone): no credit, no Gemini, same places and notes.
+                usage.hit('social:extract_cached',self.client_id)
+                self.send_json(200, social_queue().submit(source_id, None, key)); return
+            if body.get('probe'):
+                # The phone asks before preparing/uploading media; not indexed yet means "send it".
+                self.send_json(200, {'job_id': source_id, 'status': 'unindexed'}); return
+            if not self.spend_credit('videos','credit:video'): return
+            usage.hit('social:extract',self.client_id)
+            try:
                 evidence = [{'origin': str(b.get('origin', ''))[:40], 'text': str(b.get('text', ''))[:40000]}
                             for b in (body.get('evidence') or [])[:40] if isinstance(b, dict)]
                 images = [(str(i.get('mime', 'image/jpeg')), base64.b64decode(i['data']))
@@ -889,7 +995,19 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_json(422, {'error': 'invalid_social_source'}); return
             source = {'url': str(body.get('url') or '')[:500], 'author': str(body.get('author') or '')[:120],
                       'evidence': evidence, 'images': images, 'video': video, 'audio': audio}
-            self.send_json(202, social_queue().submit(source_id, source)); return
+            self.send_json(202, social_queue().submit(source_id, source, key)); return
+        if urlsplit(self.path).path == '/api/places/takes':
+            if not places_access_allowed(self): self.send_json(401, {'error': 'access_token_required'}); return
+            if self.voter_id is None: self.send_json(422, {'error': 'install_id_required'}); return
+            try:
+                body = self.read_json(4000)
+                place_id = str(body.get('place_id') or '')
+                been = body.get('been')
+                place_takes().vote(place_id, self.voter_id, been=None if been is None else bool(been),
+                                   got_in=body.get('got_in'), tags=[str(t) for t in (body.get('tags') or [])[:12]])
+            except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
+                self.send_json(422, {'error': 'invalid_take'}); return
+            self.send_json(200, {'places': place_takes().summary([place_id], voter=self.voter_id)}); return
         if urlsplit(self.path).path == '/api/places/retain':
             if not places_access_allowed(self): self.send_json(401, {'error': 'access_token_required'}); return
             try:

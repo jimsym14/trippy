@@ -136,8 +136,12 @@ class EndpointTests(unittest.TestCase):
 
     def test_submit_and_poll(self):
         class Queue:
-            def __init__(self): self.jobs = {}
-            def submit(self, job_id, source): self.jobs[job_id] = source; return {"job_id": job_id, "status": "queued"}
+            def __init__(self): self.jobs = {}; self.keys = {}
+            def cached(self, key): return {"places": []} if key == "tiktok:999999999" else None
+            def submit(self, job_id, source, key=""):
+                self.keys[job_id] = key
+                if source is None: return {"job_id": job_id, "status": "ready", "cached": True}
+                self.jobs[job_id] = source; return {"job_id": job_id, "status": "queued"}
             def get(self, job_id): return {"job_id": job_id, "status": "ready"} if job_id in self.jobs else None
         queue, source_id = Queue(), str(uuid.uuid4())
         body = {"source_id": source_id, "url": "https://www.tiktok.com/@a/video/1", "evidence": [{"origin": "post_caption", "text": "hi"}],
@@ -146,6 +150,16 @@ class EndpointTests(unittest.TestCase):
             handler = self.handler("/api/social/extract", body); handler.do_POST()
             self.assertEqual(handler.replies[0], (202, {"job_id": source_id, "status": "queued"}))
             self.assertEqual(queue.jobs[source_id]["images"], [("image/jpeg", b"img")])
+            # An already-indexed post: the probe gets the stored read back, nothing is queued.
+            again = str(uuid.uuid4())
+            handler = self.handler("/api/social/extract", {"source_id": again, "url": "https://www.tiktok.com/@a/video/999999999", "probe": True})
+            handler.do_POST()
+            self.assertEqual(handler.replies[0], (200, {"job_id": again, "status": "ready", "cached": True}))
+            self.assertNotIn(again, queue.jobs)
+            fresh = str(uuid.uuid4())
+            handler = self.handler("/api/social/extract", {"source_id": fresh, "url": "https://www.tiktok.com/@a/video/123456789", "probe": True})
+            handler.do_POST()
+            self.assertEqual(handler.replies[0], (200, {"job_id": fresh, "status": "unindexed"}))
             handler = self.handler(f"/api/social/extract?job_id={source_id}"); handler.do_GET()
             self.assertEqual(handler.replies[0][1]["status"], "ready")
             handler = self.handler("/api/social/extract", {"source_id": "nope"}); handler.do_POST()

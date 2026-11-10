@@ -2,14 +2,88 @@ import SwiftUI
 import MapKit
 
 // Explicit visit records: a planned trip never implies that a place was visited.
+/// A further visit to the same place: a month, or a range.
+struct VisitSpan: Codable, Equatable, Identifiable, Hashable {
+    var start: Date
+    var until: Date? = nil
+    var id: Double { start.timeIntervalSince1970 }
+    var text: String {
+        let f = Date.FormatStyle.dateTime.month(.abbreviated).year()
+        guard let until, !Calendar.current.isDate(until, equalTo: start, toGranularity: .month) else { return start.formatted(f) }
+        return start.formatted(f) + " – " + until.formatted(f)
+    }
+}
+
 struct VisitedPlace: Codable, Equatable, Identifiable {
+    enum Kind: String, Codable { case country, city }
     var name: String
     var countryCode: String?
     var latitude: Double
     var longitude: Double
+    /// The start of the visit. Only meaningful when `dated` is true: use `when`.
     var visitedAt: Date = .now
+    /// Everything below is optional so records saved by older builds still decode.
+    var kind: Kind? = nil
+    var dated: Bool? = nil
+    /// Lived here, rather than visited.
+    var lived: Bool? = nil
+    /// End of a range (a long trip, or the years lived somewhere).
+    var until: Date? = nil
+    /// Lived here and still do.
+    var ongoing: Bool? = nil
+    /// Days there and separate trips, when known (from the photo scan).
+    var days: Int? = nil
+    var trips: Int? = nil
+    /// Suggested from photos rather than typed in.
+    var auto: Bool? = nil
+    /// Other visits to this place, besides the one in `visitedAt`.
+    var extra: [VisitSpan]? = nil
+    /// How many separate visits are recorded (an undated place counts as one).
+    var visitCount: Int { max(1, (when == nil ? 0 : 1) + (extra?.count ?? 0)) }
+
     var id: String { Self.normalized(name) + ":" + (countryCode ?? "").uppercased() }
     var coordinate: CLLocationCoordinate2D { .init(latitude: latitude, longitude: longitude) }
+
+    /// A whole country ("France") rather than a city in it. Older records have no kind, so the name decides.
+    var isCountry: Bool {
+        if let kind { return kind == .country }
+        guard let code = countryCode?.uppercased(), let country = Locale(identifier: "en").localizedString(forRegionCode: code) else { return false }
+        return Self.normalized(country) == Self.normalized(name)
+    }
+    var isLived: Bool { lived ?? false }
+    /// When you went: nil means "no date". Older records only count as dated when a month was picked
+    /// (saved as the 1st at noon); the old default of "today" was never a real date.
+    var when: Date? {
+        if let dated { return dated ? visitedAt : nil }
+        let parts = Calendar.current.dateComponents([.day, .hour], from: visitedAt)
+        return parts.day == 1 && parts.hour == 12 ? visitedAt : nil
+    }
+    var year: Int? { when.map { Calendar.current.component(.year, from: $0) } }
+    /// The last day of the visit, when a range was given.
+    var end: Date? { when == nil ? nil : (ongoing == true ? .now : until) }
+    mutating func setWhen(_ date: Date?, until end: Date? = nil, ongoing still: Bool = false) {
+        dated = date != nil
+        if let date { visitedAt = date }
+        until = date == nil || still ? nil : end.flatMap { $0 > date! ? $0 : nil }
+        ongoing = date != nil && still ? true : nil
+    }
+    /// "Jun 2024", "2019 – 2022", "Since 2021" or "No date".
+    var whenText: String {
+        guard let start = when else { return "No date" }
+        let month = Date.FormatStyle.dateTime.month(.abbreviated).year()
+        if ongoing == true { return "Since " + start.formatted(month) }
+        guard let until, !Calendar.current.isDate(until, equalTo: start, toGranularity: .month) else { return start.formatted(month) }
+        let sameYear = Calendar.current.isDate(until, equalTo: start, toGranularity: .year)
+        return (sameYear ? start.formatted(.dateTime.month(.abbreviated)) : start.formatted(month)) + " – " + until.formatted(month)
+    }
+    /// How much time this place has had, for the heat map: 0 (passed through) to 1 (lived there).
+    var heat: Double {
+        if isLived { return 1 }
+        let byDays = min(1, log(Double(max(1, days ?? 1)) + 1) / log(40))
+        let byTrips = min(1, Double((trips ?? 1) - 1) / 6)
+        return max(0.18, min(0.9, max(byDays, byTrips)))
+    }
+
     static func normalized(_ name: String) -> String {
         name.trimmingCharacters(in: .whitespacesAndNewlines).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
@@ -22,6 +96,16 @@ struct VisitedPlace: Codable, Equatable, Identifiable {
     }
     static func adding(_ place: Self, to records: [Self]) -> [Self] {
         records.contains { $0.id == place.id } ? records : records + [place]
+    }
+    /// Adds the place, or updates the one already there.
+    static func saving(_ place: Self, in records: [Self]) -> [Self] {
+        var result = records
+        if let index = result.firstIndex(where: { $0.id == place.id }) { result[index] = place } else { result.append(place) }
+        return result
+    }
+    /// The 1st of a month at noon: how a picked month is stored.
+    static func month(_ month: Int, _ year: Int) -> Date? {
+        Calendar.current.date(from: DateComponents(year: year, month: month, day: 1, hour: 12))
     }
 }
 
@@ -199,125 +283,14 @@ struct NeighborhoodScoreRow: View {
     }
 }
 
-struct VisitedPlacePicker: View {
-    var initialQuery = ""
-    var onAdd: ((VisitedPlace) -> Void)? = nil
-    @AppStorage("trippy.native.visitedPlaces.v1") private var storage = "[]"
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var scheme
-    @FocusState private var searchFocused: Bool
-    @State private var query = ""
-    @State private var results: [VisitedPlace] = []
-    @State private var visitedIDs = Set<String>()
-    @State private var loading = false
-    @State private var error: String?
-    @State private var visitDate = Date()
-    @State private var retryID = UUID()
-    private var searchQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
-    var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("Where have you been?").font(.custom("PlusJakartaSans-Bold", size: 30, relativeTo: .title)).tracking(-1)
-                }.padding(.top, 6)
-                BeenVisitSearchField(query: $query, focused: $searchFocused, loading: loading)
-                HStack(spacing: 12) {
-                    Image(systemName: "calendar").font(.system(size: 15)).foregroundStyle(BeenPalette.accent(scheme))
-                    Text("Visit date").font(.system(size: 13, weight: .medium)).foregroundStyle(BeenPalette.secondary(scheme))
-                    Spacer(minLength: 0)
-                    DatePicker("Visit date", selection: $visitDate, in: ...Date(), displayedComponents: .date)
-                        .labelsHidden().datePickerStyle(.compact).tint(BeenPalette.accent(scheme))
-                }.padding(.horizontal, 5)
-                if searchQuery.count < 2 {
-                    BeenSearchPrompt()
-                } else if !results.isEmpty {
-                    HStack {
-                        Text("CHOOSE A CITY").font(.system(size: 10, weight: .bold)).tracking(1.4)
-                        Spacer()
-                        Text(results.count.formatted()).font(.system(size: 10, weight: .semibold)).monospacedDigit()
-                    }.foregroundStyle(BeenPalette.secondary(scheme)).padding(.horizontal, 4)
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                            ForEach(results) { place in
-                                BeenVisitSearchResult(place: place, recorded: visitedIDs.contains(place.id)) { add(place) }.disabled(loading)
-                            }
-                        }.padding(.horizontal, 2).padding(.top, 2).padding(.bottom, 20)
-                    }.scrollDismissesKeyboard(.interactively).scrollBounceBehavior(.basedOnSize).scrollIndicators(.hidden)
-                } else {
-                    VStack(spacing: 12) {
-                        if loading {
-                            Text("Finding cities…").font(.system(size: 13)).foregroundStyle(BeenPalette.secondary(scheme))
-                        } else {
-                            Image(systemName: error == nil ? "magnifyingglass" : "map").font(.system(size: 30, weight: .light)).foregroundStyle(BeenPalette.accent(scheme))
-                            Text(error ?? "No cities found.").font(.subheadline.weight(.medium)).multilineTextAlignment(.center)
-                            Text("Try the city and country.").font(.caption).foregroundStyle(BeenPalette.secondary(scheme))
-                            if error != nil {
-                                Button("Try again", systemImage: "arrow.clockwise") { retryID = UUID() }
-                                    .font(.subheadline.weight(.semibold)).buttonStyle(.bordered).tint(BeenPalette.accent(scheme))
-                            }
-                        }
-                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }.padding(.horizontal, 22).padding(.bottom, 8).frame(maxWidth: 620).frame(maxWidth: .infinity)
-                .background(BeenPalette.base(scheme).ignoresSafeArea()).foregroundStyle(BeenPalette.ink(scheme))
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) {
-                    Button { dismiss() } label: { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)).frame(width: 28, height: 28) }.accessibilityLabel("Close add visit")
-                } }
-        }.tint(BeenPalette.accent(scheme)).presentationDetents([.large]).presentationDragIndicator(.visible)
-            .onAppear {
-                query = initialQuery
-                visitedIDs = Set(VisitedPlace.decode(storage).map(\.id))
-                searchFocused = initialQuery.isEmpty
-            }
-            .onChange(of: storage) { _, value in visitedIDs = Set(VisitedPlace.decode(value).map(\.id)) }
-            .task(id: searchQuery + retryID.uuidString) {
-                let term = searchQuery
-                error = nil
-                guard term.count >= 2 else { results = []; loading = false; return }
-                loading = true
-                do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
-                await search(term)
-            }
-    }
-    private func add(_ place: VisitedPlace) {
-        guard !visitedIDs.contains(place.id) else { return }
-        var visit = place; visit.visitedAt = visitDate
-        if let onAdd { onAdd(visit) }
-        else { storage = VisitedPlace.encode(VisitedPlace.adding(visit, to: VisitedPlace.decode(storage))) }
-        searchFocused = false
-        dismiss()
-    }
-    @MainActor private func search(_ term: String) async {
-        let request = MKLocalSearch.Request(); request.naturalLanguageQuery = term; request.resultTypes = .address
-        let operation = MKLocalSearch(request: request)
-        let timeout = Task { @MainActor in
-            do { try await Task.sleep(for: .seconds(8)); operation.cancel() } catch { }
-        }
-        defer { timeout.cancel() }
-        do {
-            let response = try await operation.start()
-            guard !Task.isCancelled, term == searchQuery else { return }
-            var seen = Set<String>()
-            results = response.mapItems.compactMap { item in
-                let mark = item.placemark
-                let name = mark.locality ?? mark.subAdministrativeArea ?? item.name ?? term
-                let place = VisitedPlace(name: name, countryCode: mark.isoCountryCode, latitude: mark.coordinate.latitude, longitude: mark.coordinate.longitude)
-                return seen.insert(place.id).inserted ? place : nil
-            }
-            loading = false
-        } catch {
-            guard !Task.isCancelled, term == searchQuery else { return }
-            results = []; loading = false; self.error = "Search is unavailable right now."
-        }
-    }
-}
-
 struct VisitedCountryGroup: Identifiable {
     let id: String
     let countryCode: String?
     let visits: [VisitedPlace]
     var name: String { countryCode.flatMap { Locale(identifier: "en").localizedString(forRegionCode: $0) } ?? "Unknown country" }
+    /// The cities in it, without the record for the country itself.
+    var cities: [VisitedPlace] { visits.filter { !$0.isCountry } }
+    var lived: Bool { visits.contains(where: \.isLived) }
     var coordinate: CLLocationCoordinate2D { visits[0].coordinate }
     static func groups(_ visits: [VisitedPlace]) -> [Self] {
         Dictionary(grouping: visits, by: { $0.countryCode?.uppercased() ?? "unknown:" + $0.id }).map { key, values in
@@ -332,7 +305,7 @@ struct WorldCountryVisitsView: View {
     @State private var selectedVisit: VisitedPlace?
     @State private var showAdd = false
     var body: some View {
-        BeenSheetFrame(title: group.name, subtitle: "\(WorldGlobeView.flag(group.countryCode))  \(visits.count) cities · \(BeenContinentName.title(WorldContinentCatalog.name(for: group.countryCode)))") {
+        BeenSheetFrame(title: group.name, subtitle: "\(WorldGlobeView.flag(group.countryCode))  \(visits.filter { !$0.isCountry }.count) cities · \(BeenContinentName.title(WorldContinentCatalog.name(for: group.countryCode)))") {
             LazyVStack(spacing: 12) {
                 ForEach(visits) { place in BeenVisitRow(place: place) { selectedVisit = place } }
             }

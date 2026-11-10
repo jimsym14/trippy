@@ -26,6 +26,8 @@
 	<string>Το Trippy συνδέεται με το local AI bridge στο Mac για ζωντανή έρευνα ταξιδιού.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Το Trippy χρησιμοποιεί την τοποθεσία σου για να σε κεντράρει στον χάρτη και να υπολογίζει οδηγίες προς μέρη που επιλέγεις.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Το Trippy διαβάζει μόνο την ημερομηνία και την τοποθεσία των φωτογραφιών σου, πάνω στο iPhone, για να σου προτείνει μέρη που έχεις πάει. Καμία φωτογραφία δεν ανεβαίνει πουθενά.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

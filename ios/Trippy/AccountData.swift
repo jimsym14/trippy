@@ -8,7 +8,8 @@ import SwiftUI
 /// stays on the phone.
 enum AccountData {
     static let movedKey = "trippy.account.movedFor"
-    private static let deviceOnly = ["trippy.install.", "trippy.onboarding.", "trippy.bridgeHost", "trippy.shareSummary",
+    /// "trippy.local." is never uploaded, not even to your account (the home address lives there).
+    private static let deviceOnly = ["trippy.local.", "trippy.install.", "trippy.onboarding.", "trippy.bridgeHost", "trippy.shareSummary",
                                      "trippy.account.", "trippy.native.map.", "trippy.home.coordinate", "trippy.guide.lastOpened"]
     /// Lists merged by their items' "id" when an account and a phone both have some.
     private static let mergeable = ["trippy.native.trips.v1", "trippy.native.personalPlaces.v1", "trippy.native.visitedPlaces.v1"]
@@ -68,7 +69,7 @@ enum AccountData {
 
     /// Writes an account's document onto this phone. `combine` keeps this phone's items too
     /// (lists are joined by id, the phone's version winning); otherwise the account's replace them.
-    static func apply(_ payload: [String: Any], combine: Bool) {
+    @MainActor static func apply(_ payload: [String: Any], combine: Bool) {
         let defaults = UserDefaults.standard
         let values = payload["defaults"] as? [String: [String: Any]] ?? [:]
         for (key, entry) in values where !deviceOnly.contains(where: key.hasPrefix) {
@@ -88,7 +89,23 @@ enum AccountData {
                 if let joined = mergedLibrary(mine, library) { try? write(joined) }
             } else { try? write(library) }
         }
+        // This phone and the account now hold the same things: from here on it backs up on its own.
+        if let id = AccountSession.shared.session?.userID { defaults.set(id, forKey: movedKey) }
         NotificationCenter.default.post(name: .accountDataApplied, object: nil)
+    }
+
+    /// Automatic backup (on by default once this phone and the account are joined): when the app goes to the
+    /// background, and at most every few minutes while it's open. A fresh install that hasn't joined yet never
+    /// uploads, so an empty phone can't overwrite what the account holds.
+    @MainActor static func backupIfJoined(minimumInterval: TimeInterval = 120) async {
+        let defaults = UserDefaults.standard
+        guard let id = AccountSession.shared.session?.userID, defaults.string(forKey: movedKey) == id else { return }
+        let last = defaults.double(forKey: "trippy.account.lastBackup")
+        guard Date().timeIntervalSince1970 - last >= minimumInterval else { return }
+        do {
+            try await AccountSession.shared.uploadData(snapshot())
+            defaults.set(Date().timeIntervalSince1970, forKey: "trippy.account.lastBackup")
+        } catch { /* offline: the next background or launch tries again */ }
     }
 
     private static func write(_ data: Data) throws {

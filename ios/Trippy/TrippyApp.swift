@@ -322,7 +322,13 @@ enum LibraryDeletion {
     static func video(_ id: UUID, sources: inout [ImportedSocialSource], notes: inout [TravelNote], deleted: inout Set<UUID>) {
         deleted.insert(id)
         sources.removeAll { $0.id == id }
-        for index in notes.indices { notes[index].sourceIDs.removeAll { $0 == id } }
+        for index in notes.indices {
+            notes[index].sourceIDs.removeAll { $0 == id }
+            notes[index].fromSources?[id.uuidString] = nil
+        }
+        // A note written only from this video, with nothing of yours in it, goes with it. Pins stay on your map.
+        notes.removeAll { $0.kind != nil && $0.fromSources?.isEmpty == true && $0.sourceIDs.isEmpty
+            && $0.userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
     static func note(_ id: UUID, notes: inout [TravelNote], places: inout [SocialPlaceMention]) {
         notes.removeAll { $0.id == id }
@@ -1549,6 +1555,7 @@ private struct PlacesGatewayHealthResponse: Decodable {
 }
 
 private struct GuideCoverID: Identifiable { let id: UUID }
+private struct JourneySheet: Identifiable { let id = UUID(); let draft: JourneyDraft }
 
 private struct TripFlowView: View {
     private var planning: PlanningColors { PlanningColors(scheme: darkMode ? .dark : .light) }
@@ -1619,7 +1626,17 @@ private struct TripFlowView: View {
     @State private var socialSources: [ImportedSocialSource] = []
     @State private var socialPlaces: [SocialPlaceMention] = []
     @State private var travelNotes: [TravelNote] = []
+    /// Your take per real place (PlaceKey) and what every user said (by Google place ID).
+    @State private var placeTakes: [String: PlaceTake] = [:]
+    @State private var placeCommunity: [String: PlaceCommunity] = [:]
+    @State private var takeSendTasks: [String: Task<Void, Never>] = [:]
     @State private var selectedSocialSource: ImportedSocialSource?
+    /// A community video opened from the Library's Community tab.
+    @State private var openCommunityVideo: CommunityVideoKey?
+    @State private var mapDirectionsActive = false
+    /// The Videos tab shows your own videos or everyone's (Community).
+    @State private var videosCommunity = false
+    @Namespace private var videosScopeSpace
     @State private var selectedTravelNoteID: UUID?
     @State private var processingShares = false
     @State private var runningSocialExtractions = false
@@ -1696,6 +1713,9 @@ private struct TripFlowView: View {
     @State private var recoveryContext: [String: Any] = [:]
     @State private var showComposer = false
     @State private var composerSeed = ComposerResult()
+    @State private var showWhereNext = false
+    @State private var journeySheet: JourneySheet?
+    @State private var savedJourneys = JourneyStore.load()
     @State private var showLegacyDetails = false
     @State private var guideTripID: UUID?
 
@@ -1762,6 +1782,7 @@ private struct TripFlowView: View {
                         let stored = TripFlowStoredState.load()
                         trips = stored.trips; savedPlaces = stored.savedPlaces; cityCoordinates = stored.cityCoordinates
                         socialSources = stored.socialLibrary.sources; socialPlaces = stored.socialLibrary.places; travelNotes = stored.socialLibrary.notes
+                        placeTakes = stored.socialLibrary.takes ?? [:]
                         cachedGeneralTripPins = makeGeneralTripPins()
                     }
                     .sheet(isPresented: $showAccountHub) {
@@ -1782,6 +1803,9 @@ private struct TripFlowView: View {
         }
         .task {
             Task.detached(priority: .utility) { MapCityGrouping.prewarm() }
+            #if DEBUG
+            GlobeTapProbe.runIfAsked()
+            #endif
             TrippyPerformance.mark("storage.begin")
             let stored = await Task.detached(priority: .userInitiated) { TripFlowStoredState.load() }.value
             TrippyPerformance.mark("storage.end")
@@ -1792,12 +1816,29 @@ private struct TripFlowView: View {
             socialSources = stored.socialLibrary.sources
             socialPlaces = stored.socialLibrary.places
             travelNotes = stored.socialLibrary.notes
+            placeTakes = stored.socialLibrary.takes ?? [:]
             if let demo = StudioDemo.load() {
                 socialSources = demo.sources; socialPlaces = demo.places
+                if let first = demo.places.first {
+                    placeTakes[PlaceKey.of(googlePlaceID: first.googlePlaceID, name: first.name, city: first.city)] =
+                        PlaceTake(been: true, gotIn: "waited", tags: ["value_for_money", "traditional"])
+                }
                 rootTab = "library"; librarySection = "Videos"
                 if StudioDemo.opensDetail { Task { try? await Task.sleep(for: .seconds(1.5)); selectedSocialSource = demo.sources.first } }
             }
             cachedGeneralTripPins = makeGeneralTripPins()
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-TrippyDirectionsDemo") { rootTab = "map" }
+            if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "-TrippyLibrarySection"), index + 1 < ProcessInfo.processInfo.arguments.count {
+                rootTab = "library"; librarySection = ProcessInfo.processInfo.arguments[index + 1]; libraryHasMounted = true
+            }
+            #endif
+            if CommunityDemo.browse != nil {
+                rootTab = "library"; librarySection = "Videos"; videosCommunity = true; libraryHasMounted = true
+                if let video = CommunityDemo.video, ProcessInfo.processInfo.arguments.contains("-TrippyCommunityDetail") {
+                    Task { try? await Task.sleep(for: .seconds(1.2)); openCommunityVideo = CommunityVideoKey(id: video.key) }
+                }
+            }
             TrippyPerformance.mark("pins.prepared")
             // Counts for the admin dashboard (no trip contents), at most every 6 hours.
             let reportTrips = trips.count, planned = trips.filter { $0.research != nil }.count
@@ -1834,6 +1875,15 @@ private struct TripFlowView: View {
             case "guide": rootTab = "library"; libraryHasMounted = true
                 if let trip = trips.first(where: { $0.research != nil }) { activeTripID = trip.id; guideTripID = trip.id }
             case "composer": openComposer(for: nil)
+            case "wherenext": rootTab = "library"; libraryHasMounted = true; showWhereNext = true
+            case "journey": // `-TrippyStartScreen journey [-TrippyJourneyMode car]`: a sample route from Athens
+                rootTab = "library"; libraryHasMounted = true
+                var sample = JourneyDraft()
+                sample.mode = JourneyMode(rawValue: UserDefaults.standard.string(forKey: "TrippyJourneyMode") ?? "") ?? .train
+                sample.origin = DestinationCatalog.named("Athens").map(JourneyPoint.init)
+                sample.stops = ["Vienna", "Rome", "Florence", "Munich", "Venice"].compactMap { DestinationCatalog.named($0) }.map { JourneyStop(place: JourneyPoint($0)) }
+                sample.stops = JourneyEngine.allocate(nights: 10, to: sample.stops)
+                journeySheet = JourneySheet(draft: sample)
             case "trip": // `-TrippyStartScreen trip [-TrippyTripSpan 0.02]`
                 if let trip = trips.first(where: { $0.research != nil }) {
                     Task { @MainActor in try? await Task.sleep(for: .seconds(2)); selectMapTrip(trip) }
@@ -1886,6 +1936,14 @@ private struct TripFlowView: View {
         if mapShowsWorkspace { return AnyView(tripMapWorkspace) }
         return AnyView(personalMapHome)
     }
+    /// The floating bottom bar's height above the safe area (58-point controls + 6 below).
+    static let tabBarHeight: CGFloat = 64
+    private var profileButton: some View {
+        Button { showAccountHub = true } label: {
+            ProfileAvatar(size: 44).padding(3).background(Circle().fill(Sketch.card).shadow(color: .black.opacity(0.12), radius: 12, y: 5))
+        }
+        .buttonStyle(QuietPressStyle()).accessibilityLabel("Account and settings")
+    }
     private var libraryTabScreen: AnyView {
         if libraryHasMounted || rootTab == "library" { return AnyView(modernLibrary) }
         return AnyView(Color.clear)
@@ -1899,11 +1957,12 @@ private struct TripFlowView: View {
                 TrippyScreen { selectedMapScreen }
                     .tag("map")
                     .toolbar(.hidden, for: .tabBar)
-                    .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 70) }
+                    .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: Self.tabBarHeight) }
                 TrippyScreen { libraryTabScreen }
                     .tag("library")
                     .toolbar(.hidden, for: .tabBar)
-                    .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 70) }
+                    // Exactly the floating chrome (bar + section dial), so the last card scrolls fully clear of it.
+                    .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: Self.tabBarHeight + LibraryWheel.height) }
             }
             .tint(rootNavigationTint)
             .toolbarBackground(.ultraThinMaterial, for: .tabBar)
@@ -1912,24 +1971,31 @@ private struct TripFlowView: View {
             .accessibilityHidden(stage == .brief)
             .accessibilityLabel("Navigation")
             .environment(\.locale, Locale(identifier: "en"))
-            if stage != .brief {
-                TrippyTabBar(selection: $rootTab, action: bottomBarAction)
-                    .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.82), value: rootTab)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .ignoresSafeArea(.keyboard)
-                    .zIndex(0.5)
-                if rootTab == "library" {
-                    // You: bottom-left, level with the bar.
-                    Button { showAccountHub = true } label: {
-                        ProfileAvatar(size: 40).padding(3).background(Circle().fill(Sketch.card).shadow(color: .black.opacity(0.12), radius: 12, y: 5))
+            .onPreferenceChange(DirectionsActiveKey.self) { active in
+                withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85)) { mapDirectionsActive = active }
+            }
+            if stage != .brief && !(rootTab == "map" && mapDirectionsActive) {
+                VStack(spacing: 0) {
+                    if rootTab == "library" {
+                        LibraryWheel(items: librarySections, selection: libraryWheelSelection, tint: Sketch.ink)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
-                    .buttonStyle(QuietPressStyle()).accessibilityLabel("Account and settings")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                    .padding(.leading, 12).padding(.bottom, 13)
-                    .ignoresSafeArea(.keyboard)
-                    .transition(.scale(scale: 0.7).combined(with: .opacity))
-                    .zIndex(0.5)
+                    TrippyTabBar(selection: $rootTab, action: bottomBarAction, leading: rootTab == "library" ? AnyView(profileButton) : nil)
                 }
+                .background(alignment: .bottom) {
+                    // A paper fade under the dial and bar keeps them readable over busy cards.
+                    if rootTab == "library" && librarySection != "World" {
+                        LinearGradient(stops: [.init(color: Sketch.paper.opacity(0), location: 0), .init(color: Sketch.paper.opacity(0.88), location: 0.45),
+                                               .init(color: Sketch.paper.opacity(0.97), location: 1)], startPoint: .top, endPoint: .bottom)
+                            .frame(height: Self.tabBarHeight + LibraryWheel.height + 60)
+                            .ignoresSafeArea(edges: .bottom).allowsHitTesting(false)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.82), value: rootTab)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea(.keyboard)
+                .zIndex(0.5)
             }
             if stage == .brief {
                 TrippyScreen { briefScreen }
@@ -1968,6 +2034,13 @@ private struct TripFlowView: View {
 
         }
         .onChange(of: appScenePhase) { _, phase in
+            if phase == .background {
+                // Background time for the upload; the account always has this phone's latest.
+                let task = UIApplication.shared.beginBackgroundTask(withName: "account-backup")
+                Task { await AccountData.backupIfJoined(minimumInterval: 0); UIApplication.shared.endBackgroundTask(task) }
+            } else if phase == .active {
+                Task { await AccountData.backupIfJoined() }
+            }
             if phase == .active && hasRenderedInitialMap { Task { await importSharedSources() } }
         }
         .onChange(of: rootTab) { _, tab in if tab == "library" { libraryHasMounted = true } }
@@ -1975,8 +2048,15 @@ private struct TripFlowView: View {
         .onChange(of: socialSources) { _, _ in persistSocialLibrary() }
         .onChange(of: socialPlaces) { _, _ in persistSocialLibrary() }
         .onChange(of: travelNotes) { _, _ in persistSocialLibrary(); syncShareTargets() }
+        .onChange(of: placeTakes) { _, _ in persistSocialLibrary() }
         .onChange(of: bridgeToken) { _, value in BridgeTokenStore.save(value) }
         .sheet(item: $selectedSocialSource) { source in TrippyScreen { socialSourceDetail(source) } }
+        .sheet(item: $openCommunityVideo) { item in
+            NavigationStack {
+                CommunityVideoDetailView(key: item.id, baseURL: bridgeBaseURL, token: bridgeToken, preview: CommunityDemo.video, actions: communityActions)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { openCommunityVideo = nil } } }
+            }
+        }
         .sheet(isPresented: Binding(get: { selectedTravelNoteID != nil }, set: { if !$0 { selectedTravelNoteID = nil } })) {
             TrippyScreen { if let id = selectedTravelNoteID { travelNoteDetail(id) } }
         }
@@ -2008,6 +2088,21 @@ private struct TripFlowView: View {
         .sheet(isPresented: $showCalendarPicker) { TrippyScreen { calendarPickerSheet } }
         .fullScreenCover(item: Binding(get: { guideTripID.map(GuideCoverID.init) }, set: { guideTripID = $0?.id })) { cover in
             guideCover(cover.id)
+        }
+        .fullScreenCover(isPresented: $showWhereNext) {
+            WhereNextView(onClose: { showWhereNext = false },
+                          onPlanTrip: { pick, query in
+                              showWhereNext = false
+                              Task { @MainActor in try? await Task.sleep(for: .milliseconds(450)); openComposer(for: pick, query: query) }
+                          },
+                          onPlanJourney: { draft in
+                              showWhereNext = false
+                              Task { @MainActor in try? await Task.sleep(for: .milliseconds(450)); journeySheet = JourneySheet(draft: draft) }
+                          })
+        }
+        .sheet(item: $journeySheet) { sheet in
+            JourneyBuilderView(draft: sheet.draft, onCancel: { journeySheet = nil }, onCreate: createJourney)
+                .presentationDetents([.large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
         }
         .sheet(isPresented: $showComposer) {
             TripComposerView(result: composerSeed, onCancel: { showComposer = false }, onSubmit: submitComposer,
@@ -6122,6 +6217,8 @@ private struct PersonalPlace: Codable, Equatable, Identifiable {
     var customCategory: String? = nil
     var pinned: Bool? = nil
     var saved: Bool? = nil
+    /// Videos that brought this place in. A place mentioned by three videos is still one pin.
+    var sourceIDs: [UUID]? = nil
     var isPinned: Bool { pinned == true }
     var isSaved: Bool { saved != false }
     var categoryTitle: String { customCategory?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? category.rawValue }
@@ -6804,13 +6901,20 @@ private extension TripFlowView {
     }
     var librarySearchPrompt: String {
         switch librarySection {
+        case "Videos" where videosCommunity: return "Search places, creators, titles"
         case "Notes": return "Search notes"
         case "Videos": return "Search videos"
         case "Pins": return "Search pins and saves"
         default: return "Search trips"
         }
     }
-    private var libraryTone: LibraryTone { librarySection == "World" ? .notes : LibraryTone(rawValue: librarySection.lowercased()) ?? .trips }
+    private var libraryTone: LibraryTone {
+        switch librarySection {
+        case "World": .notes
+        case "Community": .videos
+        default: LibraryTone(rawValue: librarySection.lowercased()) ?? .trips
+        }
+    }
     private var libraryScheme: ColorScheme { darkMode ? .dark : .light }
     private var libraryInk: Color { LibraryColors.ink(libraryScheme) }
     private var libraryMuted: Color { LibraryColors.secondary(libraryScheme) }
@@ -6818,9 +6922,9 @@ private extension TripFlowView {
     private var libraryCollectionTitle: String {
         switch librarySection {
         case "Pins": "Pins and saves"
-        case "Videos": "Video studio"
+        case "Videos": videosCommunity ? "Community" : "Your videos"
         case "World": "Been to"
-        case "Notes": "Notes"
+        case "Notes": "Your notes"
         default: "Your trips"
         }
     }
@@ -6829,6 +6933,7 @@ private extension TripFlowView {
         case "Trips": "airplane"
         case "Pins": "mappin.and.ellipse"
         case "Videos": "play.rectangle.fill"
+        case "Community": "person.3.fill"
         case "Notes": "note.text"
         default: "globe.europe.africa.fill"
         }
@@ -6836,7 +6941,6 @@ private extension TripFlowView {
     var modernLibrary: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                TrippyScreen { libraryHeader }
                 if librarySection == "World" {
                     TrippyScreen { WorldGlobeView(addRequestID: worldAddRequest) }
                 } else {
@@ -6845,16 +6949,23 @@ private extension TripFlowView {
                         libraryFilterChip
                         HStack(spacing: 12) {
                             Text(librarySection == "Trips" ? "Your trips" : libraryCollectionTitle)
+                                .contentTransition(.numericText())
+                                .animation(.snappy, value: videosCommunity)
                                 .font(Sketch.display(.title, weight: .bold))
                                 .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                            if librarySection == "Pins" { libraryPinFilterMenu }
                             librarySearchButton
                         }.padding(.bottom, 4)
+                        if librarySection == "Videos" { videosScopePicker }
                         if librarySearchVisible || !libraryQuery.isEmpty { librarySearchField }
                         TrippyScreen { libraryCollectionContent }
                     }.padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 32)
                         .frame(maxWidth: 720).frame(maxWidth: .infinity)
                 }.scrollDismissesKeyboard(.interactively)
+                // Room for the floating bar and section dial, so the last card scrolls fully clear of them.
+                .contentMargins(.bottom, Self.tabBarHeight + LibraryWheel.height, for: .scrollContent)
+                .defaultScrollAnchor(ProcessInfo.processInfo.arguments.contains("-TrippyLibraryBottom") ? .bottom : .top)
                 }
             }.background {
                 if librarySection == "World" { BeenPalette.base(libraryScheme).ignoresSafeArea() }
@@ -6863,12 +6974,43 @@ private extension TripFlowView {
                 .toolbar(.hidden, for: .navigationBar)
         }.tint(libraryAccent).environment(\.locale, Locale(identifier: "en"))
     }
-    private var libraryHeader: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                libraryTabs
-                if librarySection != "World" {
-                    if librarySection == "Pins" {
+    /// Library sections on the dial above the tab bar.
+    var librarySections: [LibraryWheel.Item] {
+        ["Trips", "Pins", "Videos", "Notes", "Been to"].map { section in
+            LibraryWheel.Item(id: section == "Been to" ? "World" : section, title: section, symbol: libraryTabSymbol(section))
+        }
+    }
+    private var libraryWheelSelection: Binding<String> {
+        Binding(get: { librarySection }, set: { section in
+            withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.82)) {
+                libraryMapFilter = nil; librarySection = section; libraryQuery = ""; librarySearchVisible = false
+            }
+        })
+    }
+    /// "Your videos | Community" at the top of the Videos tab.
+    private var videosScopePicker: some View {
+        HStack(spacing: 4) {
+            ForEach([false, true], id: \.self) { community in
+                let on = videosCommunity == community
+                Button {
+                    TrippyHaptics.selection()
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.8)) { videosCommunity = community; libraryQuery = "" }
+                } label: {
+                    Label(community ? "Community" : "Your videos", systemImage: community ? "person.3.fill" : "play.rectangle.fill")
+                        .font(.custom("PlusJakartaSans-Bold", size: 14, relativeTo: .subheadline))
+                        .foregroundStyle(on ? Sketch.paper : AppPalette.secondaryInk)
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                        .background { if on { Capsule().fill(Sketch.ink).matchedGeometryEffect(id: "videosScope", in: videosScopeSpace) } }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(QuietPressStyle())
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+        .padding(4)
+        .background(Capsule().fill(Sketch.card).shadow(color: .black.opacity(0.06), radius: 8, y: 3))
+    }
+    private var libraryPinFilterMenu: some View {
                         Menu {
                             if !selectedLibraryPinTypes.isEmpty {
                                 Button("Clear type filters", systemImage: "xmark.circle") { selectedLibraryPinTypes.removeAll() }
@@ -6887,11 +7029,6 @@ private extension TripFlowView {
                                 .font(.system(size: 18, weight: .medium)).foregroundStyle(libraryAccent)
                                 .frame(width: 44, height: 44).librarySurface(radius: 22)
                         }.accessibilityLabel("Filter pins by type")
-                    }
-                }
-            }
-        }.padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 6)
-            .frame(maxWidth: 720).frame(maxWidth: .infinity).foregroundStyle(libraryInk)
     }
     /// Your sections as pills, the same language as the bottom bar: the open one is an ink
     /// capsule with its name, the others are quiet icons with names.
@@ -6984,7 +7121,10 @@ private extension TripFlowView {
         case "Pins":
             savedLibrary
             if libraryMapFilter == nil { socialSavedPlaces }
-        case "Videos": videoLibrary
+        case "Videos" where !videosCommunity: videoLibrary
+        case "Videos":
+            CommunityBrowseContent(baseURL: bridgeBaseURL, token: bridgeToken, initialCity: libraryCity, query: libraryQuery,
+                                   preview: CommunityDemo.browse) { openCommunityVideo = CommunityVideoKey(id: $0) }
         case "Notes": notesLibrary
         case "World": WorldGlobeView(addRequestID: worldAddRequest)
         default: EmptyView()
@@ -6996,7 +7136,9 @@ private extension TripFlowView {
             TripShelfView(trips: values.map(shelfTrip), onOpen: openShelfTrip,
                           onEdit: { id in if let trip = trips.first(where: { $0.id == id }) { openComposer(for: trip) } },
                           onIdentity: { id in tripIdentityTarget = id; showTripIdentity = true },
-                          onComplete: completeLibraryTrip, onDelete: deleteTrip, onNew: startNewTrip)
+                          onComplete: completeLibraryTrip, onDelete: deleteTrip, onNew: startNewTrip,
+                          journeys: JourneyStore.pruned(savedJourneys, keeping: Set(trips.map(\.id))),
+                          onWhereNext: { showWhereNext = true }, onJourney: { journeySheet = JourneySheet(draft: JourneyDraft()) })
             if let city = libraryCity { socialPlaceVideoCarousel(city: city) }
         }
     }
@@ -7055,6 +7197,55 @@ private extension TripFlowView {
         }
         composerSeed = seed
         showComposer = true
+    }
+    /// A "Where next?" pick as a new trip request, ready to adjust.
+    private func openComposer(for pick: Recommendation, query: WhereNextQuery) {
+        var seed = ComposerResult()
+        seed.destination = pick.destination.planName
+        seed.flexible = true; seed.duration = query.days
+        seed.travelers = query.travelers; seed.group = query.travelers == 1 ? "Solo" : query.travelers == 2 ? "Couple" : "Friends"
+        seed.travelMode = (pick.leg?.mode ?? query.mode ?? .plane).rawValue
+        seed.interests = Set(TasteProfile.load().strongest(pick.destination, boosted: query.wants).prefix(3).compactMap(\.interest))
+        if let budget = query.budget { seed.budget = String(budget) }
+        activeTripID = nil; brief = TripBrief(); tripNameDraft = ""; tripAppearanceDraft = nil
+        composerSeed = seed
+        showComposer = true
+    }
+    /// One trip per stop, back to back, grouped as a journey. The first stop's plan starts right away;
+    /// the others wait as drafts with everything filled in.
+    private func createJourney(_ draft: JourneyDraft) {
+        journeySheet = nil
+        guard draft.stops.count > 1 else { return }
+        let cities = draft.stops.map(\.place.name)
+        let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? (cities.prefix(2).joined(separator: " → ") + (cities.count > 2 ? " +\(cities.count - 2)" : ""))
+        let dates = draft.dates
+        var created: [Trip] = []
+        for (index, stop) in draft.stops.enumerated() {
+            var next = TripBrief()
+            next.destination = stop.place.name
+            next.startDate = GuideDates.iso.string(from: dates[index].start); next.endDate = GuideDates.iso.string(from: dates[index].end)
+            next.duration = stop.nights + 1
+            next.travelers = draft.travelers; next.group = draft.travelers == 1 ? "Solo" : draft.travelers == 2 ? "Couple" : draft.group
+            next.interests = draft.interests.isEmpty ? ["sights", "food"] : draft.interests
+            next.travelMode = draft.mode.rawValue
+            let before = index == 0 ? draft.origin?.name : cities[index - 1]
+            let after = index == cities.count - 1 ? (draft.origin?.name) : cities[index + 1]
+            next.notes = (["Stop \(index + 1) of \(cities.count) on a journey: \(cities.joined(separator: ", "))"]
+                + [before.map { "Arriving from \($0) \(draft.mode.verb) on the first day" }, after.map { "Leaving for \($0) on the last day" }].compactMap { $0 })
+                .joined(separator: ". ")
+            var trip = Trip(brief: next)
+            trip.customName = stop.place.name
+            created.append(trip)
+        }
+        trips.insert(contentsOf: created, at: 0)
+        TripStorage.save(trips)
+        JourneyStore.add(SavedJourney(name: name, mode: draft.mode, origin: draft.origin?.name, tripIDs: created.map(\.id), cities: cities,
+                                      startDate: GuideDates.iso.string(from: draft.startDate), endDate: GuideDates.iso.string(from: draft.endDate)))
+        savedJourneys = JourneyStore.load()
+        rootTab = "library"; libraryHasMounted = true; librarySection = "Trips"
+        guard let first = created.first, !isResearching else { return }
+        activeTripID = first.id; brief = first.brief; tripNameDraft = first.title
+        Task { @MainActor in try? await Task.sleep(for: .milliseconds(500)); startLiveResearch() }
     }
     private func submitComposer(_ result: ComposerResult) {
         showComposer = false
@@ -9074,6 +9265,8 @@ private struct TrippyMapCanvas<Header: View>: View {
     @State private var searchSourceNotice: String?
     @AppStorage("trippy.native.map.recentSearches") private var recentSearchStorage = ""
     @State private var selectedPin: WorkspaceMapPin?
+    /// Community videos (TikTok + YouTube) that mention the open shop.
+    @State private var placeVideos: [CommunityPlaceVideo] = []
     @State private var selectedSearchPlace: WorkspaceMapPin?
     @State private var focusedMapPinID: String?
     @State private var selectedPinCategory: MapPlaceCategory?
@@ -9101,6 +9294,10 @@ private struct TrippyMapCanvas<Header: View>: View {
     @State private var lastMapHapticZoomBand = -1
     @State private var centerWhenLocationArrives = false
     @State private var pendingDirectionsPin: WorkspaceMapPin?
+    /// Directions mode: opened only from a place's Directions button; the map's chrome changes until it is closed.
+    @StateObject private var directions = DirectionsModel()
+    @State private var directionsActive = false
+    @State private var directionsPicker: DirectionsPickerTarget?
     @StateObject private var locationService = CurrentLocationService()
     @FocusState private var searchFocused: Bool
     private var homeCategories: Set<MapPlaceCategory> {
@@ -9310,7 +9507,7 @@ private struct TrippyMapCanvas<Header: View>: View {
         guard !generalCountryGeometries.isEmpty else { generalCountryShapes = nil; return }
         let stats = Dictionary(grouping: visitedPlaces.filter { $0.countryCode != nil }, by: { $0.countryCode!.uppercased() }).mapValues { visits in
             CountryVisitStats(code: visits[0].countryCode!.uppercased(), continent: WorldContinentCatalog.name(for: visits[0].countryCode),
-                              cities: visits.count, lastVisit: visits.map(\.visitedAt).max() ?? .now)
+                              cities: visits.filter { !$0.isCountry }.count, lastVisit: visits.compactMap(\.when).max() ?? visits.map(\.visitedAt).max() ?? .now)
         }
         generalCountryShapes = CountryShapesOverlay(geometries: generalCountryGeometries, stats: stats, style: CountryShapeStyle(
             fill: beenFill, outlines: beenOutlines, hatching: beenHatches, mode: CountryFillMode(rawValue: beenFillMode) ?? .visited, dark: colorScheme == .dark))
@@ -9504,17 +9701,17 @@ private struct TrippyMapCanvas<Header: View>: View {
         }
         .onChange(of: selectedSearchPlace?.id) { _, _ in if destination.isEmpty { refreshGeneralMarkers() } }
         .onChange(of: markerViewport) { _, _ in refreshMarkerGroups(proxy: mapProxy) }
-        .onChange(of: locationService.location?.timestamp) { _, _ in
-            guard let location = locationService.location else { return }
-            HomeCityStore.remember(location.coordinate)
-            if currentLocationEnabled && centerWhenLocationArrives {
-                centerWhenLocationArrives = false
-                centerMap(on: location)
+        .onChange(of: locationService.location?.timestamp) { _, _ in locationDidUpdate() }
+        .task {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-TrippyDirectionsDemo") && destination.isEmpty {
+                try? await Task.sleep(for: .seconds(1.5))
+                directions.from = .place(name: "Syntagma Square", coordinate: .init(latitude: 37.9755, longitude: 23.7348))
+                directions.to = .place(name: "Acropolis Museum", coordinate: .init(latitude: 37.9685, longitude: 23.7285))
+                directions.transport = .walk
+                withAnimation { directionsActive = true }
             }
-            if let pin = pendingDirectionsPin {
-                pendingDirectionsPin = nil
-                Task { await calculateDirections(to: pin, from: location) }
-            }
+            #endif
         }
         .onChange(of: locationService.failureMessage) { _, message in
             guard let message else { return }
@@ -9527,29 +9724,8 @@ private struct TrippyMapCanvas<Header: View>: View {
             }
         }
         .ignoresSafeArea(.container, edges: [.top, .bottom])
-        .safeAreaInset(edge: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 16) {
-                // Inside a trip the header card is the only chrome; search and map options live in it.
-                if showMapSearch || destination.isEmpty {
-                HStack(spacing: 10) {
-                    searchBar
-                    if !showMapSearch { mapOptionsMenu }
-                    if showMapSearch || (destination.isEmpty && onNewTrip != nil) { searchCloseOrCreateButton }
-                }
-                }
-                if !showMapSearch && !destination.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) { header(); filterDrawer(layers: true, opensUp: false) }
-                }
-                if !showMapSearch && destination.isEmpty { mapFilterCarousel }
-            }.frame(maxWidth: 720).frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20).padding(.top, 8)
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.onAppear { topControlsHeight = geometry.size.height }
-                            .onChange(of: geometry.size.height) { _, height in topControlsHeight = height }
-                    }
-                }
-        }
+        .modifier(DirectionsLayer(apply: directionsLayer))
+        .safeAreaInset(edge: .top, spacing: 12) { mapTopChrome }
         .sheet(isPresented: Binding(get: { !selectedClusterPins.isEmpty }, set: { if !$0 { selectedClusterPins = [] } }), onDismiss: {
             if let pin = pendingClusterPin { pendingClusterPin = nil; focusPin(pin) }
         }) {
@@ -9575,7 +9751,7 @@ private struct TrippyMapCanvas<Header: View>: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            if !showMapSearch {
+            if !showMapSearch && !directionsActive {
                 VStack(spacing: 12) {
                     Button(action: centerOnCurrentPosition) {
                         Image(systemName: currentLocationEnabled ? "location.fill" : "location.slash")
@@ -9615,7 +9791,7 @@ private struct TrippyMapCanvas<Header: View>: View {
         }
         .overlay(alignment: .bottom) {
             // Home map: filters and Open now appear once you're in a city, centred above the bar.
-            if destination.isEmpty && !showMapSearch && homeFiltersVisible {
+            if destination.isEmpty && !showMapSearch && homeFiltersVisible && !directionsActive {
                 filterDrawer(layers: false, opensUp: true)
                     .padding(.horizontal, 16).padding(.bottom, 12)
                     .frame(maxWidth: 720)
@@ -11074,6 +11250,18 @@ private struct TrippyMapCanvas<Header: View>: View {
                         .lineLimit(placePanelDetent == collapsed ? 2 : nil)
                 }
 
+                let communityVideos = placeVideos.filter { video in !linkedSources.contains { $0.envelope.sourceURL == video.url } }
+                if !isArea && linkedSources.count + communityVideos.count > 0 {
+                    Button {
+                        placePanelDetent = .large
+                        Task { try? await Task.sleep(for: .milliseconds(250)); withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) { reader.scrollTo("place-videos", anchor: .top) } }
+                    } label: {
+                        Label("\(linkedSources.count + communityVideos.count) TikToks & videos about this place", systemImage: "play.rectangle.on.rectangle.fill")
+                            .font(Sketch.text(13, "Bold", relativeTo: .footnote)).foregroundStyle(.white)
+                            .padding(.horizontal, 14).frame(minHeight: 38).background(Color(hex: "161616"), in: Capsule())
+                    }.buttonStyle(BubblePressStyle())
+                }
+
                 let tags = mentions.lazy.compactMap { $0.vibeTags }.first { !$0.isEmpty } ?? []
                 if !tags.isEmpty {
                     HStack(spacing: 6) {
@@ -11152,7 +11340,7 @@ private struct TrippyMapCanvas<Header: View>: View {
                 }
 
                 if !linkedSources.isEmpty || linkedNotes.contains(where: { $0.userText.nonEmpty != nil }) {
-                    placePanelSection("From your videos", count: linkedSources.count)
+                    placePanelSection("From your videos", count: linkedSources.count).id("place-videos")
                     if !linkedSources.isEmpty {
                         ScrollView(.horizontal) {
                             HStack(spacing: 10) {
@@ -11178,6 +11366,15 @@ private struct TrippyMapCanvas<Header: View>: View {
                         .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                         .background(Sketch.plum.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                     }
+                }
+
+                if !isArea && !communityVideos.isEmpty {
+                    if linkedSources.isEmpty {
+                        placePanelSection("TikToks about this place", count: communityVideos.count).id("place-videos")
+                    } else {
+                        placePanelSection("More from the community", count: communityVideos.count)
+                    }
+                    PlaceVideosSection(videos: communityVideos)
                 }
 
                 if let reviews = details?.reviews, !reviews.isEmpty {
@@ -11219,6 +11416,13 @@ private struct TrippyMapCanvas<Header: View>: View {
             .padding(.bottom, 12)
         }
         .scrollIndicators(.hidden)
+        .task(id: pin.id) {
+            placeVideos = []
+            guard !isArea else { return }
+            if let demo = CommunityDemo.placeVideos { placeVideos = demo; return }
+            placeVideos = (try? await CommunityVideosClient.forPlace(googleID: pin.googlePlaceID ?? resolvedGooglePlaceIDs[pin.id], name: pin.name,
+                                                                      city: pin.city, baseURL: placesBaseURL, token: placesAccessToken)) ?? []
+        }
         .onChange(of: googlePlaceDetails?.placeID) { _, _ in
             guard PlacePanelDemo.scrollsToReviews else { return }
             Task { try? await Task.sleep(for: .milliseconds(900)); reader.scrollTo("reviews", anchor: .top) }
@@ -11715,14 +11919,121 @@ private struct TrippyMapCanvas<Header: View>: View {
                                      span: .init(latitudeDelta: 0.018, longitudeDelta: 0.018)))
         }
     }
+    /// Opens directions mode for a place: start (your location), destination, mode and time, routes from Apple Maps.
+    /// Nothing opens by itself; the steps list appears only from the Steps button.
     private func beginDirections(to pin: WorkspaceMapPin) {
-        pendingDirectionsPin = pin
-        if let location = locationService.location, Date().timeIntervalSince(location.timestamp) < 120 {
-            pendingDirectionsPin = nil
-            Task { await calculateDirections(to: pin, from: location) }
-        } else {
+        guard CLLocationCoordinate2DIsValid(pin.coordinate) else { directionsError = "This place doesn't have a usable location yet."; return }
+        directions.from = .currentLocation
+        directions.to = .place(name: pin.name, coordinate: pin.coordinate)
+        if let here = locationService.location {
+            let metres = here.distance(from: CLLocation(latitude: pin.coordinate.latitude, longitude: pin.coordinate.longitude))
+            directions.transport = metres < 2_500 ? .walk : .car
+        }
+        dismissPlacePanel {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.45, dampingFraction: 0.85)) { directionsActive = true }
+        }
+        if locationService.location == nil || Date().timeIntervalSince(locationService.location!.timestamp) > 120 {
             locationService.requestCurrentLocation()
         }
+    }
+    private func locationDidUpdate() {
+        guard let location = locationService.location else { return }
+        HomeCityStore.remember(location.coordinate)
+        if currentLocationEnabled && centerWhenLocationArrives {
+            centerWhenLocationArrives = false
+            centerMap(on: location)
+        }
+        if let pin = pendingDirectionsPin {
+            pendingDirectionsPin = nil
+            Task { await calculateDirections(to: pin, from: location) }
+        }
+        if directionsActive && directions.route == nil && directions.usesCurrentLocation {
+            directions.recalculate(location: location)
+        }
+    }
+    /// Search, options and filters, or the directions panel while directions are open.
+    private var mapTopChrome: some View {
+            VStack(alignment: .leading, spacing: 16) {
+                if directionsActive {
+                    DirectionsTopPanel(model: directions, onPick: { directionsPicker = DirectionsPickerTarget(start: $0) })
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                } else {
+                // Inside a trip the header card is the only chrome; search and map options live in it.
+                if showMapSearch || destination.isEmpty {
+                HStack(spacing: 10) {
+                    searchBar
+                    if !showMapSearch { mapOptionsMenu }
+                    if showMapSearch || (destination.isEmpty && onNewTrip != nil) { searchCloseOrCreateButton }
+                }
+                }
+                if !showMapSearch && !destination.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) { header(); filterDrawer(layers: true, opensUp: false) }
+                }
+                if !showMapSearch && destination.isEmpty { mapFilterCarousel }
+                }
+            }.frame(maxWidth: 720).frame(maxWidth: .infinity, alignment: .leading)
+                .animation(.spring(response: 0.42, dampingFraction: 0.85), value: directionsActive)
+                .padding(.horizontal, 20).padding(.top, 8)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.onAppear { topControlsHeight = geometry.size.height }
+                            .onChange(of: geometry.size.height) { _, height in topControlsHeight = height }
+                    }
+                }
+    }
+    /// Directions mode's map layers (routes card, picker, recalculation, camera), split out of the canvas body
+    /// so the compiler can type-check it.
+    func directionsLayer(_ content: AnyView) -> AnyView {
+        AnyView(content
+        .overlay(alignment: .bottom) {
+            if directionsActive {
+                DirectionsRoutesCard(model: directions, onAppleMaps: { directions.openInAppleMaps(location: locationService.location) },
+                                     onClose: closeDirections)
+                    .frame(maxWidth: 720)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .preference(key: DirectionsActiveKey.self, value: directionsActive)
+        .sheet(item: $directionsPicker) { target in
+            DirectionsPlacePicker(title: target.start ? "Start" : "Destination", near: locationService.location?.coordinate ?? visibleRegion?.center) { endpoint in
+                if target.start { directions.from = endpoint } else { directions.to = endpoint }
+            }
+        }
+        .task(id: directionsActive ? directionsKey : "directions:off") {
+            guard directionsActive else { return }
+            if directions.usesCurrentLocation, locationService.location == nil {
+                locationService.requestCurrentLocation()
+            }
+            directions.recalculate(location: locationService.location)
+        }
+        .onChange(of: directions.route) { _, route in
+            directionsRoute = route
+            guard let route else { return }
+            frameRoute(route)
+        }
+        )
+    }
+    /// The route fills the space between the directions panel (top) and the routes card (bottom).
+    private func frameRoute(_ route: MKRoute) {
+        let rect = route.polyline.boundingMapRect
+        let side = max(rect.width, rect.height)
+        // Extra room above for the panel and below for the routes card.
+        let framed = MKMapRect(x: rect.midX - side * 0.85, y: rect.minY - side * 1.25, width: side * 1.7, height: rect.height + side * 2.6)
+        withAnimation(.easeInOut(duration: 0.45)) { nativeCameraRequestID = UUID(); position = .rect(framed) }
+    }
+    private func closeDirections() {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.85)) {
+            directionsActive = false
+            directionsRoute = nil
+        }
+        directions.clear()
+    }
+    private var directionsKey: String {
+        func key(_ endpoint: DirectionsEndpoint) -> String {
+            switch endpoint { case .currentLocation: "here"; case .place(let name, let c): "\(name):\(c.latitude),\(c.longitude)" }
+        }
+        return [key(directions.from), key(directions.to), directions.transport.rawValue, directions.timing.rawValue,
+                directions.timing == .now ? "" : String(Int(directions.date.timeIntervalSince1970 / 60))].joined(separator: "|")
     }
     private func calculateDirections(to pin: WorkspaceMapPin, from origin: CLLocation) async {
         calculatingDirections = true
@@ -12412,7 +12723,7 @@ private struct SVGLoadingAnimation: UIViewRepresentable {
 private extension TripFlowView {
     func persistSocialLibrary() {
         guard !StudioDemo.enabled else { return } // sample data never reaches the real library
-        do { try SocialLibraryStore.save(SocialLibraryDocument(sources: socialSources, places: socialPlaces, notes: travelNotes)) }
+        do { try SocialLibraryStore.save(SocialLibraryDocument(sources: socialSources, places: socialPlaces, notes: travelNotes, takes: placeTakes)) }
         catch { showToast("Changes could not be saved. Check available storage.") }
     }
     func syncShareTargets() {
@@ -12459,7 +12770,7 @@ private extension TripFlowView {
                     guard let job else { socialSources[fresh].extractionStatus = nil; continue }
                     socialSources[fresh].extractionStatus = job.status
                     socialSources[fresh].extractionError = job.error ?? job.note
-                    if job.status == "ready", let result = job.result { applySocialExtraction(result, sourceIndex: fresh) }
+                    if job.status == "ready", let result = job.result { applySocialExtraction(result, sourceIndex: fresh, fromIndex: job.cached == true) }
                 } catch {
                     if socialSources.indices.contains(index) { socialSources[index].extractionError = error.localizedDescription }
                 }
@@ -12485,13 +12796,17 @@ private extension TripFlowView {
         }
         let cities = Array(Set(places.compactMap { $0.city?.nonEmpty } + fresh.compactMap { $0.city?.nonEmpty })).sorted()
         let countries = Array(Set(places.compactMap { $0.countryCode?.nonEmpty?.uppercased() } + fresh.compactMap { $0.countryCode?.nonEmpty?.uppercased() })).sorted()
-        shareSummary = ShareSummary(videos: fresh.count, places: places.count, cities: cities, countries: countries,
+        shareSummary = ShareSummary(videos: fresh.count, places: uniquePlaceCount(places), cities: cities, countries: countries,
                                     covers: Array(covers.prefix(3)), sharedSince: since)
     }
-    @MainActor private func applySocialExtraction(_ result: SocialExtractionJob.Result, sourceIndex: Int) {
+    /// One video in, everything out: each place becomes (or joins) one pin in the share's collection, one note per
+    /// place gets this video's section (its caption timeline, tips, must-trys), and a tips post gets a tips note.
+    /// Re-reading replaces this video's sections; it never adds a second pin or a second note for the same place.
+    @MainActor private func applySocialExtraction(_ result: SocialExtractionJob.Result, sourceIndex: Int, fromIndex: Bool = false) {
         let source = socialSources[sourceIndex]
         let tripID = source.envelope.destination.tripID
         let mustDo = source.envelope.destination.mustDo == true
+        let tips = result.tips ?? []
         socialSources[sourceIndex].displayTitle = result.postTitle.nonEmpty ?? source.displayTitle
         socialSources[sourceIndex].summary = result.postSummary.nonEmpty
         socialSources[sourceIndex].city = result.city.nonEmpty ?? source.city
@@ -12500,38 +12815,225 @@ private extension TripFlowView {
         socialSources[sourceIndex].listTitle = source.envelope.tiktok?.authorHandle.map { "@" + $0 } ?? source.listTitle
         socialSources[sourceIndex].extractionModel = result.model
         socialSources[sourceIndex].extractedAt = .now
-        socialSources[sourceIndex].state = result.places.isEmpty ? "needs_place_review" : "ready"
+        socialSources[sourceIndex].postKind = result.postKind ?? (result.places.isEmpty && !tips.isEmpty ? "tips" : "places")
+        socialSources[sourceIndex].tips = tips.isEmpty ? nil : tips
+        socialSources[sourceIndex].fromIndex = fromIndex
+        socialSources[sourceIndex].state = result.places.isEmpty && tips.isEmpty ? "needs_place_review" : "ready"
         socialPlaces.removeAll { $0.sourceID == source.id }
-        var linked: [UUID] = []
+        let current = socialSources[sourceIndex]
+        // Saved from the community browser "to a city": keep the video, pin nothing, write no place notes.
+        let videoOnly = source.envelope.destination.mode == "video"
+        var linked: [UUID] = [], keys: Set<String> = []
         for place in result.places {
             let google = place.google
-            let mention = SocialPlaceMention(
+            var mention = SocialPlaceMention(
                 id: UUID(), name: google?.name?.nonEmpty ?? place.name, summary: place.tldr, sourceID: source.id,
                 evidenceIDs: [], tripID: tripID, latitude: google?.latitude, longitude: google?.longitude,
                 city: google?.city?.nonEmpty ?? place.city?.nonEmpty ?? result.city.nonEmpty,
                 category: place.category, nameLatin: place.nameLatin, neighborhood: place.neighborhood, country: place.country,
                 countryCode: place.countryCode ?? google?.countryCode, address: google?.address ?? place.addressHint,
                 googlePlaceID: google?.placeID, vibeTags: place.vibeTags, proTips: place.proTips, goodToKnow: place.goodToKnow,
-                mustTry: place.mustTry, whyGo: place.whyGo, priceHint: place.priceHint, evidence: place.evidence)
+                mustTry: place.mustTry, whyGo: place.whyGo, priceHint: place.priceHint, evidence: place.evidence, moments: place.moments)
+            let key = PlaceKey.of(googlePlaceID: mention.googlePlaceID, name: mention.name, city: mention.city)
+            keys.insert(key)
+            if !videoOnly { mention.noteID = upsertPlaceNote(key: key, mention: mention, source: current, tripID: tripID) }
             socialPlaces.append(mention)
             linked.append(mention.id)
-            guard let latitude = google?.latitude, let longitude = google?.longitude else { continue }
-            let id = google?.placeID.map { "google:" + $0 } ?? "social:\(mention.id.uuidString)"
-            if let existing = savedPlaces.firstIndex(where: { $0.id == id || ($0.googlePlaceID != nil && $0.googlePlaceID == google?.placeID) }) {
-                savedPlaces[existing].pinned = true
-                if mustDo { savedPlaces[existing].saved = true }
-                continue
+            if !videoOnly, let latitude = mention.latitude, let longitude = mention.longitude {
+                pinFromVideo(mention, latitude: latitude, longitude: longitude, category: MapPlaceCategory(rawValue: place.category) ?? .other,
+                             tripID: tripID, mustDo: mustDo)
             }
-            var pin = PersonalPlace(id: id, name: mention.name, city: mention.city ?? "", address: mention.address ?? "",
-                                    latitude: latitude, longitude: longitude, category: MapPlaceCategory(rawValue: place.category) ?? .other)
-            pin.googlePlaceID = google?.placeID
-            pin.boundaryCountryCode = mention.countryCode
-            pin.pinned = true
-            pin.saved = mustDo
-            savedPlaces.append(pin)
         }
+        dropStaleSections(of: source.id, keeping: keys)
+        if !tips.isEmpty { upsertTipsNote(current) }
         socialSources[sourceIndex].linkedPlaceIDs = linked
-        if !result.places.isEmpty { TrippyHaptics.success() }
+        if !result.places.isEmpty || !tips.isEmpty { TrippyHaptics.success() }
+    }
+    /// One note per real place, whichever collection or video it came from.
+    @discardableResult private func upsertPlaceNote(key: String, mention: SocialPlaceMention, source: ImportedSocialSource, tripID: UUID?) -> UUID {
+        let section = AutoNote.placeSection(mention, source: source)
+        let reference = mention.latitude.flatMap { latitude in mention.longitude.map { longitude in
+            LinkedPlaceReference(id: key, name: mention.name, address: mention.address ?? "", latitude: latitude, longitude: longitude,
+                                 googlePlaceID: mention.googlePlaceID)
+        } }
+        if let index = travelNotes.firstIndex(where: { $0.placeKey == key }) {
+            travelNotes[index].fromSources = (travelNotes[index].fromSources ?? [:]).merging([source.id.uuidString: section]) { $1 }
+            if !travelNotes[index].sourceIDs.contains(source.id) { travelNotes[index].sourceIDs.append(source.id) }
+            if travelNotes[index].linkedPlaces?.isEmpty != false, let reference {
+                travelNotes[index].linkedPlaces = [reference]; travelNotes[index].linkedPlaceIDs = [reference.id]
+            }
+            if travelNotes[index].kind == nil { travelNotes[index].kind = "place" }
+            travelNotes[index].updatedAt = .now
+            return travelNotes[index].id
+        }
+        let note = TravelNote(id: UUID(), title: mention.name, tripID: tripID, sourceIDs: [source.id], userText: "", updatedAt: .now,
+                              placeMentionID: mention.id, city: mention.city, linkedPlaceIDs: reference.map { [$0.id] },
+                              linkedPlaces: reference.map { [$0] }, kind: "place", placeKey: key, fromSources: [source.id.uuidString: section])
+        travelNotes.insert(note, at: 0)
+        return note.id
+    }
+    private func upsertTipsNote(_ source: ImportedSocialSource) {
+        let section = AutoNote.tipsSection(source)
+        if let index = travelNotes.firstIndex(where: { $0.kind == "tips" && $0.sourceIDs.contains(source.id) }) {
+            travelNotes[index].fromSources = [source.id.uuidString: section]
+            travelNotes[index].updatedAt = .now
+            return
+        }
+        travelNotes.insert(TravelNote(id: UUID(), title: source.displayTitle ?? "Travel tips", tripID: source.envelope.destination.tripID,
+                                      sourceIDs: [source.id], userText: "", updatedAt: .now, city: cityForSource(source).nonEmpty,
+                                      kind: "tips", fromSources: [source.id.uuidString: section]), at: 0)
+    }
+    /// A re-read that no longer finds a place removes only this video's section; a note left with nothing is removed.
+    private func dropStaleSections(of sourceID: UUID, keeping keys: Set<String>) {
+        let id = sourceID.uuidString
+        for index in travelNotes.indices.reversed() where travelNotes[index].kind == "place" {
+            guard let key = travelNotes[index].placeKey, !keys.contains(key), travelNotes[index].fromSources?[id] != nil else { continue }
+            travelNotes[index].fromSources?[id] = nil
+            travelNotes[index].sourceIDs.removeAll { $0 == sourceID }
+            if travelNotes[index].fromSources?.isEmpty != false, travelNotes[index].userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                travelNotes.remove(at: index)
+            }
+        }
+    }
+    /// Pins go where the video was saved: a trip's pins or the general map. Same place twice = same pin, one more source.
+    private func pinFromVideo(_ mention: SocialPlaceMention, latitude: Double, longitude: Double, category: MapPlaceCategory, tripID: UUID?, mustDo: Bool) {
+        let id = mention.googlePlaceID.map { "google:" + $0 } ?? "social:\(mention.id.uuidString)"
+        func same(_ place: PersonalPlace) -> Bool {
+            place.id == id || (place.googlePlaceID != nil && place.googlePlaceID == mention.googlePlaceID)
+        }
+        func merge(_ place: inout PersonalPlace) {
+            place.pinned = true
+            if mustDo { place.saved = true }
+            if !(place.sourceIDs ?? []).contains(mention.sourceID) { place.sourceIDs = (place.sourceIDs ?? []) + [mention.sourceID] }
+        }
+        var pin = PersonalPlace(id: id, name: mention.name, city: mention.city ?? "", address: mention.address ?? "",
+                                latitude: latitude, longitude: longitude, category: category)
+        pin.googlePlaceID = mention.googlePlaceID
+        pin.boundaryCountryCode = mention.countryCode
+        pin.saved = mustDo
+        merge(&pin)
+        if let tripID, let tripIndex = trips.firstIndex(where: { $0.id == tripID }) {
+            var pins = trips[tripIndex].savedPins ?? []
+            if let existing = pins.firstIndex(where: same) { merge(&pins[existing]) } else { pins.append(pin) }
+            trips[tripIndex].savedPins = pins
+            trips[tripIndex].updatedAt = .now
+            TripStorage.save(trips)
+            return
+        }
+        if let existing = savedPlaces.firstIndex(where: same) { merge(&savedPlaces[existing]) } else { savedPlaces.append(pin) }
+    }
+    // MARK: Takes
+    func takeBinding(_ key: String) -> Binding<PlaceTake> {
+        Binding(get: { placeTakes[key] ?? PlaceTake() }, set: { take in
+            placeTakes[key] = take.isEmpty ? nil : take
+            guard let googleID = PlaceKey.googleID(key) else { return }
+            let base = bridgeBaseURL, token = bridgeToken
+            takeSendTasks[key]?.cancel()
+            takeSendTasks[key] = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(700)) // a burst of taps sends once
+                guard !Task.isCancelled else { return }
+                if let community = await PlaceTakesClient.send(take, googleID: googleID, baseURL: base, token: token) {
+                    placeCommunity[googleID] = community
+                }
+            }
+        })
+    }
+    func refreshCommunity(_ keys: [String]) async {
+        let ids = keys.compactMap(PlaceKey.googleID)
+        guard !ids.isEmpty else { return }
+        let fetched = await PlaceTakesClient.fetch(googleIDs: ids, baseURL: bridgeBaseURL, token: bridgeToken)
+        for (id, value) in fetched { placeCommunity[id] = value }
+    }
+    // MARK: Saving from the community browser (never automatic)
+    var communityActions: CommunityActions {
+        CommunityActions(saveVideo: { saveCommunityVideo($0, pinAll: false) },
+                         saveWithSpots: { saveCommunityVideo($0, pinAll: true) },
+                         pinPlace: { pinCommunityPlace($1, from: $0) },
+                         isSaved: { key in communitySource(key) != nil },
+                         isPinned: { place in
+                             savedPlaces.contains { $0.isPinned && ($0.googlePlaceID != nil && $0.googlePlaceID == place.googlePlaceID) }
+                         })
+    }
+    private func communitySource(_ key: String) -> ImportedSocialSource? {
+        guard let id = key.split(separator: ":", maxSplits: 1).last.map(String.init), !id.isEmpty else { return nil }
+        return socialSources.first { $0.envelope.tiktok?.postID == id || ($0.envelope.sourceURL ?? "").contains(id) }
+    }
+    /// Keep a community video in your library, tied to its city. With pinAll its shops are pinned too.
+    @MainActor func saveCommunityVideo(_ video: CommunityVideo, pinAll: Bool) {
+        if let existing = communitySource(video.key) {
+            if pinAll { for place in video.places { pinCommunityPlace(place, from: video, sourceID: existing.id) } }
+            return
+        }
+        let envelope = SharedSourceEnvelope(id: UUID(), capturedAt: .now, sourceURL: video.url, sharedText: "", attachments: [],
+                                            destination: ShareDestination(mode: pinAll ? "places" : "video", tripID: nil, noteID: nil))
+        var source = ImportedSocialSource(id: envelope.id, envelope: envelope, evidence: [], state: "needs_retrieval", issues: [])
+        source.displayTitle = video.title; source.city = video.city.nonEmpty; source.summary = video.summary
+        source.listTitle = video.author.map { video.platform == "tiktok" ? "@" + $0 : $0 }
+        source.tips = video.tips.isEmpty ? nil : video.tips.map { SocialTip(title: $0.title, detail: $0.detail, at: $0.at) }
+        source.postKind = video.places.isEmpty && !video.tips.isEmpty ? "tips" : "places"
+        source.fromIndex = true
+        if video.platform != "tiktok" {
+            // YouTube creator videos are already indexed by the research pipeline; nothing to read again.
+            source.state = "ready"; source.extractionStatus = "ready"; source.extractedAt = .now
+        }
+        socialSources.append(source)
+        persistSocialLibrary()
+        if video.platform == "tiktok" { Task { await runSocialExtractions() } } // read once already: comes straight back
+    }
+    /// Pin one shop from a community video. Only shops with real coordinates can be pinned.
+    @MainActor func pinCommunityPlace(_ place: CommunityPlace, from video: CommunityVideo, sourceID: UUID? = nil) {
+        guard let latitude = place.latitude, let longitude = place.longitude else { return }
+        let sourceID = sourceID ?? communitySource(video.key)?.id
+        let id = place.googlePlaceID.map { "google:" + $0 } ?? "community:\(video.key):\(place.id)"
+        if let index = savedPlaces.firstIndex(where: { $0.id == id || ($0.googlePlaceID != nil && $0.googlePlaceID == place.googlePlaceID) }) {
+            savedPlaces[index].pinned = true
+            if let sourceID, !(savedPlaces[index].sourceIDs ?? []).contains(sourceID) { savedPlaces[index].sourceIDs = (savedPlaces[index].sourceIDs ?? []) + [sourceID] }
+            return
+        }
+        let label = ["food": "Food", "coffee": "Coffee", "bars": "Bars", "clubs": "Clubs", "sights": "Sights", "museums": "Sights",
+                     "outdoors": "Parks", "shopping": "Shopping", "transport": "Metro"][place.category] ?? "Other"
+        var pin = PersonalPlace(id: id, name: place.name, city: video.city, address: "", latitude: latitude, longitude: longitude,
+                                category: MapPlaceCategory(rawValue: label) ?? .other)
+        pin.googlePlaceID = place.googlePlaceID
+        pin.pinned = true; pin.saved = false
+        pin.sourceIDs = sourceID.map { [$0] }
+        savedPlaces.append(pin)
+    }
+    /// A place mentioned by two videos is one place.
+    func uniquePlaceCount(_ mentions: [SocialPlaceMention]) -> Int {
+        Set(mentions.map { PlaceKey.of(googlePlaceID: $0.googlePlaceID, name: $0.name, city: $0.city) }).count
+    }
+    func community(_ key: String) -> PlaceCommunity? { PlaceKey.googleID(key).flatMap { placeCommunity[$0] } }
+    /// Typing on the card appends "Name's notes: …" to the place's note (creating it if this place has none yet).
+    func appendToPlaceNote(key: String, name: String, city: String?, tripID: UUID?, text: String) {
+        let owner = AutoNote.ownerName
+        if let index = travelNotes.firstIndex(where: { $0.placeKey == key }) {
+            travelNotes[index].userText = AutoNote.appending(text, to: travelNotes[index].userText, owner: owner)
+            travelNotes[index].updatedAt = .now
+        } else {
+            travelNotes.insert(TravelNote(id: UUID(), title: name, tripID: tripID, sourceIDs: [], userText: AutoNote.appending(text, to: "", owner: owner),
+                                          updatedAt: .now, city: city, kind: "place", placeKey: key), at: 0)
+        }
+    }
+    func openPlaceNote(key: String, name: String, city: String?, tripID: UUID?) {
+        if let note = travelNotes.first(where: { $0.placeKey == key }) { selectedTravelNoteID = note.id; return }
+        let id = UUID()
+        travelNotes.insert(TravelNote(id: id, title: name, tripID: tripID, sourceIDs: [], userText: "", updatedAt: .now,
+                                      city: city, kind: "place", placeKey: key), at: 0)
+        selectedTravelNoteID = id
+    }
+    /// Every place gets a real link: Google Maps by place ID when known, Apple Maps by coordinates otherwise.
+    func mapsLink(name: String, googlePlaceID: String?, latitude: Double?, longitude: Double?) -> URL? {
+        var components = URLComponents()
+        if let googlePlaceID {
+            components = URLComponents(string: "https://www.google.com/maps/search/")!
+            components.queryItems = [URLQueryItem(name: "api", value: "1"), URLQueryItem(name: "query", value: name),
+                                     URLQueryItem(name: "query_place_id", value: googlePlaceID)]
+        } else if let latitude, let longitude {
+            components = URLComponents(string: "https://maps.apple.com/")!
+            components.queryItems = [URLQueryItem(name: "q", value: name), URLQueryItem(name: "ll", value: "\(latitude),\(longitude)")]
+        } else { return nil }
+        return components.url
     }
     private func sourceTextBinding(_ sourceID: UUID, field: String) -> Binding<String> {
         Binding(get: {
@@ -12579,9 +13081,42 @@ private extension TripFlowView {
         let sources = socialSources.filter(sourceMatchesLibrary).sorted { $0.envelope.capturedAt > $1.envelope.capturedAt }
         let working = sources.filter { SocialExtractionClient.wantsExtraction($0) || $0.extractionStatus == "failed" }
         let workingIDs = Set(working.map(\.id))
-        let groups = LibraryGrouping.cities(sources.filter { !workingIDs.contains($0.id) }, city: cityForSource)
+        // Tips posts (no venue is the point) get their own shelf; their places, if any, are still pinned.
+        let tipPosts = sources.filter { !workingIDs.contains($0.id) && $0.isTips }
+        let tipIDs = Set(tipPosts.map(\.id))
+        let groups = LibraryGrouping.cities(sources.filter { !workingIDs.contains($0.id) && !tipIDs.contains($0.id) }, city: cityForSource)
         return LazyVStack(alignment: .leading, spacing: 22) {
             studioHeader(sources)
+            if !tipPosts.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    StudioHeading(title: "Tips", count: tipPosts.count)
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 10) {
+                            ForEach(tipPosts) { source in
+                                let note = travelNotes.first { $0.kind == "tips" && $0.sourceIDs.contains(source.id) }
+                                Button { selectedSocialSource = source } label: {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        StudioCover(url: studioCover(source)).frame(width: 150, height: 110)
+                                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                        Text(studioTitle(source)).font(Sketch.text(13, "Bold", relativeTo: .footnote)).foregroundStyle(AppPalette.ink)
+                                            .lineLimit(2).multilineTextAlignment(.leading)
+                                        Text("💡 \(source.tips?.count ?? 0) tips" + (note != nil ? " · note" : ""))
+                                            .font(Sketch.text(11, "SemiBold", relativeTo: .caption2)).foregroundStyle(AppPalette.secondaryInk)
+                                    }
+                                    .frame(width: 150, alignment: .leading).padding(10)
+                                    .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
+                                }
+                                .buttonStyle(SketchPressStyle())
+                                .contextMenu {
+                                    if let note { Button("Open tips note", systemImage: "note.text") { selectedTravelNoteID = note.id } }
+                                    if let link = source.envelope.sourceURL.flatMap(URL.init(string:)) { Link(destination: link) { Label("Open on TikTok", systemImage: "music.note") } }
+                                    Button("Delete", systemImage: "trash", role: .destructive) { deleteLibraryVideo(source.id) }
+                                }
+                            }
+                        }.padding(.horizontal, 20)
+                    }.scrollIndicators(.hidden).padding(.horizontal, -20)
+                }
+            }
             if !working.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     StudioHeading(title: "In the works", count: working.count)
@@ -12656,7 +13191,7 @@ private extension TripFlowView {
             }
             HStack(spacing: 8) {
                 StudioStat(value: "\(sources.count)", label: sources.count == 1 ? "Video" : "Videos")
-                StudioStat(value: "\(places.count)", label: places.count == 1 ? "Place" : "Places")
+                StudioStat(value: "\(uniquePlaceCount(places))", label: uniquePlaceCount(places) == 1 ? "Place" : "Places")
                 StudioStat(value: "\(cities.count)", label: cities.count == 1 ? "City" : "Cities")
                 StudioStat(value: flags.isEmpty ? "–" : flags, label: countries.count == 1 ? "Country" : "Countries")
             }
@@ -12993,6 +13528,7 @@ private extension TripFlowView {
         let stage = StudioStage.of(source)
         let evidence = StudioEvidence.of(source)
         return NavigationStack {
+            ScrollViewReader { reader in
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     HStack(alignment: .top, spacing: 16) {
@@ -13079,35 +13615,55 @@ private extension TripFlowView {
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        StudioHeading(title: "Pinned from this post", count: places.count)
-                        ForEach(places) { place in
-                            let category = place.category.flatMap(MapPlaceCategory.init(rawValue:)) ?? .other
-                            Button {
-                                if let noteID = place.noteID { selectedTravelNoteID = noteID }
-                                else if place.latitude != nil { selectedSocialSource = nil; rootTab = "map" }
-                            } label: {
+                    if let tips = source.tips, !tips.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            StudioHeading(title: "Tips", count: tips.count)
+                            ForEach(Array(tips.enumerated()), id: \.offset) { _, tip in
                                 HStack(alignment: .top, spacing: 12) {
-                                    Image(systemName: category.symbol).font(.system(size: 14, weight: .semibold)).foregroundStyle(category.tint)
-                                        .frame(width: 36, height: 36).background(category.tint.opacity(0.12), in: Circle())
+                                    Text(tip.at?.nonEmpty ?? "💡").font(Sketch.text(11, "Bold", relativeTo: .caption2)).monospacedDigit()
+                                        .foregroundStyle(AppPalette.secondaryInk).frame(minWidth: 40, alignment: .leading)
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(place.name).font(Sketch.text(15, "Bold", relativeTo: .headline)).foregroundStyle(AppPalette.ink)
-                                        Text([place.neighborhood, place.city].compactMap { $0?.nonEmpty }.joined(separator: " · "))
-                                            .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(AppPalette.secondaryInk)
-                                        if let tldr = place.summary.nonEmpty {
-                                            Text(tldr).font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(AppPalette.ink)
-                                                .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-                                        }
-                                        if place.latitude == nil {
-                                            Label("Not found on Google Maps yet", systemImage: "mappin.slash").font(Sketch.text(11, "SemiBold", relativeTo: .caption2)).foregroundStyle(Sketch.coral)
-                                        }
+                                        Text(tip.title).font(Sketch.text(14, "Bold", relativeTo: .subheadline)).foregroundStyle(AppPalette.ink)
+                                        Text(tip.detail).font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(AppPalette.ink)
+                                            .fixedSize(horizontal: false, vertical: true)
                                     }
-                                    Spacer(minLength: 4)
-                                    Image(systemName: place.latitude == nil ? "pencil" : "map").font(.system(size: 12, weight: .semibold)).foregroundStyle(AppPalette.secondaryInk)
                                 }
                                 .padding(12).frame(maxWidth: .infinity, alignment: .leading)
                                 .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Sketch.card))
-                            }.buttonStyle(QuietPressStyle())
+                            }
+                            if let note = travelNotes.first(where: { $0.kind == "tips" && $0.sourceIDs.contains(source.id) }) {
+                                Button { selectedTravelNoteID = note.id } label: {
+                                    Label("Open tips note", systemImage: "note.text").font(Sketch.text(14, "SemiBold", relativeTo: .subheadline))
+                                        .foregroundStyle(AppPalette.ink).frame(maxWidth: .infinity, minHeight: 44).background(Sketch.paperDeep, in: Capsule())
+                                }.buttonStyle(BubblePressStyle())
+                            }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        StudioHeading(title: "Pinned from this post", count: places.count).id("studio-places")
+                        if !places.isEmpty {
+                            Text("Been there? Tap Your take — a few one-tap questions.").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(AppPalette.secondaryInk)
+                        }
+                        VStack(alignment: .leading, spacing: 12) { ForEach(places) { place in
+                            let key = PlaceKey.of(googlePlaceID: place.googlePlaceID, name: place.name, city: place.city)
+                            VStack(alignment: .leading, spacing: 6) {
+                                PlaceQuickTakeCard(
+                                    placeName: place.name, take: takeBinding(key), community: community(key),
+                                    subtitle: [place.neighborhood, place.city].compactMap { $0?.nonEmpty }.joined(separator: " · ").nonEmpty,
+                                    summary: place.summary.nonEmpty, moments: place.moments ?? [],
+                                    onAppendNote: { text in appendToPlaceNote(key: key, name: place.name, city: place.city, tripID: place.tripID, text: text) },
+                                    onOpenNote: { openPlaceNote(key: key, name: place.name, city: place.city, tripID: place.tripID) },
+                                    onOpenLink: mapsLink(name: place.name, googlePlaceID: place.googlePlaceID, latitude: place.latitude, longitude: place.longitude)
+                                        .map { url in { UIApplication.shared.open(url) } })
+                                if place.latitude == nil {
+                                    Label("Not found on Google Maps yet", systemImage: "mappin.slash").font(Sketch.text(11, "SemiBold", relativeTo: .caption2))
+                                        .foregroundStyle(Sketch.coral).padding(.leading, 8)
+                                }
+                            }
+                        } }
+                        .task(id: places.map(\.id)) {
+                            await refreshCommunity(places.map { PlaceKey.of(googlePlaceID: $0.googlePlaceID, name: $0.name, city: $0.city) })
                         }
                         Button {
                             socialPlaceSourceID = source.id; socialPlaceName = ""; socialPlaceSummary = ""
@@ -13161,6 +13717,11 @@ private extension TripFlowView {
                 }
                 .padding(20)
             }
+            .task {
+                guard StudioDemo.scrollsToPlaces else { return }
+                try? await Task.sleep(for: .milliseconds(600)); reader.scrollTo("studio-places", anchor: .top)
+            }
+            }
             .background(Sketch.paper.ignoresSafeArea())
             .navigationTitle("Post").navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -13210,6 +13771,13 @@ private extension TripFlowView {
                         Text("Personal notes").tag(UUID?.none)
                         ForEach(trips) { trip in Text(trip.title).tag(Optional(trip.id)) }
                     }
+                    if let key = note?.placeKey {
+                        let place = note?.linkedPlaces?.first
+                        PlaceQuickTakeCard(placeName: note?.title ?? "", take: takeBinding(key), community: community(key),
+                                           onOpenLink: mapsLink(name: note?.title ?? "", googlePlaceID: place?.googlePlaceID ?? PlaceKey.googleID(key),
+                                                                latitude: place?.latitude, longitude: place?.longitude).map { url in { UIApplication.shared.open(url) } })
+                            .task(id: key) { await refreshCommunity([key]) }
+                    }
                     if let linkedPlaces = note?.linkedPlaces, !linkedPlaces.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Linked places").font(.headline)
@@ -13235,7 +13803,30 @@ private extension TripFlowView {
                     TextField("Your thoughts…", text: Binding(get: { travelNotes.first { $0.id == id }?.userText ?? "" }, set: { text in
                         if let index = travelNotes.firstIndex(where: { $0.id == id }) { travelNotes[index].userText = text; travelNotes[index].updatedAt = .now }
                     }), axis: .vertical).font(.body)
-                    ForEach(socialSources.filter { note?.sourceIDs.contains($0.id) == true }) { source in
+                    if let sections = note?.fromSources, !sections.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(note?.kind == "tips" ? "Tips from the video" : sections.count > 1 ? "From \(sections.count) videos" : "From the video")
+                                .font(.headline)
+                            ForEach(sections.keys.sorted(), id: \.self) { sourceKey in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    TextField("", text: Binding(get: { travelNotes.first { $0.id == id }?.fromSources?[sourceKey] ?? "" }, set: { text in
+                                        if let index = travelNotes.firstIndex(where: { $0.id == id }) {
+                                            travelNotes[index].fromSources?[sourceKey] = text; travelNotes[index].updatedAt = .now
+                                        }
+                                    }), axis: .vertical).font(.subheadline)
+                                    if let source = socialSources.first(where: { $0.id.uuidString == sourceKey }) {
+                                        HStack(spacing: 12) {
+                                            Button("Open video") { selectedTravelNoteID = nil; Task { try? await Task.sleep(for: .milliseconds(450)); selectedSocialSource = source } }
+                                            if let link = source.envelope.sourceURL.flatMap(URL.init(string:)) { Link("TikTok", destination: link) }
+                                        }.font(.caption.weight(.semibold)).tint(AppPalette.brand)
+                                    }
+                                }
+                                .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(AppPalette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            }
+                        }
+                    }
+                    ForEach(socialSources.filter { note?.sourceIDs.contains($0.id) == true && note?.fromSources?[$0.id.uuidString] == nil }) { source in
                         VStack(alignment: .leading, spacing: 16) {
                             Label(sourceStatus(source), systemImage: "link").font(.caption).foregroundStyle(.secondary)
                             ForEach(source.evidence.sorted { $0.order < $1.order }) { block in
@@ -13993,7 +14584,10 @@ enum StudioDemo {
         false
         #endif
     }
-    static var opensDetail: Bool { enabled && ProcessInfo.processInfo.arguments.contains("-TrippyStudioDetail") }
+    static var opensDetail: Bool { enabled && (ProcessInfo.processInfo.arguments.contains("-TrippyStudioDetail") || opensReady) }
+    /// Opens a read post (with places, the caption timeline and the quick-take card) instead of a queued one.
+    static var opensReady: Bool { enabled && ProcessInfo.processInfo.arguments.contains("-TrippyStudioReady") }
+    static var scrollsToPlaces: Bool { enabled && ProcessInfo.processInfo.arguments.contains("-TrippyStudioPlaces") }
     static func load() -> (sources: [ImportedSocialSource], places: [SocialPlaceMention])? {
         guard enabled else { return nil }
         func post(_ id: String, _ handle: String, _ caption: String, slides: Int = 0, stickers: [String] = [], duration: Int = 0, title: String? = nil) -> TikTokPostSnapshot {
@@ -14027,16 +14621,27 @@ enum StudioDemo {
                            status: "queued", error: "Waiting for free Gemini quota", ago: 120)
         let reading = source("TripBali", post("7704373081128652054", "thefoodyfinds", "We definitely love a good burger spot! 👀✨", duration: 42), status: "running", ago: 60)
         let failed = source("TripNewYork", nil, status: "failed", error: "TikTok didn't return this post. It may be private.", ago: 30)
+        var tips = source("TripBali", post("7704373081128652099", "athens.local", "Things I wish I knew before Athens", duration: 48), status: "ready",
+                          title: "Athens: what I wish I knew", summary: "Practical first-trip advice for Athens.", ago: 5400)
+        tips.postKind = "tips"
+        tips.tips = [SocialTip(title: "Metro from the airport", detail: "Line 3 goes straight to Syntagma; buy the €9 airport ticket.", at: "0:04"),
+                     SocialTip(title: "Acropolis at opening", detail: "Be at the gate at 8:00, the cruise groups arrive by 10.", at: "0:17"),
+                     SocialTip(title: "Tipping", detail: "Round up or leave about 10% at sit-down places.", at: "0:31")]
         func place(_ name: String, _ source: ImportedSocialSource, _ category: String, _ hood: String, _ tldr: String, found: Bool = true) -> SocialPlaceMention {
             SocialPlaceMention(id: UUID(), name: name, summary: tldr, sourceID: source.id, evidenceIDs: [], tripID: nil,
                                latitude: found ? 37.97 : nil, longitude: found ? 23.73 : nil, city: "Athens", category: category, neighborhood: hood, countryCode: "GR")
         }
-        let places = [place("Acapus", cozy, "Bars", "Exarcheia", "Board-game bar with warm, dim corners."), place("Minu", cozy, "Coffee", "Psyrri", "Plant-filled design café."),
+        var voulkanizater = place("Voulkanizater", voul, "Food", "Koukaki", "Warm, dimly lit spot for a first date.")
+        voulkanizater.moments = [SocialMoment(at: "0:02", text: "Hidden spot in Koukaki, easy to walk past"),
+                                 SocialMoment(at: "0:09", text: "“The burnt leek is the dish you come back for”"),
+                                 SocialMoment(at: "0:21", text: "Book on weekends, it fills by 9"),
+                                 SocialMoment(at: "0:30", text: "About €25 a head with wine")]
+        voulkanizater.googlePlaceID = "demo-voulkanizater"
+        let places = [voulkanizater, place("Acapus", cozy, "Bars", "Exarcheia", "Board-game bar with warm, dim corners."), place("Minu", cozy, "Coffee", "Psyrri", "Plant-filled design café."),
                       place("Bel Ray", cozy, "Coffee", "Koukaki", "Retro neighbourhood café-bar."), place("Trigono", cozy, "Coffee", "Pangrati", "Old-school kafeneio for slow afternoons."),
                       place("Easy Peasy", cozy, "Coffee", "Peristeri", "Cozy café with a summer rooftop vibe."), place("Usurum", cozy, "Bars", "Psyrri", "Lively brunch and cocktails spot."),
-                      place("Voulkanizater", voul, "Food", "Koukaki", "Warm, dimly lit spot for a first date."),
                       place("Okupa", okupa, "Bars", "Kerameikos", "Greek–Eastern Med plates and vinyl.", found: false)]
-        return ([anasa, reading, failed, cozy, voul, okupa], places)
+        return (opensReady ? [voul, anasa, reading, failed, cozy, okupa, tips] : [anasa, reading, failed, cozy, voul, okupa, tips], places)
     }
 }
 
@@ -14473,6 +15078,13 @@ private struct GoogleAuthorAvatar: View {
     }
 }
 
+private struct DirectionsLayer: ViewModifier {
+    let apply: (AnyView) -> AnyView
+    func body(content: Content) -> some View { apply(AnyView(content)) }
+}
+
+private struct DirectionsPickerTarget: Identifiable { let start: Bool; var id: Bool { start } }
+
 private struct RouteStepsSheet: View {
     let route: MKRoute
     @Environment(\.dismiss) private var dismiss
@@ -14491,11 +15103,11 @@ private struct RouteStepsSheet: View {
             List {
                 Section {
                     HStack(spacing: 14) {
-                        Image(systemName: "figure.walk").font(.title2.weight(.semibold))
+                        Image(systemName: route.transportType == .walking ? "figure.walk" : "car.fill").font(.title2.weight(.semibold))
                             .foregroundStyle(AppPalette.brand).frame(width: 48, height: 48)
                             .background(AppPalette.brand.opacity(0.12), in: Circle())
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Walking route").font(.headline)
+                            Text(route.transportType == .walking ? "Walking route" : "Driving route").font(.headline)
                             Text("\(distanceText(route.distance)) · \(durationText)")
                                 .font(.subheadline).foregroundStyle(AppPalette.secondaryInk)
                         }

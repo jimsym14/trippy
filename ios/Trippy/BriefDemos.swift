@@ -540,7 +540,7 @@ struct WorldDemo: View {
         }
         .task {
             let key = GlobeTextureKey(dark: true, satellite: false, style: "brief-world-\(countries)")
-            texture = await GlobeTextureBuilder.shared.texture(key: key, shapes: nil, visits: visits)
+            texture = await GlobeTextureBuilder.shared.texture(key: key, shapes: nil, visits: visits, visitedCodes: Set(visits.compactMap { $0.countryCode?.uppercased() }))
             if reduceMotion { count = countries; return }
             for i in 0...countries { withAnimation(.snappy) { count = i }; try? await Task.sleep(for: .seconds(0.12)) }
         }

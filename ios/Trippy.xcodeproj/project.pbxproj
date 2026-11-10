@@ -58,8 +58,25 @@
 		C70000000000000000000013 /* BeenShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000013 /* BeenShare.swift */; };
 		C700000000000000000000C1 /* GooglePlacesSwift in Frameworks */ = {isa = PBXBuildFile; productRef = C700000000000000000000C2 /* GooglePlacesSwift */; };
 		C700000000000000000000C4 /* PlaceSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000C4 /* PlaceSources.swift */; };
+		C7000000000000000000F002 /* CommunityVideos.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F002 /* CommunityVideos.swift */; };
+		C7000000000000000000F003 /* LibraryWheel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F003 /* LibraryWheel.swift */; };
+		C7000000000000000000F004 /* DirectionsMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F004 /* DirectionsMode.swift */; };
+		C7000000000000000000F005 /* ZoomAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F005 /* ZoomAdd.swift */; };
+		C7000000000000000000F001 /* PlaceTakes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F001 /* PlaceTakes.swift */; };
 		C700000000000000000000C5 /* CostCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000C5 /* CostCalculator.swift */; };
 		C700000000000000000000C6 /* cost-model.json in Resources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000C6 /* cost-model.json */; };
+		C7000000000000000000E031 /* BeenLook.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E031 /* BeenLook.swift */; };
+		C7000000000000000000E032 /* BeenAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E032 /* BeenAdd.swift */; };
+		C7000000000000000000E033 /* BeenPhotos.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E033 /* BeenPhotos.swift */; };
+		C7000000000000000000E034 /* BeenStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E034 /* BeenStats.swift */; };
+		C7000000000000000000E035 /* BeenBadges.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E035 /* BeenBadges.swift */; };
+		C7000000000000000000E001 /* GlobeWorld.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E001 /* GlobeWorld.swift */; };
+		C7000000000000000000E002 /* globe-borders.bin in Resources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E002 /* globe-borders.bin */; };
+		C7000000000000000000E003 /* globe-elevation.jpg in Resources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E003 /* globe-elevation.jpg */; };
+		C7000000000000000000E010 /* Destinations.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E010 /* Destinations.swift */; };
+		C7000000000000000000E011 /* JourneyEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E011 /* JourneyEngine.swift */; };
+		C7000000000000000000E012 /* JourneyBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E012 /* JourneyBuilder.swift */; };
+		C7000000000000000000E013 /* WhereNext.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000E013 /* WhereNext.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -127,6 +144,11 @@
 		C800000000000000000000B7 /* Account.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Account.swift; sourceTree = "<group>"; };
 		C800000000000000000000B8 /* BriefDemos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BriefDemos.swift; sourceTree = "<group>"; };
 		C800000000000000000000C4 /* PlaceSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceSources.swift; sourceTree = "<group>"; };
+		C8000000000000000000F002 /* CommunityVideos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommunityVideos.swift; sourceTree = "<group>"; };
+		C8000000000000000000F003 /* LibraryWheel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWheel.swift; sourceTree = "<group>"; };
+		C8000000000000000000F004 /* DirectionsMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectionsMode.swift; sourceTree = "<group>"; };
+		C8000000000000000000F005 /* ZoomAdd.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomAdd.swift; sourceTree = "<group>"; };
+		C8000000000000000000F001 /* PlaceTakes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceTakes.swift; sourceTree = "<group>"; };
 		C800000000000000000000C5 /* CostCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CostCalculator.swift; sourceTree = "<group>"; };
 		C800000000000000000000B9 /* AccountData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountData.swift; sourceTree = "<group>"; };
 		C80000000000000000000003 /* TripGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripGuideView.swift; sourceTree = "<group>"; };
@@ -140,6 +162,18 @@
 		C80000000000000000000011 /* BeenGlobe3D.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeenGlobe3D.swift; sourceTree = "<group>"; };
 		C80000000000000000000012 /* BeenToPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeenToPage.swift; sourceTree = "<group>"; };
 		C80000000000000000000013 /* BeenShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeenShare.swift; sourceTree = "<group>"; };
+		C8000000000000000000E031 /* BeenLook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BeenLook.swift"; sourceTree = "<group>"; };
+		C8000000000000000000E032 /* BeenAdd.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BeenAdd.swift"; sourceTree = "<group>"; };
+		C8000000000000000000E033 /* BeenPhotos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BeenPhotos.swift"; sourceTree = "<group>"; };
+		C8000000000000000000E034 /* BeenStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BeenStats.swift"; sourceTree = "<group>"; };
+		C8000000000000000000E035 /* BeenBadges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BeenBadges.swift"; sourceTree = "<group>"; };
+		C8000000000000000000E001 /* GlobeWorld.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GlobeWorld.swift"; sourceTree = "<group>"; };
+		C8000000000000000000E002 /* globe-borders.bin */ = {isa = PBXFileReference; lastKnownFileType = file; path = "globe-borders.bin"; sourceTree = "<group>"; };
+		C8000000000000000000E003 /* globe-elevation.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "globe-elevation.jpg"; sourceTree = "<group>"; };
+		C8000000000000000000E010 /* Destinations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Destinations.swift"; sourceTree = "<group>"; };
+		C8000000000000000000E011 /* JourneyEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "JourneyEngine.swift"; sourceTree = "<group>"; };
+		C8000000000000000000E012 /* JourneyBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "JourneyBuilder.swift"; sourceTree = "<group>"; };
+		C8000000000000000000E013 /* WhereNext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WhereNext.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -191,6 +225,16 @@
 				C80000000000000000000013 /* BeenShare.swift */,
 				C80000000000000000000012 /* BeenToPage.swift */,
 				C80000000000000000000011 /* BeenGlobe3D.swift */,
+				C8000000000000000000E013 /* WhereNext.swift */,
+				C8000000000000000000E012 /* JourneyBuilder.swift */,
+				C8000000000000000000E011 /* JourneyEngine.swift */,
+				C8000000000000000000E010 /* Destinations.swift */,
+				C8000000000000000000E031 /* BeenLook.swift */,
+				C8000000000000000000E032 /* BeenAdd.swift */,
+				C8000000000000000000E033 /* BeenPhotos.swift */,
+				C8000000000000000000E034 /* BeenStats.swift */,
+				C8000000000000000000E035 /* BeenBadges.swift */,
+				C8000000000000000000E001 /* GlobeWorld.swift */,
 				C80000000000000000000010 /* CountryShapes.swift */,
 				C80000000000000000000009 /* LegacyText.swift */,
 				C80000000000000000000016 /* ComposerPieces.swift */,
@@ -213,6 +257,11 @@
 				C800000000000000000000B8 /* BriefDemos.swift */,
 				C800000000000000000000B9 /* AccountData.swift */,
 				C800000000000000000000C5 /* CostCalculator.swift */,
+				C8000000000000000000F001 /* PlaceTakes.swift */,
+				C8000000000000000000F005 /* ZoomAdd.swift */,
+				C8000000000000000000F004 /* DirectionsMode.swift */,
+				C8000000000000000000F003 /* LibraryWheel.swift */,
+				C8000000000000000000F002 /* CommunityVideos.swift */,
 				C800000000000000000000C4 /* PlaceSources.swift */,
 				C80000000000000000000001 /* TripGuideModel.swift */,
 				C80000000000000000000000 /* SketchKit.swift */,
@@ -249,6 +298,8 @@
                 B30000000000000000000002 /* globe-earth.jpg */,
 				C80000000000000000000017 /* stay-grid-barcelona.json */,
 				C800000000000000000000C6 /* cost-model.json */,
+				C8000000000000000000E003 /* globe-elevation.jpg */,
+				C8000000000000000000E002 /* globe-borders.bin */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -331,6 +382,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000004 /* Brand in Resources */,
+				C7000000000000000000E003 /* globe-elevation.jpg in Resources */,
+				C7000000000000000000E002 /* globe-borders.bin in Resources */,
 				A10000000000000000000005 /* Assets.xcassets in Resources */,
 				A10000000000000000000006 /* LaunchScreen.storyboard in Resources */,
 				A10000000000000000000008 /* PlusJakartaSans-Regular.ttf in Resources */,
@@ -370,6 +423,16 @@
 				C70000000000000000000013 /* BeenShare.swift in Sources */,
 				C70000000000000000000012 /* BeenToPage.swift in Sources */,
 				C70000000000000000000011 /* BeenGlobe3D.swift in Sources */,
+				C7000000000000000000E013 /* WhereNext.swift in Sources */,
+				C7000000000000000000E012 /* JourneyBuilder.swift in Sources */,
+				C7000000000000000000E011 /* JourneyEngine.swift in Sources */,
+				C7000000000000000000E010 /* Destinations.swift in Sources */,
+				C7000000000000000000E031 /* BeenLook.swift in Sources */,
+				C7000000000000000000E032 /* BeenAdd.swift in Sources */,
+				C7000000000000000000E033 /* BeenPhotos.swift in Sources */,
+				C7000000000000000000E034 /* BeenStats.swift in Sources */,
+				C7000000000000000000E035 /* BeenBadges.swift in Sources */,
+				C7000000000000000000E001 /* GlobeWorld.swift in Sources */,
 				C70000000000000000000010 /* CountryShapes.swift in Sources */,
 				C70000000000000000000009 /* LegacyText.swift in Sources */,
 				C70000000000000000000016 /* ComposerPieces.swift in Sources */,
@@ -392,6 +455,11 @@
 				C700000000000000000000B8 /* BriefDemos.swift in Sources */,
 				C700000000000000000000B9 /* AccountData.swift in Sources */,
 				C700000000000000000000C5 /* CostCalculator.swift in Sources */,
+				C7000000000000000000F001 /* PlaceTakes.swift in Sources */,
+				C7000000000000000000F005 /* ZoomAdd.swift in Sources */,
+				C7000000000000000000F004 /* DirectionsMode.swift in Sources */,
+				C7000000000000000000F003 /* LibraryWheel.swift in Sources */,
+				C7000000000000000000F002 /* CommunityVideos.swift in Sources */,
 				C700000000000000000000C4 /* PlaceSources.swift in Sources */,
 				C70000000000000000000001 /* TripGuideModel.swift in Sources */,
 				C70000000000000000000000 /* SketchKit.swift in Sources */,

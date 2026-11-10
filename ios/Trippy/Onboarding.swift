@@ -109,12 +109,29 @@ enum PlaceCatalog {
         let aliases = ["united states": "US", "united kingdom": "GB", "czech republic": "CZ", "south korea": "KR", "russia": "RU",
                        "turkey": "TR", "vietnam": "VN", "hong kong": "HK", "taiwan": "TW", "bosnia and herzegovina": "BA",
                        "north macedonia": "MK", "ivory coast": "CI", "kosovo": "XK"]
-        return points.compactMap { p in
+        let all = points.compactMap { p -> CityEntry? in
             guard let name = p["n"] as? String, let country = (p["c"] as? String)?.lowercased(),
                   let lat = (p["lat"] as? NSNumber)?.doubleValue, let lon = (p["lon"] as? NSNumber)?.doubleValue,
                   let code = aliases[country] ?? byName[country] else { return nil }
             return CityEntry(name: name, countryCode: code, latitude: lat, longitude: lon)
         }
+        // The source lists districts as cities ("Paris 15 Vaugirard", "Buda" and "Pest" beside "Budapest").
+        // The list is biggest first, so a place is dropped when a bigger one in the same country is on top of it
+        // (within 9 km), or is nearby (25 km) and is named in it.
+        var kept: [String: [CityEntry]] = [:]
+        var result: [CityEntry] = []
+        for city in all {
+            if city.name.contains(where: \.isNumber) { continue }
+            let folded = VisitedPlace.normalized(city.name)
+            let duplicate = (kept[city.countryCode] ?? []).contains { big in
+                let dLat = (big.latitude - city.latitude) * 111, dLon = (big.longitude - city.longitude) * 111 * cos(city.latitude * .pi / 180)
+                let km = (dLat * dLat + dLon * dLon).squareRoot()
+                return km < 9 || (km < 25 && folded.contains(VisitedPlace.normalized(big.name)))
+            }
+            if duplicate { continue }
+            kept[city.countryCode, default: []].append(city); result.append(city)
+        }
+        return result
     }()
 
     static func cities(in code: String) -> [CityEntry] { cities.filter { $0.countryCode == code } }
@@ -419,6 +436,8 @@ struct BriefCardStep: View {
 /// the trail above it ("Greece › Athens › Koukaki") is what the map will use.
 struct HomeStep: View {
     @Binding var home: HomeProfile
+    /// Optional street address; stays on this phone only (see AccountData.deviceOnly).
+    @AppStorage(HomeAddress.key) private var address = ""
     @State private var query = ""
     @StateObject private var search = LocalSearch()
     @FocusState private var focused: Bool
@@ -436,12 +455,37 @@ struct HomeStep: View {
                 }
                 if !home.isEmpty { trail }
                 if !(level == .area && home.area != nil) { field; results }
+                if home.city != nil { addressCard.transition(.move(edge: .bottom).combined(with: .opacity)) }
             }
             .padding(.horizontal, 24).padding(.top, 6).padding(.bottom, 24)
             .animation(.spring(response: 0.4, dampingFraction: 0.85), value: home)
         }
         .scrollDismissesKeyboard(.interactively)
         .onChange(of: query) { _, value in search.update(value, level: level == .area ? .area : .city, around: home.coordinate) }
+    }
+
+    /// Optional home address, explained: what it's for, and that it never leaves the phone.
+    private var addressCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("HOME ADDRESS · OPTIONAL").font(Sketch.eyebrow).tracking(1.2).foregroundStyle(Sketch.inkFaint)
+                Spacer()
+                Label("Only on this phone", systemImage: "lock.fill").font(Sketch.text(11, "Bold", relativeTo: .caption2)).foregroundStyle(Sketch.sage)
+            }
+            HStack(spacing: 10) {
+                Image(systemName: "house").foregroundStyle(Sketch.inkFaint)
+                TextField("Street and number", text: $address).font(Sketch.text(17, relativeTo: .body))
+                    .textContentType(.fullStreetAddress).autocorrectionDisabled().submitLabel(.done)
+                if !address.isEmpty {
+                    Button { address = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Sketch.inkFaint) }
+                        .accessibilityLabel("Clear address")
+                }
+            }
+            .padding(.horizontal, 16).frame(minHeight: 52)
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Sketch.card))
+            Text("For your own use: directions can start from your door, and day plans can begin and end at home. It's saved on this phone only — never sent to us, not even to your account backup.")
+                .font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft).fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     /// Greece › Athens › Koukaki, each part tappable to go back to it.
@@ -620,6 +664,8 @@ struct BeenStep: View {
     @State private var showCities = false
     @State private var cityQuery = ""
     @State private var looking = false
+    @State private var zoomProbe: ZoomProbe?
+    @State private var zoomTarget: ZoomAddTarget?
     @FocusState private var searching: Bool
 
     private var visits: [VisitedPlace] { VisitedPlace.decode(storage) }
@@ -628,6 +674,8 @@ struct BeenStep: View {
         return visits.compactMap { $0.countryCode?.uppercased() }.filter { seen.insert($0).inserted }
     }
 
+    /// The flag whose visit date is being picked on the wheels.
+    @State private var whenCode: String?
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -648,7 +696,12 @@ struct BeenStep: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .task(id: codes.joined()) { await redraw() }
+        .sheet(item: Binding(get: { whenCode.map(WhenCode.init) }, set: { whenCode = $0?.id })) { item in
+            WhenPickerSheet(title: PlaceCatalog.country(item.id).map { "When did you go to \($0.name)?" } ?? "When did you go?",
+                            date: Binding(get: { date(for: item.id) }, set: { setDate($0, for: item.id) }))
+        }
     }
+    private struct WhenCode: Identifiable { let id: String }
 
     private var summary: String {
         let percent = Int((Double(codes.count) / 195 * 100).rounded())
@@ -658,8 +711,30 @@ struct BeenStep: View {
     private var globe: some View {
         ZStack(alignment: .bottom) {
             BeenGlobe3DView(texture: texture, focus: focus ?? home.coordinate ?? .init(latitude: 42, longitude: 15), focusID: focusID,
-                            dark: scheme == .dark, reduceMotion: reduceMotion) { tapped in Task { await toggle(at: tapped) } }
+                            dark: scheme == .dark, reduceMotion: reduceMotion, onTap: { tapped in Task { await toggle(at: tapped) } },
+                            onSettle: { center, z in
+                                let next = z < 3.9 ? ZoomProbe(latitude: (center.latitude * 50).rounded() / 50, longitude: (center.longitude * 50).rounded() / 50, level: .country) : nil
+                                if next != zoomProbe { zoomProbe = next }
+                            })
                 .frame(height: 320)
+                .overlay {
+                    if let zoomTarget {
+                        // Zoomed into a country: a "+" right where you're looking.
+                        ZoomAddBubble(target: zoomTarget, added: codes.contains(zoomTarget.countryCode)) {
+                            if let country = PlaceCatalog.country(zoomTarget.countryCode) { toggle(country) }
+                        }
+                        .offset(y: -30)
+                        .id(zoomTarget.countryCode)
+                    }
+                }
+                .task(id: zoomProbe) {
+                    guard let zoomProbe else { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { zoomTarget = nil }; return }
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard !Task.isCancelled else { return }
+                    let found = await ZoomAddTarget.resolve(zoomProbe.center, level: .country)
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.62)) { zoomTarget = found }
+                }
                 .accessibilityLabel("Globe. Tap a country to add it.")
             if looking { ProgressView().padding(.bottom, 12) }
             if let last { lastCard(last).padding(.bottom, 4).transition(.move(edge: .bottom).combined(with: .opacity)) }
@@ -694,7 +769,8 @@ struct BeenStep: View {
                     if let country = PlaceCatalog.country(code) {
                         Menu {
                             Section(country.name) {
-                                WhenMenu.items(date: Binding(get: { date(for: code) }, set: { setDate($0, for: code) }))
+                                Button(date(for: code).map { "When: " + $0.formatted(.dateTime.month(.wide).year()) } ?? "When did you go?",
+                                       systemImage: "calendar") { whenCode = code }
                                 Button("Remove", systemImage: "trash", role: .destructive) { toggle(country) }
                             }
                         } label: {
@@ -781,7 +857,7 @@ struct BeenStep: View {
         if adding {
             let point = country.latitude.flatMap { lat in country.longitude.map { CLLocationCoordinate2D(latitude: lat, longitude: $0) } } ?? tapped
             guard let point else { return }
-            records = VisitedPlace.adding(VisitedPlace(name: country.name, countryCode: country.code, latitude: point.latitude, longitude: point.longitude), to: records)
+            records = VisitedPlace.adding(VisitedPlace(name: country.name, countryCode: country.code, latitude: point.latitude, longitude: point.longitude, kind: .country, dated: false), to: records)
             focus = point; focusID = UUID()
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         } else {
@@ -796,7 +872,7 @@ struct BeenStep: View {
         if records.contains(where: { $0.name == city.name && $0.countryCode?.uppercased() == city.countryCode }) {
             records.removeAll { $0.name == city.name && $0.countryCode?.uppercased() == city.countryCode }
         } else {
-            records = VisitedPlace.adding(VisitedPlace(name: city.name, countryCode: city.countryCode, latitude: city.latitude, longitude: city.longitude), to: records)
+            records = VisitedPlace.adding(VisitedPlace(name: city.name, countryCode: city.countryCode, latitude: city.latitude, longitude: city.longitude, kind: .city, dated: false), to: records)
             focus = .init(latitude: city.latitude, longitude: city.longitude); focusID = UUID()
         }
         withAnimation(.snappy) { storage = VisitedPlace.encode(records) }
@@ -805,14 +881,11 @@ struct BeenStep: View {
 
     /// nil = "any time" (stored as the moment it was added, as the Been page always has).
     private func date(for code: String) -> Date? {
-        let dates = visits.filter { $0.countryCode?.uppercased() == code }.map(\.visitedAt)
-        guard let first = dates.min(), Calendar.current.component(.day, from: first) == 1,
-              Calendar.current.component(.hour, from: first) == 12 else { return nil }
-        return first
+        visits.filter { $0.countryCode?.uppercased() == code }.compactMap(\.when).min()
     }
     private func setDate(_ date: Date?, for code: String) {
         var records = visits
-        for i in records.indices where records[i].countryCode?.uppercased() == code { records[i].visitedAt = date ?? .now }
+        for i in records.indices where records[i].countryCode?.uppercased() == code { records[i].setWhen(date) }
         storage = VisitedPlace.encode(records)
     }
 
@@ -824,27 +897,35 @@ struct BeenStep: View {
             return .init(code: code, latitude: group.coordinate.latitude, longitude: group.coordinate.longitude)
         }
         let key = { GlobeTextureKey(dark: scheme == .dark, satellite: false, style: "been-step-\(codes.joined())-\(geometries.count)") }
-        texture = await GlobeTextureBuilder.shared.texture(key: key(), shapes: nil, visits: visits)
+        texture = await GlobeTextureBuilder.shared.texture(key: key(), shapes: nil, visits: visits, visitedCodes: Set(codes.map { $0.uppercased() }))
         geometries = await CountryShapeStore.shared.geometries(for: requests).shapes
         guard !geometries.isEmpty, !Task.isCancelled else { return }
         let shapes = CountryShapesOverlay(geometries: geometries, stats: snapshot.countryStats,
                                           style: CountryShapeStyle(fill: true, outlines: true, hatching: false, mode: .visited, dark: scheme == .dark))
-        texture = await GlobeTextureBuilder.shared.texture(key: key(), shapes: shapes, visits: visits)
+        texture = await GlobeTextureBuilder.shared.texture(key: key(), shapes: shapes, visits: visits, visitedCodes: Set(codes.map { $0.uppercased() }))
     }
 }
 
-/// "When?" — any time, or a month and year.
+/// "When?" — any time, or a month and year, picked on the standard iOS scroll wheels.
 struct WhenMenu: View {
     @Binding var date: Date?
+    var title: String = "When did you go?"
+    @State private var open = false
     var body: some View {
-        Menu { Self.items(date: $date) } label: {
+        Button { open = true } label: {
             Label(date.map { $0.formatted(.dateTime.month(.abbreviated).year()) } ?? "When?", systemImage: "calendar")
                 .font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).foregroundStyle(Sketch.ink)
                 .padding(.horizontal, 10).frame(minHeight: 34).background(Capsule().fill(Sketch.card))
         }
+        .buttonStyle(.plain)
         .accessibilityLabel(date.map { "Visited \($0.formatted(.dateTime.month(.wide).year()))" } ?? "When did you go?")
+        .sheet(isPresented: $open) { WhenPickerSheet(title: title, date: $date) }
     }
 
+    /// The date stored for "this month": the 1st at noon (noon keeps it on the same day in every time zone).
+    static func month(_ month: Int, _ year: Int) -> Date? {
+        Calendar.current.date(from: DateComponents(year: year, month: month, day: 1, hour: 12))
+    }
     @ViewBuilder static func items(date: Binding<Date?>) -> some View {
         Button("Any time", systemImage: date.wrappedValue == nil ? "checkmark" : "") { date.wrappedValue = nil }
         let year = Calendar.current.component(.year, from: .now)
@@ -857,6 +938,70 @@ struct WhenMenu: View {
                 }
             }
         }
+    }
+}
+
+
+/// Month and year on two scroll wheels, "Any time" to clear, and a tick to confirm and close.
+/// `extra` adds controls under the wheels (for example "Same date for the cities you added", or Remove).
+struct WhenPickerSheet<Extra: View>: View {
+    let title: String
+    @Binding var date: Date?
+    var onConfirm: (Date?) -> Void = { _ in }
+    @ViewBuilder var extra: () -> Extra
+    @Environment(\.dismiss) private var dismiss
+    @State private var month = Calendar.current.component(.month, from: .now)
+    @State private var year = Calendar.current.component(.year, from: .now)
+    @State private var anyTime = false
+    private let thisYear = Calendar.current.component(.year, from: .now)
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text(title).font(Sketch.text(17, "ExtraBold", relativeTo: .headline)).foregroundStyle(Sketch.ink)
+                Spacer()
+                Button { confirm() } label: {
+                    Image(systemName: "checkmark").font(.system(size: 15, weight: .bold)).foregroundStyle(Sketch.paper)
+                        .frame(width: 40, height: 40).background(Circle().fill(Sketch.ink))
+                }
+                .accessibilityLabel("Done")
+            }
+            Toggle("Any time", isOn: $anyTime.animation(.snappy)).font(Sketch.text(15, "SemiBold", relativeTo: .body)).tint(Sketch.sage)
+            HStack(spacing: 0) {
+                Picker("Month", selection: $month) {
+                    ForEach(1...12, id: \.self) { Text(Calendar.current.standaloneMonthSymbols[$0 - 1]).tag($0) }
+                }
+                Picker("Year", selection: $year) {
+                    ForEach(Array(stride(from: thisYear, through: thisYear - 80, by: -1)), id: \.self) { Text(String($0)).tag($0) }
+                }
+                .frame(maxWidth: 130)
+            }
+            .pickerStyle(.wheel)
+            .frame(height: 150)
+            .disabled(anyTime).opacity(anyTime ? 0.35 : 1)
+            extra()
+        }
+        .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 8)
+        .presentationDetents([.height(Extra.self == EmptyView.self ? 330 : 400)])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(Sketch.paper)
+        .onAppear {
+            if let date {
+                month = Calendar.current.component(.month, from: date); year = Calendar.current.component(.year, from: date)
+            } else { anyTime = false }
+        }
+        .onChange(of: month) { _, _ in date = value }
+        .onChange(of: year) { _, _ in date = value }
+        .onChange(of: anyTime) { _, _ in date = value }
+    }
+
+    private var value: Date? { anyTime ? nil : WhenMenu.month(month, year) }
+    private func confirm() { TrippyHaptics.selection(); date = value; onConfirm(value); dismiss() }
+}
+
+extension WhenPickerSheet where Extra == EmptyView {
+    init(title: String, date: Binding<Date?>, onConfirm: @escaping (Date?) -> Void = { _ in }) {
+        self.init(title: title, date: date, onConfirm: onConfirm, extra: { EmptyView() })
     }
 }
 
