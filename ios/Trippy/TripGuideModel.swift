@@ -24,6 +24,10 @@ struct GuidePlace: Identifiable, Hashable {
     let tags: [String]
     /// A short reason backed by data (a guide line, fame, rating or "Saved by you"), no model needed.
     var reason = ""
+    /// The traveller's own: a pin, a save, a note or a video of theirs brought it into the plan.
+    var personal = false
+    /// How many videos (theirs or the community's) recommend it.
+    var videoCount = 0
 
     static func == (a: GuidePlace, b: GuidePlace) -> Bool { a.id == b.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -55,9 +59,18 @@ struct GuidePlace: Identifiable, Hashable {
     }
 
     /// Short reading text: the first sentence, without the "Wikivoyage:" prefix.
+    /// Why to go, when the plan gave a real reason. Stock phrases that only say where the record came from
+    /// ("from the local catalog") are not reasons and are dropped.
+    var plainWhy: String {
+        let stock = ["Από τον τοπικό κατάλογο", "Από τη βιβλιοθήκη σου", "Από την κοινότητα", "Προτείνεται από το Wikivoyage",
+                     "Προτείνεται σε ταξιδιωτικό βίντεο", "From the local catalog"]
+        for text in [reason, why] where !text.isEmpty && !stock.contains(where: text.hasPrefix) { return text }
+        return ""
+    }
+
     var shortDescription: String {
         var text = description
-        for prefix in ["Wikivoyage: ", "Wikidata: "] where text.hasPrefix(prefix) { text = String(text.dropFirst(prefix.count)) }
+        for prefix in ["Wikivoyage: ", "Wikidata: ", "Σχόλιο δημιουργού: "] where text.hasPrefix(prefix) { text = String(text.dropFirst(prefix.count)) }
         if let end = text.range(of: ". ") { text = String(text[..<end.lowerBound]) + "." }
         return text.count > 160 ? String(text.prefix(157)) + "…" : text
     }
@@ -181,6 +194,9 @@ struct GuideModel {
                                     reviewCount: num(rating?["review_count"]).map { Int($0) },
                                     reservationRequired: p["reservation_required"] as? Bool, tags: p["tags"] as? [String] ?? [],
                                     reason: str(p["reason"]) ?? "")
+            let nodes = p["library_node_ids"] as? [String] ?? []
+            places[id]?.personal = (num(p["personal_priority"]) ?? 0) > 50
+            places[id]?.videoCount = nodes.filter { $0.hasPrefix("community:") || $0.hasPrefix("video:") }.count
         }
         let itinerary = root["itinerary"] as? [String: Any]
         for (i, d) in ((itinerary?["days"] as? [[String: Any]]) ?? []).enumerated() {

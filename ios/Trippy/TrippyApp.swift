@@ -1648,6 +1648,8 @@ private struct TripFlowView: View {
     /// Indexed community videos for the trip being planned (the "Videos about <city>" choice in the trip form).
     @State private var planSources: CommunityPlanSources?
     @State private var planSourcesLoading = false
+    /// The city whose transit lines and tickets are open (trip map → Getting around).
+    @State private var transitRequest: TransitRequest?
     @State private var processingShares = false
     @State private var runningSocialExtractions = false
     @State private var shareSummary: ShareSummary?
@@ -1844,8 +1846,16 @@ private struct TripFlowView: View {
             if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "-TrippyLibrarySection"), index + 1 < ProcessInfo.processInfo.arguments.count {
                 rootTab = "library"; librarySection = ProcessInfo.processInfo.arguments[index + 1]; libraryHasMounted = true
             }
+            // `-TrippyTransitDemo Athens` opens Getting around for that city (3 days, 2 travellers).
+            if let city = UserDefaults.standard.string(forKey: "TrippyTransitDemo") {
+                Task { try? await Task.sleep(for: .seconds(1.5)); transitRequest = TransitRequest(city: city, coordinate: nil, days: 3, travelers: 2) }
+            }
+            // Opens the place sheet (no taps in the simulator): the first place with a take, else the first place.
+            if ProcessInfo.processInfo.arguments.contains("-TrippyAtlasPlace") {
+                Task { try? await Task.sleep(for: .seconds(1.5)); let atlas = libraryAtlas; atlasPlaceKey = (atlas.places.first { $0.take != nil } ?? atlas.places.first)?.id }
+            }
             #endif
-            if CommunityDemo.browse != nil {
+            if CommunityDemo.browse != nil || GuidesDemo.browse != nil {
                 rootTab = "library"; librarySection = "Videos"; videosCommunity = true; libraryHasMounted = true
                 if let video = CommunityDemo.video, ProcessInfo.processInfo.arguments.contains("-TrippyCommunityDetail") {
                     Task { try? await Task.sleep(for: .seconds(1.2)); openCommunityVideo = CommunityVideoKey(id: video.key) }
@@ -2077,6 +2087,10 @@ private struct TripFlowView: View {
                 let atlas = libraryAtlas
                 if let place = atlas.place(atlasPlaceKey) { AtlasPlaceSheet(place: place, atlas: atlas, actions: atlasActions) }
             }
+        }
+        .sheet(item: $transitRequest) { request in
+            TransitSheet(request: request, baseURL: bridgeBaseURL, token: bridgeToken, preview: TransitDemo.answer)
+                .presentationDetents([.large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
         }
         .sheet(isPresented: $showImportLink) { TrippyScreen { importLinkSheet } }
         .sheet(isPresented: $showTripIdentity) { TrippyScreen { tripIdentityEditor } }
@@ -7242,7 +7256,8 @@ private extension TripFlowView {
         if let trip = trips.first(where: { $0.id == id }), let research = trip.research?.nonEmpty {
             TripGuideView(input: GuideInput(tripID: trip.id, title: trip.title, destination: trip.brief.destination,
                                             startDate: trip.brief.startDate, endDate: trip.brief.endDate,
-                                            travelers: trip.brief.travelers, research: research, travelMode: trip.brief.travelMode),
+                                            travelers: trip.brief.travelers, research: research, travelMode: trip.brief.travelMode,
+                                            bridgeURL: bridgeBaseURL, bridgeToken: bridgeToken),
                           onClose: { guideTripID = nil },
                           onOpenDetails: { showLegacyDetails = true },
                           onEditBrief: { guideTripID = nil; Task { @MainActor in try? await Task.sleep(for: .milliseconds(450)); openComposer(for: trip) } },
@@ -7610,6 +7625,12 @@ private extension TripFlowView {
             return (category.symbol, category.tint, category.rawValue)
         }
     }
+    /// Lines and tickets for the trip's city, sized to its days and travellers.
+    func openTransit() {
+        let city = brief.destination
+        let known = destinationCoordinate ?? cityCoordinates[city].map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        transitRequest = TransitRequest(city: city, coordinate: known, days: max(1, brief.duration), travelers: max(1, brief.travelers))
+    }
     /// A link tapped inside the place sheet: close the sheet first, then go there.
     private func afterPlaceSheet(_ run: @escaping () -> Void) {
         guard atlasPlaceKey != nil else { run(); return }
@@ -7945,6 +7966,7 @@ private extension TripFlowView {
                     .frame(width: 44, height: 44).contentShape(Circle())
             }.buttonStyle(QuietPressStyle()).accessibilityLabel("Search the map")
             Menu {
+                Button("Getting around", systemImage: "tram.fill") { openTransit() }
                 Button("Map layers", systemImage: "square.3.layers.3d") { showTripMapFilters = true }
                 Toggle(isOn: $tripShowsApplePlaces) { Label("Apple Maps places", systemImage: "apple.logo") }
                 Button(darkMode ? "Light map" : "Dark map", systemImage: darkMode ? "sun.max" : "moon") { darkMode.toggle() }
@@ -8140,7 +8162,8 @@ private extension TripFlowView {
         if let trip = activeTrip, let research = trip.research?.nonEmpty {
             TripGuideView(input: GuideInput(tripID: trip.id, title: trip.title, destination: trip.brief.destination,
                                             startDate: trip.brief.startDate, endDate: trip.brief.endDate,
-                                            travelers: trip.brief.travelers, research: research, travelMode: trip.brief.travelMode),
+                                            travelers: trip.brief.travelers, research: research, travelMode: trip.brief.travelMode,
+                                            bridgeURL: bridgeBaseURL, bridgeToken: bridgeToken),
                           onClose: { showTripDetails = false },
                           onOpenDetails: { showLegacyDetails = true },
                           onEditBrief: { showTripDetails = false; openComposer(for: trip) })
@@ -12060,7 +12083,8 @@ private struct TrippyMapCanvas<Header: View>: View {
         .overlay(alignment: .bottom) {
             if directionsActive {
                 DirectionsRoutesCard(model: directions, onAppleMaps: { directions.openInAppleMaps(location: locationService.location) },
-                                     onClose: closeDirections)
+                                     onClose: closeDirections,
+                                     onTransitLines: { directions.loadLines(location: locationService.location, baseURL: placesBaseURL, token: placesAccessToken) })
                     .frame(maxWidth: 720)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }

@@ -140,6 +140,26 @@ td.n, th.n { text-align: right; }
       </div>
     </div>
 
+    <section class="card" id="callsCard">
+      <h2>Call log · every AI and API call</h2>
+      <p class="small muted" style="margin-top:-6px">Outbound calls only (Google, Gemini, Azure, OpenStreetMap, Wikidata, Wikivoyage). Prompts, searches and place names are never stored. Click any value in the table to filter by it.</p>
+      <form id="callFilters" class="controls">
+        <label class="field">When <select id="fHours"><option value="1">Last hour</option><option value="6">Last 6 hours</option><option value="24" selected>Last 24 hours</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option></select></label>
+        <label class="field">Type <select id="fKind"></select></label>
+        <label class="field">Provider <select id="fProvider"></select></label>
+        <label class="field">Model <select id="fModel"></select></label>
+        <label class="field">Operation <select id="fOperation"></select></label>
+        <label class="field">Result <select id="fStatus"></select></label>
+        <label class="field">Slower than <select id="fMs"><option value="0">Any speed</option><option value="1000">1 s</option><option value="3000">3 s</option><option value="10000">10 s</option><option value="30000">30 s</option></select></label>
+        <label class="field">Install <input id="fClient" placeholder="Install id" class="id"></label>
+        <label class="field">Plan <input id="fPlan" placeholder="Plan id" class="id"></label>
+        <div class="row"><button type="button" id="fErrors">Errors only</button><button type="button" id="fReset">Reset</button></div>
+      </form>
+      <div class="grid kpis" id="callStats" style="margin:14px 0"></div>
+      <div class="scroll" id="callRows"></div>
+      <div class="row" style="margin-top:10px"><button type="button" id="callMore" class="hidden">Show more</button><span class="small muted" id="callNote"></span></div>
+    </section>
+
     <section class="card">
       <h2>APIs and free limits · this month</h2>
       <div class="scroll" id="apis"></div>
@@ -230,7 +250,7 @@ td.n, th.n { text-align: right; }
     try {
       data = await call('/api/admin/summary');
       $('login').classList.add('hidden'); $('app').classList.remove('hidden');
-      render();
+      render(); loadCalls();
       clearInterval(timer); timer = setInterval(load, 60000);
     } catch (e) {
       const messages = { admin_token_required: 'That token is not right.', too_many_attempts: 'Too many wrong tokens. Try again in 10 minutes.',
@@ -457,6 +477,100 @@ td.n, th.n { text-align: right; }
       const notes = { ...c.notes }; if (v.trim() === '') delete notes[id]; else notes[id] = v.trim().slice(0, 80);
       saveControls({ notes });
     }
+  });
+
+  // ---- Call log -------------------------------------------------------------
+  const CALL_FIELDS = { kind: 'fKind', provider: 'fProvider', model: 'fModel', operation: 'fOperation', status: 'fStatus' };
+  const callState = { limit: 200, facetsFor: null, rows: [] };
+  const STATUS_LABEL = { ok: 'OK', error: 'Error', rate_limited: 'Rate limited', timeout: 'Timeout', cached: 'Cached' };
+  const KIND_LABEL = { ai: 'AI', api: 'API' };
+  const dur = (ms) => ms >= 10000 ? (ms / 1000).toFixed(0) + ' s' : ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : ms + ' ms';
+  const short = (id) => id && id.length > 12 ? id.slice(0, 8) : (id || '—');
+
+  function callParams() {
+    const q = new URLSearchParams({ hours: $('fHours').value, limit: callState.limit });
+    for (const [field, id] of Object.entries(CALL_FIELDS)) if ($(id).value) q.set(field, $(id).value);
+    if ($('fMs').value !== '0') q.set('min_ms', $('fMs').value);
+    if ($('fClient').value.trim()) q.set('client', $('fClient').value.trim());
+    if ($('fPlan').value.trim()) q.set('plan', $('fPlan').value.trim());
+    return q;
+  }
+
+  // Dropdown options come from the calls in the time window, with counts, so every choice shows something.
+  function fillOptions(facets) {
+    for (const [field, id] of Object.entries(CALL_FIELDS)) {
+      const el = $(id), chosen = el.value, label = field === 'status' ? STATUS_LABEL : field === 'kind' ? KIND_LABEL : {};
+      const options = facets[field] || [];
+      el.innerHTML = '<option value="">All</option>' + options.map(([v, n]) => `<option value="${esc(v)}">${esc(label[v] || v)} (${num(n)})</option>`).join('')
+        + (chosen && !options.some(([v]) => v === chosen) ? `<option value="${esc(chosen)}">${esc(label[chosen] || chosen)} (0)</option>` : '');
+      el.value = chosen;
+    }
+  }
+
+  async function loadCalls() {
+    try {
+      const r = await call('/api/admin/calls?' + callParams());
+      callState.rows = r.rows;
+      fillOptions(r.facets);
+      const s = r.stats, errorRate = s.calls ? Math.round(1000 * s.errors / s.calls) / 10 : 0;
+      $('callStats').innerHTML = [
+        ['Calls', num(s.calls), 'matching the filters'],
+        ['Failed', num(s.errors), `${errorRate}% of calls`],
+        ['Typical speed', dur(s.p50_ms), `slowest 5%: ${dur(s.p95_ms)}`],
+        ['AI tokens', num(s.tokens_in + s.tokens_out), `${num(s.tokens_in)} in · ${num(s.tokens_out)} out`],
+      ].map(([l, v, sub]) => `<div class="card kpi"><div class="v">${esc(v)}</div><div class="l">${esc(l)}</div><div class="s">${esc(sub)}</div></div>`).join('');
+      renderCalls(r);
+    } catch (e) { $('callRows').innerHTML = `<p class="small" style="color:var(--bad)">Could not load the call log: ${esc(e.message)}</p>`; }
+  }
+
+  function filterLink(field, value, text) {
+    return value ? `<a href="#" class="cf" data-f="${field}" data-v="${esc(value)}" style="color:inherit">${esc(text ?? value)}</a>` : '<span class="muted">—</span>';
+  }
+
+  function renderCalls(r) {
+    const notes = (data && data.controls && data.controls.notes) || {};
+    if (!r.rows.length) { $('callRows').innerHTML = '<p class="muted">No calls match. Widen the time window or reset the filters.</p>'; }
+    else {
+      const pill = (st) => `<span class="pill ${st === 'ok' ? 'good' : st === 'cached' ? '' : st === 'rate_limited' || st === 'timeout' ? 'warn' : 'bad'}">${esc(STATUS_LABEL[st] || st)}</span>`;
+      $('callRows').innerHTML = '<table><thead><tr><th>Time</th><th>Type</th><th>Provider</th><th>Operation</th><th>Model</th><th>Result</th><th class="n">Speed</th><th class="n">Tokens in / out</th><th class="n">Size</th><th>Install</th><th>Plan</th></tr></thead><tbody>'
+        + r.rows.map((c) => {
+          const when = new Date(c.ts);
+          const tokens = c.tokens_in == null && c.tokens_out == null ? '—' : `${num(c.tokens_in)} / ${num(c.tokens_out)}`;
+          const result = pill(c.status) + (c.http_status && c.http_status !== 200 ? ` <span class="muted small">${c.http_status}</span>` : '') + (c.error ? ` <span class="muted small">${esc(c.error)}</span>` : '');
+          const client = c.client && c.client !== 'unknown' ? filterLink('client', c.client, notes[c.client] || short(c.client)) : '<span class="muted">—</span>';
+          return `<tr><td title="${esc(when.toLocaleString('en-GB'))}">${when.toLocaleTimeString('en-GB')}<div class="muted small">${when.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</div></td>`
+            + `<td>${filterLink('kind', c.kind, KIND_LABEL[c.kind])}</td><td>${filterLink('provider', c.provider)}</td><td>${filterLink('operation', c.operation)}</td>`
+            + `<td>${filterLink('model', c.model)}</td><td>${result}</td><td class="n">${dur(c.ms)}</td><td class="n">${tokens}</td>`
+            + `<td class="n">${c.nbytes ? num(Math.round(c.nbytes / 1024)) + ' KB' : '—'}</td><td class="id">${client}</td><td class="id">${filterLink('plan', c.plan, short(c.plan))}</td></tr>`;
+        }).join('') + '</tbody></table>';
+    }
+    $('callMore').classList.toggle('hidden', r.total <= r.rows.length);
+    const since = r.oldest ? new Date(r.oldest).toLocaleString('en-GB') : null;
+    $('callNote').textContent = `Showing ${num(r.rows.length)} of ${num(r.total)}.` + (since ? ` Log holds the newest 5,000 calls (back to ${since}).` : '')
+      + (r.mode === 'postgres' ? '' : ' Not saved permanently: a deploy or restart clears it.');
+  }
+
+  $('callFilters').addEventListener('change', () => { callState.limit = 200; loadCalls(); });
+  $('callFilters').addEventListener('input', (ev) => { if (ev.target.tagName === 'INPUT') { clearTimeout(callState.typing); callState.typing = setTimeout(() => { callState.limit = 200; loadCalls(); }, 350); } });
+  $('callFilters').addEventListener('submit', (ev) => ev.preventDefault());
+  $('fErrors').addEventListener('click', () => {
+    const on = $('fStatus').dataset.errors !== '1';
+    $('fStatus').dataset.errors = on ? '1' : '0'; $('fErrors').classList.toggle('primary', on);
+    if (on) { const bad = [...$('fStatus').options].find((o) => ['error', 'rate_limited', 'timeout'].includes(o.value)); if (bad) $('fStatus').value = bad.value; }
+    else $('fStatus').value = '';
+    callState.limit = 200; loadCalls();
+  });
+  $('fReset').addEventListener('click', () => {
+    ['fKind', 'fProvider', 'fModel', 'fOperation', 'fStatus', 'fClient', 'fPlan'].forEach((id) => { $(id).value = ''; });
+    $('fMs').value = '0'; $('fHours').value = '24'; $('fErrors').classList.remove('primary'); $('fStatus').dataset.errors = '0';
+    callState.limit = 200; loadCalls();
+  });
+  $('callMore').addEventListener('click', () => { callState.limit += 300; loadCalls(); });
+  $('callRows').addEventListener('click', (ev) => {
+    const a = ev.target.closest('a.cf'); if (!a) return; ev.preventDefault();
+    const field = a.dataset.f, value = a.dataset.v;
+    const id = field === 'client' ? 'fClient' : field === 'plan' ? 'fPlan' : CALL_FIELDS[field];
+    $(id).value = $(id).value === value ? '' : value; callState.limit = 200; loadCalls();
   });
   token ? load() : showLogin('');
 })();

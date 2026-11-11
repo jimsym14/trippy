@@ -72,8 +72,10 @@ def query_wikidata(latitude, longitude):
     url = 'https://query.wikidata.org/sparql?' + urllib.parse.urlencode({'query': query})
     request = urllib.request.Request(url, headers={'Accept': 'application/sparql-results+json',
                                                    'User-Agent': 'Trippy/1.0 (travel planner)'})
-    with urllib.request.urlopen(request, timeout=25) as response:
-        rows = json.load(response)['results']['bindings']
+    from trippy import call_log
+    with call_log.track('free:wikidata'):
+        with urllib.request.urlopen(request, timeout=25) as response:
+            rows = json.load(response)['results']['bindings']
     items = []
     for row in rows:
         value = lambda k: (row.get(k) or {}).get('value')

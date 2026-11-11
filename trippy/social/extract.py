@@ -53,6 +53,24 @@ For each place:
 Also classify the post: post_kind = "places" (recommends venues), "tips" (general travel advice, no venue is
 the point), or "mixed". For tips, return tips: each {{title, detail, at}} — a short headline, one or two
 sentences of advice, and where it appears ("0:24", "slide 3", "caption").
+
+relevant: true when the post helps someone plan or enjoy a trip or a day out (places, food, routes, tips,
+costs, views). False for anything else (dance, fashion, news, ads unrelated to a place) — then leave every
+list empty. Judge from everything given, never from the caption alone: many slideshows have an empty caption.
+guide_types: every kind of guide this post is, from {guide_types}:
+  venue = about one shop/restaurant/sight and what it has; area_guide = several places in one neighbourhood;
+  city_guide = places across one city; themed_list = places that share a theme (cheap eats, date night,
+  rooftops, smash burgers); route = a ready tour, trip, hike or itinerary that links places in order;
+  hidden_spots = lesser-known places or views; must_see = places not to miss; tips = practical advice;
+  foods = dishes or drinks to try.
+theme: the theme in 2–4 words when it is a themed_list or route ("cheap eats", "date night", "Interrail"), else "".
+scope: how wide the post is. level = place, neighbourhood, city, region, country, multi_country or continent;
+  name = that place, neighbourhood, city, region, country or continent as written in English; region = the widest
+  named area it belongs to when there is one ("Alps", "Balkans", "Amalfi Coast", "Europe"), else "";
+  countries = ISO 3166-1 alpha-2 codes of every country it covers.
+foods: dishes or drinks the post says to try, each {{name, detail, where}} (where = the venue or city, if said).
+route: only for a route — mode (walk, hike, train, car, bus, ferry, mixed), days (number, 0 if not said),
+  cost_hint (as stated, else ""), and stops in order, each {{name, city, country_code, nights}} (nights 0 if not said).
 Leave a list empty rather than guessing. Also return post_title (short), post_summary (one sentence),
 transcript (verbatim speech in its original language if audio or video was provided, else ""), and
 unresolved: names mentioned that you could not confirm as venues.
@@ -67,6 +85,9 @@ _MOMENTS = {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {"at": {"
 _TIPS = {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
     "title": {"type": "STRING"}, "detail": {"type": "STRING"}, "at": {"type": "STRING"}}, "required": ["title", "detail"]}}
 POST_KINDS = ["places", "tips", "mixed"]
+GUIDE_TYPES = ["venue", "area_guide", "city_guide", "themed_list", "route", "hidden_spots", "must_see", "tips", "foods"]
+SCOPE_LEVELS = ["place", "neighbourhood", "city", "region", "country", "multi_country", "continent"]
+ROUTE_MODES = ["walk", "hike", "train", "car", "bus", "ferry", "mixed"]
 SCHEMA = {
     "type": "OBJECT",
     "properties": {
@@ -77,6 +98,18 @@ SCHEMA = {
         "country": {"type": "STRING"},
         "country_code": {"type": "STRING"},
         "post_kind": {"type": "STRING", "enum": POST_KINDS},
+        "relevant": {"type": "BOOLEAN"},
+        "guide_types": {"type": "ARRAY", "items": {"type": "STRING", "enum": GUIDE_TYPES}},
+        "theme": {"type": "STRING"},
+        "scope": {"type": "OBJECT", "properties": {"level": {"type": "STRING", "enum": SCOPE_LEVELS}, "name": {"type": "STRING"},
+                                                   "region": {"type": "STRING"}, "countries": _LIST}, "required": ["level", "name"]},
+        "foods": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}, "detail": {"type": "STRING"},
+                                                                             "where": {"type": "STRING"}}, "required": ["name"]}},
+        "route": {"type": "OBJECT", "properties": {
+            "mode": {"type": "STRING", "enum": ROUTE_MODES}, "days": {"type": "NUMBER"}, "cost_hint": {"type": "STRING"},
+            "stops": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+                "name": {"type": "STRING"}, "city": {"type": "STRING"}, "country_code": {"type": "STRING"}, "nights": {"type": "NUMBER"}},
+                "required": ["name"]}}}},
         "tips": _TIPS,
         "places": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
             "name": {"type": "STRING"}, "name_latin": {"type": "STRING"},
@@ -90,7 +123,8 @@ SCHEMA = {
                          "must_try", "why_go", "evidence", "confidence"]}},
         "unresolved": _LIST,
     },
-    "required": ["post_title", "post_summary", "transcript", "city", "country", "post_kind", "tips", "places", "unresolved"],
+    "required": ["post_title", "post_summary", "transcript", "city", "country", "post_kind", "relevant", "guide_types", "scope",
+                 "tips", "places", "unresolved"],
 }
 
 
@@ -111,7 +145,7 @@ def build_parts(source):
                      " drawn on the frames, and transcribe and use what is said]")
     elif source.get("audio"):
         lines.append("\n[Audio track follows — transcribe it and use what is said]")
-    parts = [{"text": PROMPT.format(categories=", ".join(CATEGORIES), url=source.get("url") or "unknown",
+    parts = [{"text": PROMPT.format(categories=", ".join(CATEGORIES), guide_types=", ".join(GUIDE_TYPES), url=source.get("url") or "unknown",
                                     author=source.get("author") or "unknown", evidence="".join(lines) or "(no text)")}]
     for index, image in enumerate(images[:35], 1):
         parts += [{"text": f"slide {index}"}, inline(image[0], image[1]) if isinstance(image, tuple) else inline("image/jpeg", image)]
@@ -154,7 +188,84 @@ def clean(result):
     if kind == "tips" and places:
         kind = "mixed"
     result["post_kind"] = kind
+    # Off-topic posts keep nothing, so nothing gets pinned or written into notes.
+    result["relevant"] = result.get("relevant") is not False
+    if not result["relevant"]:
+        result.update(places=[], tips=[], foods=[], route=None, guide_types=[])
+    types = [t for t in dict.fromkeys(result.get("guide_types") or []) if t in GUIDE_TYPES]
+    if result["relevant"]:
+        # What the content shows wins over a missing label.
+        if result["tips"] and "tips" not in types: types.append("tips")
+        if len(places) == 1 and not types: types.append("venue")
+    result["guide_types"] = types
+    result["theme"] = str(result.get("theme") or "").strip()[:60]
+    scope = result.get("scope") if isinstance(result.get("scope"), dict) else {}
+    level = scope.get("level") if scope.get("level") in SCOPE_LEVELS else ("city" if result.get("city") else "place")
+    countries = [str(c).strip().upper()[:2] for c in scope.get("countries") or [] if len(str(c).strip()) == 2]
+    if not countries and result.get("country_code"):
+        countries = [str(result["country_code"]).upper()[:2]]
+    result["scope"] = {"level": level, "name": str(scope.get("name") or result.get("city") or result.get("country") or "").strip()[:80],
+                       "region": str(scope.get("region") or "").strip()[:60], "countries": list(dict.fromkeys(countries))[:20]}
+    result["foods"] = [{"name": str(f.get("name") or "").strip()[:80], "detail": str(f.get("detail") or "").strip()[:240],
+                        "where": str(f.get("where") or "").strip()[:80]}
+                       for f in result.get("foods") or [] if isinstance(f, dict) and str(f.get("name") or "").strip()][:20]
+    route = result.get("route") if isinstance(result.get("route"), dict) else None
+    stops = [{"name": str(s.get("name") or "").strip()[:80], "city": str(s.get("city") or "").strip()[:60],
+              "country_code": str(s.get("country_code") or "").strip().upper()[:2], "nights": int(s.get("nights") or 0)}
+             for s in (route or {}).get("stops") or [] if isinstance(s, dict) and str(s.get("name") or "").strip()][:30]
+    result["route"] = ({"mode": route.get("mode") if route.get("mode") in ROUTE_MODES else "mixed", "days": int(route.get("days") or 0),
+                        "cost_hint": str(route.get("cost_hint") or "").strip()[:80], "stops": stops}
+                       if route and stops and "route" in types else None)
     return result
+
+
+# ----------------------------------------------------------- Is it travel? ---
+# A shared post is read only when it helps a trip. The caption alone can't say (slideshows often have none), so
+# the free text the phone already has (caption, stickers, slide OCR, captions) is checked first; only when that
+# text can't tell either way does a tiny text-and-cover call decide, before the full read of the video.
+
+_TRAVEL = ["📍", "🗺", "✈", "🍝", "🍕", "🍷", "☕", "🏛", "🏖", "travel", "trip", "itinerary", "guide", "spots", "places", "visit", "hidden",
+           "must see", "must-see", "don't miss", "dont miss", "eat", "food", "restaurant", "cafe", "café", "bar", "brunch", "bakery",
+           "hike", "beach", "view", "sunset", "museum", "tour", "interrail", "train", "flight", "hotel", "airbnb", "budget", "cheap",
+           "tips", "where to", "things to do", "date night", "rooftop", "taverna", "trattoria", "ταξίδ", "ταξιδ", "φαγητ", "μαγαζ",
+           "εστιατ", "καφε", "καφέ", "μπαρ", "θέα", "θεα", "βόλτα", "βολτα", "παραλ", "πεζοπορ", "αξιοθέατ", "αξιοθεατ", "εκδρομ",
+           "viaggio", "ristorante", "viaje", "restaurante", "voyage", "reise"]
+_OFF = ["grwm", "get ready with me", "outfit", "makeup", "skincare", "dance challenge", "#dance", "lip sync", "lipsync",
+        "gameplay", "fortnite", "minecraft", "crypto", "stock tips", "workout", "gym", "unboxing", "asmr", "prank", "meme"]
+
+
+def looks_like_travel(texts, *, place_names=()):
+    """"yes", "no" or "unsure" from free text alone. "no" needs real text that is clearly about something else."""
+    text = " ".join(t for t in texts if t).casefold()
+    words = len(text.split())
+    hits = sum(word in text for word in _TRAVEL) + sum(1 for name in place_names if name and name.casefold() in text)
+    off = sum(word in text for word in _OFF)
+    if hits >= 2 or (hits >= 1 and not off):
+        return "yes"
+    if off and not hits and words >= 4:
+        return "no"
+    return "unsure"
+
+
+TRIAGE_SCHEMA = {"type": "OBJECT", "properties": {"relevant": {"type": "BOOLEAN"}, "why": {"type": "STRING"}}, "required": ["relevant"]}
+
+
+def triage(pool, source):
+    """True/False from a tiny call: the text plus at most two images (the cover and first slide). About a
+    hundredth of a full video read. Any failure says True, so a post is never lost to the gate."""
+    texts = [b.get("text") or "" for b in source.get("evidence") or []]
+    verdict = looks_like_travel(texts)
+    if verdict != "unsure":
+        return verdict == "yes", "text"
+    parts = [{"text": "Is this social post useful for planning a trip or a day out (places, food, routes, travel tips, costs, views)? "
+                      "Judge from the text and images together.\n\n" + "\n".join(t[:2000] for t in texts if t.strip())[:6000]}]
+    for image in (source.get("images") or [])[:2]:
+        parts.append(inline(image[0], image[1]) if isinstance(image, tuple) else inline("image/jpeg", image))
+    try:
+        answer, _ = pool.generate(parts, schema=TRIAGE_SCHEMA, system="Answer briefly.", thinking_budget=0)
+        return answer.get("relevant") is not False, "model"
+    except Exception:  # noqa: BLE001 - when in doubt, read it
+        return True, "error"
 
 
 def extract(pool: GeminiPool, source):
@@ -330,8 +441,16 @@ class ExtractionQueue:
             try:
                 if self._pool is None:
                     self._pool = self._pool_factory()
-                result = extract(self._pool, job["source"])
-                if self._search:
+                relevant, judged_by = triage(self._pool, job["source"])
+                if not relevant:
+                    # Not travel: no full read, no place lookups, and the verdict is kept for the next saver.
+                    result = clean({"post_title": "Not a travel post", "post_summary": "", "transcript": "", "city": "", "country": "",
+                                    "post_kind": "places", "relevant": False, "guide_types": [], "scope": {}, "tips": [], "places": [],
+                                    "unresolved": []})
+                    result["triaged_by"] = judged_by
+                else:
+                    result = extract(self._pool, job["source"])
+                if self._search and result.get("places"):
                     enrich(result, self._search)
                     if self._details:
                         try:

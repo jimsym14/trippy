@@ -10,6 +10,9 @@ struct GuideInput {
     let travelers: Int
     let research: String
     var travelMode = "plane"
+    /// The server, for looking up the lines between two stops and ticket prices.
+    var bridgeURL = ""
+    var bridgeToken = ""
 }
 
 struct ResolvedStop: Identifiable, Hashable {
@@ -240,14 +243,36 @@ struct GuideContext {
             let planned = original[stops[0].itemID].flatMap { $0.fromBase ? $0.travelMinutes : nil }
             stops[0].fromBaseMinutes = planned ?? minutes(from: base.coordinate, to: first)
         }
-        let sights = stops.filter { $0.slot == nil && !$0.place.isFood }.map(\.place.name)
+        let seen = stops.filter { $0.slot == nil && !$0.place.isFood }.map(\.place)
+        let sights = seen.map(\.name)
         let food = stops.filter { $0.slot != nil || $0.place.isFood }.map { $0.slot?.pickedID == nil ? ($0.slot?.kind.title ?? $0.place.name) : $0.place.name }
-        // Two names read as a title; more becomes a list.
-        let title = edits.dayTitles[day.date]?.nilIfEmpty ?? day.theme.nilIfEmpty
-            ?? (sights.isEmpty ? (stops.isEmpty ? "Free day" : food.prefix(2).joined(separator: " & ")) : sights.prefix(2).joined(separator: " & "))
-        let subtitle = day.summary.nilIfEmpty ?? (food.isEmpty ? "\(stops.count) stops" : "Eat at " + food.joined(separator: ", "))
+        // The title says where the day is and what kind of day it is; the line under it names the sights.
+        let areas = day.areaIDs.compactMap { id in model.areas.first { $0.id == id }?.name.nilIfEmpty }
+        let themed = edits.dayTitles[day.date]?.nilIfEmpty ?? day.theme.nilIfEmpty ?? theme(areas: areas, sights: seen)
+        // With no part of town to name, the day is its sights in order: "Park Güell, then Casa Vicens".
+        let inOrder = sights.isEmpty ? (stops.isEmpty ? "Free day" : food.prefix(2).joined(separator: " & "))
+            : sights.count == 1 ? sights[0] : "\(sights[0]), then \(sights[1])" + (sights.count > 2 ? " and more" : "")
+        let title = themed ?? inOrder
+        let yours = seen.filter(\.personal).count
+        let named = sights.prefix(3).joined(separator: ", ") + (sights.count > 3 ? " and \(sights.count - 3) more" : "")
+        // The line under the title never repeats it: sights under a themed title, meals under a list of sights.
+        let meals = food.isEmpty ? "\(stops.count) stops" : "Eat at " + food.joined(separator: ", ")
+        let subtitle = day.summary.nilIfEmpty
+            ?? ((themed != nil && !sights.isEmpty ? named : meals) + (yours > 0 ? " · \(yours) you saved" : ""))
         return ResolvedDay(index: day.index, date: day.date, title: title, subtitle: subtitle, stops: stops,
                            holiday: holidays.first { $0.date == day.date }, areaIDs: day.areaIDs)
+    }
+
+    /// A plain title for a day: its part of town, and what most of it is. "Museums in Belém", "Gràcia and Eixample".
+    static func theme(areas: [String], sights: [GuidePlace]) -> String? {
+        guard let first = areas.first else { return nil }
+        let around = first.lowercased().hasPrefix("around ")
+        let place = areas.count >= 2 && !around && !areas[1].lowercased().hasPrefix("around ") ? "\(first) and \(areas[1])" : first
+        let museums = sights.filter { $0.category == "museum" }.count
+        let green = sights.filter { ["nature", "outdoors"].contains($0.category) }.count
+        if sights.count >= 2 && museums * 2 > sights.count { return around ? "Museums \(place)" : "Museums in \(place)" }
+        if sights.count >= 2 && green * 2 > sights.count { return around ? "Parks and views \(place)" : "Parks and views in \(place)" }
+        return place.prefix(1).uppercased() + place.dropFirst()
     }
 
     struct DateTimeCursor {

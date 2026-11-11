@@ -751,9 +751,15 @@ class PersonalPipelineStage1Tests(unittest.TestCase):
         intent = SearchIntent(destination='Barcelona', extraction_path='ai_derived',
                               extraction_model='gpt-4o-mini', inferred_categories=['museum'])
         adapter = SucceedingAdapter(intent)
-        brief = {**BRIEF, 'custom_instructions': 'I want museums and coffee'}
+        # A request the fixed vocabulary can't fully read still goes to the model.
+        brief = {**BRIEF, 'custom_instructions': 'museums and coffee, nothing crowded, my mother walks slowly'}
         result = self._run(brief, ai_adapter=adapter)
         self.assertEqual(result['pipeline_report']['intent_extraction_path'], 'ai_derived')
+        self.assertFalse(result['pipeline_report']['intent_read_by_keywords'])
+        # One it reads completely costs no model call.
+        simple = self._run({**BRIEF, 'custom_instructions': 'I want museums and coffee'}, ai_adapter=adapter)
+        self.assertEqual(simple['pipeline_report']['intent_extraction_path'], 'keyword_fallback')
+        self.assertTrue(simple['pipeline_report']['intent_read_by_keywords'])
         self.assertEqual(result['pipeline_report']['intent_extraction_model'], 'gpt-4o-mini')
 
     def test_pipeline_report_records_fallback(self):

@@ -22,8 +22,10 @@ def reverse(latitude, longitude, language='en'):
     usage.hit('free:nominatim')
     request = urllib.request.Request('https://nominatim.openstreetmap.org/reverse?' + query,
                                      headers={'User-Agent': 'Trippy/1.0 (travel planner)'})
-    with urllib.request.urlopen(request, timeout=10) as response:
-        address = json.load(response).get('address') or {}
+    from trippy import call_log
+    with call_log.track('free:nominatim'):
+        with urllib.request.urlopen(request, timeout=10) as response:
+            address = json.load(response).get('address') or {}
     # The historic quarter is the name people use (Trastevere, Monti, Gràcia); an
     # administrative district ("Municipio Roma I", "District 3") is not.
     for field in ('quarter', 'neighbourhood', 'suburb', 'city_district', 'borough', 'village', 'town'):

@@ -24,6 +24,8 @@ struct WhereNextView: View {
     @State private var showOrigin = false
     @State private var showDuel = false
     @State private var surprise = 0
+    @State private var brief = WhereNextBrief.load()
+    @State private var showBrief = false
 
     private static let originKey = "trippy.wherenext.origin.v1"
     private static let months = TripMonth.short
@@ -37,8 +39,14 @@ struct WhereNextView: View {
                 header
                 globe
                 filters
-                moods
                 if picks.isEmpty { nothingFits } else { carousel; tuning }
+                IdeaCheckSection(query: query, taste: taste, visits: visits) { pick in
+                    // A better-fitting place from the idea check joins the picks and takes the globe.
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.5, dampingFraction: 0.8)) {
+                        if !picks.contains(where: { $0.id == pick.id }) { picks.insert(pick, at: 0) }
+                        selectedID = pick.id
+                    }
+                }
             }
             .padding(.top, 8).padding(.bottom, 32)
             .frame(maxWidth: 640).frame(maxWidth: .infinity)
@@ -58,6 +66,10 @@ struct WhereNextView: View {
             TasteDuelView(pool: WhereNextEngine.recommend(query, taste: TasteProfile(), visits: visits, limit: 14), taste: $taste)
                 .presentationDetents([.large]).presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showBrief, onDismiss: { brief.save(); brief.apply(to: &query); Task { await paintGlobe() } }) {
+            WhereNextBriefView(brief: $brief) { showBrief = false }
+                .presentationDetents([.large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
+        }
         .task { await start() }
         .onChange(of: query) { _, _ in recompute() }
         .onChange(of: selectedID) { _, _ in focusID = UUID() }
@@ -71,7 +83,7 @@ struct WhereNextView: View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Where next?").font(Sketch.display(.largeTitle, weight: .bold))
-                Text("Picked for you from what you like, when you can go and where you start.")
+                Text("A few questions about the trip, then places that fit. Scored on your phone.")
                     .font(Sketch.text(15, relativeTo: .subheadline)).foregroundStyle(Sketch.inkSoft).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 4)
@@ -113,45 +125,30 @@ struct WhereNextView: View {
 
     // MARK: Filters
 
+    /// Where you leave from, then your answers. Tapping an answer reopens the questions.
     private var filters: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        let answers: [(String, String)] = [
+            brief.who.map { ($0.symbol, $0.title) }, ("calendar", brief.whenText), ("clock", query.days == 3 ? "Weekend" : "\(query.days) days"),
+            brief.climate.map { ($0.symbol, query.ski ? "Skiing" : $0.title) }, brief.setting.map { ($0.symbol, $0.title) },
+            brief.region == .anywhere ? nil : (brief.region.symbol, brief.region.title),
+            brief.somethingNew == true ? ("sparkles", "Somewhere new") : nil,
+            query.budget.map { ("eurosign", "≤ €\($0) a day") }, query.mode.map { ($0.symbol, $0.title) },
+        ].compactMap { $0 }
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 Button { showOrigin = true } label: {
                     chip(symbol: "house.fill", text: query.origin.map { "From \($0.name)" } ?? "Leaving from…", active: query.origin != nil, attention: query.origin == nil)
                 }
                 .buttonStyle(SketchPressStyle())
-                Menu {
-                    Picker("When", selection: $query.month) {
-                        Text("Any time").tag(Int?.none)
-                        ForEach(1...12, id: \.self) { Text(TripMonth.names[$0 - 1]).tag(Int?.some($0)) }
-                    }
-                } label: { chip(symbol: "calendar", text: query.month.map { Self.months[$0 - 1] } ?? "Any time", active: query.month != nil) }
-                Menu {
-                    Picker("How long", selection: $query.days) {
-                        Text("A weekend").tag(3); Text("5 days").tag(5); Text("A week").tag(7); Text("10 days").tag(10); Text("Two weeks").tag(14)
-                    }
-                } label: { chip(symbol: "clock", text: query.days == 3 ? "Weekend" : "\(query.days) days", active: true) }
-                Menu {
-                    Picker("Budget", selection: $query.budget) {
-                        Text("Any budget").tag(Int?.none)
-                        Text("Up to €60 a day").tag(Int?.some(60)); Text("Up to €100 a day").tag(Int?.some(100))
-                        Text("Up to €150 a day").tag(Int?.some(150)); Text("Up to €220 a day").tag(Int?.some(220))
-                    }
-                } label: { chip(symbol: "eurosign", text: query.budget.map { "≤ €\($0) a day" } ?? "Any budget", active: query.budget != nil) }
-                Menu {
-                    Picker("How", selection: $query.mode) {
-                        Label("Any way", systemImage: "arrow.triangle.branch").tag(JourneyMode?.none)
-                        ForEach(JourneyMode.allCases) { Label($0.title, systemImage: $0.symbol).tag(JourneyMode?.some($0)) }
-                    }
-                } label: { chip(symbol: query.mode?.symbol ?? "arrow.triangle.branch", text: query.mode?.title ?? "Any way", active: query.mode != nil) }
-                Menu {
-                    Picker("Travelers", selection: $query.travelers) { ForEach(1...8, id: \.self) { Text("\($0) \($0 == 1 ? "traveler" : "travelers")").tag($0) } }
-                } label: { chip(symbol: "person.2.fill", text: "\(query.travelers)", active: true) }
-                Button { query.newPlacesOnly.toggle() } label: {
-                    chip(symbol: query.newPlacesOnly ? "sparkles" : "arrow.uturn.backward", text: query.newPlacesOnly ? "New places" : "Returns OK", active: query.newPlacesOnly)
+                Button { showBrief = true } label: { chip(symbol: "slider.horizontal.3", text: brief.finished ? "Change answers" : "Answer a few questions", active: false, attention: !brief.finished && query.origin != nil) }
+                    .buttonStyle(SketchPressStyle())
+                ForEach(answers, id: \.1) { symbol, text in
+                    Button { showBrief = true } label: { chip(symbol: symbol, text: text, active: true) }
+                        .buttonStyle(SketchPressStyle()).accessibilityHint("Opens the questions")
                 }
-                .buttonStyle(SketchPressStyle())
-                .accessibilityLabel("Only places I haven't been").accessibilityAddTraits(query.newPlacesOnly ? .isSelected : [])
+                ForEach(query.wants.sorted { $0.rawValue < $1.rawValue }) { trait in
+                    Button { showBrief = true } label: { chip(symbol: trait.symbol, text: trait.title, active: true) }.buttonStyle(SketchPressStyle())
+                }
             }
             .padding(.horizontal, 20)
         }
@@ -168,30 +165,6 @@ struct WhereNextView: View {
         .padding(.horizontal, 13).frame(minHeight: 44)
         .background(Capsule().fill(attention ? Sketch.clay : active ? Sketch.clay.opacity(0.16) : Sketch.paperDeep))
         .contentShape(Capsule())
-    }
-
-    private var moods: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("IN THE MOOD FOR").font(Sketch.eyebrow).tracking(0.9).foregroundStyle(Sketch.inkFaint).padding(.horizontal, 20)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(TripTrait.allCases) { trait in
-                        let on = query.wants.contains(trait)
-                        Button {
-                            withAnimation(.snappy) { if on { query.wants.remove(trait) } else { query.wants.insert(trait) } }
-                        } label: {
-                            Label(trait.title, systemImage: trait.symbol).font(Sketch.text(13, "SemiBold", relativeTo: .footnote))
-                                .padding(.horizontal, 13).frame(minHeight: 44)
-                                .foregroundStyle(on ? Sketch.paper : Sketch.ink)
-                                .background(Capsule().fill(on ? Sketch.ink : Sketch.paperDeep))
-                        }
-                        .buttonStyle(SketchPressStyle()).accessibilityAddTraits(on ? .isSelected : [])
-                    }
-                }
-                .padding(.horizontal, 20)
-            }
-            .scrollClipDisabled()
-        }
     }
 
     // MARK: Picks
@@ -236,12 +209,9 @@ struct WhereNextView: View {
         VStack(spacing: 12) {
             DoodleView(doodle: .map, tint: Sketch.clay).frame(width: 84, height: 84)
             Text("Nothing fits all of that").font(Sketch.display(.title3))
-            Text("Try a longer trip, another month, or any way of travelling.")
+            Text("Try a wider window of dates, a longer trip, or a looser region.")
                 .font(Sketch.text(15, relativeTo: .body)).foregroundStyle(Sketch.inkSoft).multilineTextAlignment(.center)
-            Button("Clear filters") {
-                var fresh = WhereNextQuery(); fresh.origin = query.origin; fresh.month = nil; fresh.newPlacesOnly = false
-                query = fresh
-            }
+            Button("Change my answers") { showBrief = true }
             .font(Sketch.text(15, "Bold", relativeTo: .body)).frame(minHeight: 44)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 24).padding(.horizontal, 20)
@@ -264,9 +234,22 @@ struct WhereNextView: View {
         // Screenshot checks: `-TrippyWhereNextFrom "Athens"` starts from a catalog place.
         if let name = UserDefaults.standard.string(forKey: "TrippyWhereNextFrom"), let d = DestinationCatalog.named(name) { query.origin = JourneyPoint(d) }
         if UserDefaults.standard.bool(forKey: "TrippyWhereNextDuel") { showDuel = true }
+        // `-TrippyWhereNextSample YES`: a couple's snowy January week, already answered.
+        if UserDefaults.standard.bool(forKey: "TrippyWhereNextSample") {
+            brief = WhereNextBrief(who: .couple, when: .months, months: [1, 2], days: 7, climate: .snow, setting: .mountains, wants: [TripTrait.food.rawValue],
+                                   region: .europe, somethingNew: false, finished: true)
+        }
+        if UserDefaults.standard.bool(forKey: "TrippyWhereNextBrief") { brief.finished = false }
         #endif
+        // The questions come first; the picks are already there underneath for anyone who skips them.
+        if brief.finished { brief.apply(to: &query) } else { showBrief = true }
         recompute()
-        let codes = Set(visits.compactMap { $0.countryCode?.uppercased() })
+        await paintGlobe()
+    }
+
+    /// Countries you've been to are coloured only when you asked for somewhere new; otherwise the globe is about the picks.
+    private func paintGlobe() async {
+        let codes = brief.somethingNew == true ? Set(visits.compactMap { $0.countryCode?.uppercased() }) : []
         texture = await GlobeTextureBuilder.shared.texture(key: GlobeTextureKey(dark: scheme == .dark, satellite: false, style: "where-next"),
                                                            shapes: nil, visits: [], visitedCodes: codes)
     }

@@ -140,8 +140,12 @@ class GeminiPool:
         usage.hit('ai:gemini')
         request = Request(f"{API}/models/{model}:generateContent", data=json.dumps(body).encode(),
                           headers={"x-goog-api-key": self.api_key, "Content-Type": "application/json"}, method="POST")
-        with self._open(request, timeout=self.timeout) as response:
-            payload = json.loads(response.read())
+        from trippy import call_log
+        with call_log.track('ai:gemini', model=model) as call:
+            with self._open(request, timeout=self.timeout) as response:
+                payload = json.loads(response.read())
+            meta = payload.get('usageMetadata') or {}
+            call.tokens(meta.get('promptTokenCount'), meta.get('candidatesTokenCount'))
         candidates = payload.get("candidates") or []
         if not candidates:
             raise GeminiUnavailable(f"{model}: empty response ({payload.get('promptFeedback', {}).get('blockReason', 'no candidates')})")

@@ -11,6 +11,7 @@ from pathlib import Path
 import threading
 import time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -54,6 +55,9 @@ from trippy.usage import Usage, Controls, clean_client
 _env_at_start=read_environment(Path(__file__).resolve().parent/'.env')
 recorder=Usage(Path(__file__).resolve().parent/'.local/usage/usage.json', _env_at_start.get('TRIPPY_STATS_DATABASE_URL'))
 usage.install(recorder)
+from trippy import call_log
+calls=call_log.CallLog(Path(__file__).resolve().parent/'.local/usage/calls.jsonl',_env_at_start.get('TRIPPY_STATS_DATABASE_URL'),usage=recorder)
+call_log.install(calls)
 controls=Controls(recorder)
 from trippy.user_data import UserData, UserDataError
 user_data=UserData(recorder,Path(__file__).resolve().parent/'.local/user-data')
@@ -151,15 +155,18 @@ def google_sku(path, body, field_mask):
 
 
 def google_places_json(path, api_key, *, body=None, field_mask=None):
-    usage.hit(google_sku(path, body, field_mask))
+    sku=google_sku(path, body, field_mask)
+    usage.hit(sku)
     data=json.dumps(body).encode() if body is not None else None
     headers={'X-Goog-Api-Key':api_key,'Accept':'application/json'}
     if data is not None: headers['Content-Type']='application/json'
     if field_mask: headers['X-Goog-FieldMask']=field_mask
     request=Request('https://places.googleapis.com/v1/'+path,data=data,headers=headers,
                     method='POST' if data is not None else 'GET')
-    with urlopen(request,timeout=12) as response:
-        payload=response.read(2_000_000)
+    with call_log.track(sku) as call:
+        with urlopen(request,timeout=12) as response:
+            payload=response.read(2_000_000)
+        call.nbytes=len(payload)
     return json.loads(payload)
 
 
@@ -404,6 +411,17 @@ def planner_summary(limit=15):
     return {**catalog(),'config':config,'estimates':{'2':estimate_plan(config,days=2),'5':estimate_plan(config,days=5)},'recent':recent}
 
 
+_place_cache=None
+def place_cache():
+    """Idea replies and OpenStreetMap checks kept across plans (trippy/planner/place_cache.py)."""
+    global _place_cache
+    with _place_takes_lock:
+        if _place_cache is None:
+            from trippy.planner.place_cache import PlaceCache
+            _place_cache=PlaceCache(root()/'.local/social-index/planner-cache.sqlite',database_url=_social_database_url())
+        return _place_cache
+
+
 def blend_generator(planner, values):
     """The AI that writes place ideas for the blend, as generate(prompt, system, schema) -> dict, or None."""
     model=planner['idea_model']
@@ -436,7 +454,7 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
             # The admin's choice (Admin → Planner); env TRIPPY_PLACE_PROVIDER only sets the starting default.
             stored=controls.snapshot().get('planner')
             planner=clean_planner(stored or ({'place_finder':'gemini_blend'} if values.get('TRIPPY_PLACE_PROVIDER','').strip()=='gemini_blend' else {}))
-            place_provider=None; blend=None
+            place_provider=None; blend=None; cache=None; reused_before=None
             google_ok=bool(values.get('GOOGLE_PLACES_API_KEY')) and values.get('TRIPPY_ALLOW_PAID_RESEARCH','').lower()=='true'
             def request_places(path, **kwargs):
                 if not allow_places_request(): raise RuntimeError('place_rate_limit')
@@ -446,10 +464,20 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
                 place_provider=GoogleTravelProvider(request_places)
             elif planner['place_finder']=='gemini_blend':
                 from trippy.planner.gemini_blend import GeminiBlendProvider, google_resolver, osm_resolver
-                checks={'osm':[osm_resolver()],'google':[google_resolver(request_places)] if google_ok else [osm_resolver()],
-                        'osm_then_google':[osm_resolver()]+([google_resolver(request_places)] if google_ok else [])}[planner['place_check']]
+                from trippy.planner.place_cache import cached_generate, cached_resolver
+                try: cache=place_cache()
+                except Exception as error:   # a cache that can't open must never stop a plan
+                    print('planner cache unavailable:',type(error).__name__,str(error)[:200],flush=True); cache=None
+                reused_before=cache.stats() if cache else None
+                osm=cached_resolver(osm_resolver(),cache) if cache else osm_resolver()
+                checks={'osm':[osm],'google':[google_resolver(request_places)] if google_ok else [osm],
+                        'osm_then_google':[osm]+([google_resolver(request_places)] if google_ok else [])}[planner['place_check']]
                 generate=blend_generator(planner,values)
+                if generate and cache: generate=cached_generate(generate,cache,planner['idea_model'])
                 if generate: place_provider=blend=GeminiBlendProvider(generate,checks)
+                # No idea model configured: fall back to a finder that works rather than planning from the library alone.
+                elif google_ok: place_provider=GoogleTravelProvider(request_places)
+                else: place_provider=FallbackChain(root())
             elif planner['place_finder']=='open_data':
                 place_provider=FallbackChain(root())
             # Existing AI configuration remains optional; the library can draft offline.
@@ -459,7 +487,7 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
                 provider=AzureResearchProvider(values,ledger)
             ai_adapter=AzureIntentAdapter(provider) if provider is not None and planner['request_reader']=='azure-luna' else None
             # Free OpenStreetMap venues stand in when the main source fails (a spent daily quota).
-            fallback=FallbackChain(root()) if place_provider is not None and planner['place_finder']!='open_data' else None
+            fallback=FallbackChain(root()) if place_provider is not None and not isinstance(place_provider,FallbackChain) else None
             result=execute_personal_plan(brief_data,place_provider=place_provider,intelligence=provider,
                 community_nodes=community_plan_nodes(brief_data,job_directory(job_id)),
                 ai_adapter=ai_adapter,notes_pool=gemini_pool(),fallback_provider=fallback,
@@ -475,7 +503,8 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
             except Exception: cats=5
             report['planner']={'config':planner,'estimate':estimate_plan(planner,days=max(1,len(result.get('itinerary',{}).get('days',[]))),categories=cats),
                 'checks':{label:sum(1 for r in (blend.report if blend else []) if r.get('checked_by')==label) for label in ('openstreetmap','google')},
-                'ideas':len(blend.report) if blend else 0,'kept':sum(1 for r in (blend.report if blend else []) if r['kept'])}
+                'ideas':len(blend.report) if blend else 0,'kept':sum(1 for r in (blend.report if blend else []) if r['kept']),
+                'reused':({k:cache.stats()['hits'][k]-reused_before['hits'][k] for k in ('ideas','checks')} if cache and reused_before else None)}
         step='completed' if result['delivery_status']=='ready' else 'error' if result['delivery_status']=='failed' else 'partial'
         with state.lock:
             diagnostics=state.jobs[job_id]['diagnostics']
@@ -523,7 +552,7 @@ def read_job(job_id):
     return job
 
 
-KNOWN_PATHS={'/api/status','/api/research','/api/social/extract','/api/social/status','/api/places/retain','/api/places/takes','/api/community/videos','/api/community/video','/api/community/place','/api/community/map','/api/community/plan-sources',
+KNOWN_PATHS={'/api/status','/api/research','/api/social/extract','/api/social/status','/api/places/retain','/api/places/takes','/api/community/videos','/api/community/video','/api/community/place','/api/community/map','/api/community/plan-sources','/api/transit','/api/transit/between','/api/community/guides','/api/community/tips',
              '/api/places/search','/api/places/match','/api/places/ios-key','/api/places/kit-load','/api/places/details','/api/places/photo','/api/places/hours','/api/usage/report',
              '/api/admin/summary','/api/admin/controls','/api/admin/planner-estimate','/admin','/api/me','/api/auth/email/start','/api/auth/email/verify',
              '/api/auth/apple','/api/auth/refresh','/api/auth/delete','/api/auth/google/start','/api/auth/exchange','/api/account/data'}
@@ -640,6 +669,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_json(200,estimate_plan(config,days=days,categories=cats))
             except (ValueError,TypeError,json.JSONDecodeError) as error: self.send_json(422,{'error':'invalid_planner','field':str(error)[:40]})
             return
+        if target.path=='/api/admin/calls':
+            query={k:v[0] for k,v in parse_qs(target.query).items()}
+            def number(name,default,high):
+                try: return min(high,max(0,int(query.get(name,default))))
+                except ValueError: return default
+            hours=number('hours',24,24*30)
+            since=(datetime.now(timezone.utc)-timedelta(hours=hours)).isoformat(timespec='milliseconds') if hours else None
+            result=calls.query(since=since,limit=number('limit',300,1000),offset=number('offset',0,5000),min_ms=number('min_ms',0,600000) or None,
+                **{f:query.get(f) for f in ('kind','provider','operation','model','status','client','plan') if query.get(f)})
+            self.send_json(200,result); return
         if target.path=='/api/admin/summary':
             from trippy.admin_summary import build
             try:
@@ -848,9 +887,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                     self.send_json(200,{'photoUri':photo_uri}); return True
                 request=Request(url,headers={'X-Goog-Api-Key':api_key,'Accept':'image/*'})
                 usage.hit('google:photo')
-                with urlopen(request,timeout=15) as response:
-                    image=response.read(8_000_000)
-                    content_type=response.headers.get_content_type()
+                with call_log.track('google:photo') as call:
+                    with urlopen(request,timeout=15) as response:
+                        image=response.read(8_000_000)
+                        content_type=response.headers.get_content_type()
+                    call.nbytes=len(image)
                 if not content_type.startswith('image/') or not image: self.send_json(502,{'error':'photo_unavailable'})
                 else: self.send_image(200,content_type,image)
                 return True
@@ -891,9 +932,46 @@ class RequestHandler(BaseHTTPRequestHandler):
             from trippy.usage import credits
             self.send_json(200,{'user_id':person.user_id,'email':person.email,'admin':person.admin,
                                 'credits':credits(recorder,controls,person.user_id,admin=person.admin)}); return
-        if target.path in ('/api/community/videos','/api/community/video','/api/community/place','/api/community/map','/api/community/plan-sources'):
+        if target.path=='/api/transit/between':
+            # The lines (bus, metro, tram, train, coach, ferry) that stop near both ends: a direct line, if there is one.
+            if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
+            query=parse_qs(target.query)
+            try:
+                ends=[tuple(float(x) for x in (query.get(name,[''])[0] or '').split(',')) for name in ('from','to')]
+                if any(len(p)!=2 or not (-90<=p[0]<=90 and -180<=p[1]<=180) for p in ends): raise ValueError
+            except ValueError: self.send_json(400,{'error':'invalid_transit_request'}); return
+            from trippy import transit
+            from trippy.planner.osm_places import overpass
+            try: cache=place_cache()
+            except Exception: cache=None
+            self.send_json(200,transit.between(ends[0],ends[1],fetch=overpass,cache=cache)); return
+        if target.path=='/api/transit':
+            # A city's lines (OpenStreetMap, cached a month) and which ticket is worth buying (hand-kept table).
             if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
             query=parse_qs(target.query); arg=lambda name:(query.get(name,[''])[0] or '')[:120]
+            try:
+                latitude,longitude=float(arg('lat')),float(arg('lng'))
+                if not (-90<=latitude<=90 and -180<=longitude<=180): raise ValueError
+                days=min(31,max(1,int(arg('days') or 3))); rides=min(12,max(0,float(arg('rides') or 4))); people=min(20,max(1,int(arg('travelers') or 1)))
+            except ValueError: self.send_json(400,{'error':'invalid_transit_request'}); return
+            from trippy import transit
+            from trippy.planner.osm_places import overpass
+            try: cache=place_cache()
+            except Exception: cache=None
+            self.send_json(200,transit.answer(root(),arg('city'),latitude,longitude,fetch=overpass,cache=cache,days=days,rides_per_day=rides,
+                                              travelers=people,airport=arg('airport')=='1',fare='reduced' if arg('fare')=='reduced' else 'full')); return
+        if target.path in ('/api/community/videos','/api/community/video','/api/community/place','/api/community/map','/api/community/plan-sources','/api/community/guides','/api/community/tips'):
+            if not places_access_allowed(self): self.send_json(401,{'error':'access_token_required'}); return
+            query=parse_qs(target.query); arg=lambda name:(query.get(name,[''])[0] or '')[:120]
+            if target.path=='/api/community/guides':
+                from trippy.social import guides
+                self.send_json(200,guides.browse(community_videos().all(),continent=arg('continent'),country=arg('country'),region=arg('region'),
+                                                 city=arg('city'),kind=arg('type'),query=arg('q'))); return
+            if target.path=='/api/community/tips':
+                from trippy.social import guides
+                videos=community_videos().all()
+                self.send_json(200,{**guides.tips_for(videos,city=arg('city'),country=arg('country')),
+                                    'foods':guides.foods_for(videos,city=arg('city'),country=arg('country'))}); return
             if target.path=='/api/community/plan-sources':
                 self.send_json(200,plan_sources(arg('city'),videos=community_videos().all())); return
             if target.path=='/api/community/place':
@@ -1048,7 +1126,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         usage.hit('plan:started',client)
         def planned():
             # The plan's own calls (Google, Wikidata, Gemini) count for the install that asked.
-            usage.set_client(client)
+            usage.set_client(client); call_log.set_plan(job_id)
             run_pipeline(brief,job_id)
             result=(state.jobs.get(job_id) or {}).get('result') or {}
             usage.hit('plan:'+{'ready':'ready','partial':'partial'}.get(result.get('delivery_status'),'failed'),client)

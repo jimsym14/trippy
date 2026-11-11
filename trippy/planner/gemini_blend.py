@@ -148,7 +148,9 @@ class GeminiBlendProvider:
             found, reason, used = None, 'not_found', None
             for resolver in self.resolvers:   # the free check first, the paid one only when it misses
                 for query in queries:
-                    candidate = resolver(query, brief['destination'], near)
+                    # A resolver that can choose between several matches is told what kind of place is wanted.
+                    candidate = (resolver(query, brief['destination'], near, RIGHT_TYPES.get(category)) if getattr(resolver, 'takes_kinds', False)
+                                 else resolver(query, brief['destination'], near))
                     reason = self.check(category, name, candidate, near, seen, local)
                     found, used = candidate, getattr(resolver, 'label', 'check')
                     if reason is None or reason not in {'not_found', 'different_name'}: break
@@ -173,7 +175,9 @@ class GeminiBlendProvider:
             if s.get('tip'): tags.append('tip:' + s['tip'][:300])   # kept apart: the notes step rewrites descriptions
             hours = hours_tag(found.get('opening_hours'))
             if hours: tags.append(hours)
-            batch['places'].append({'id': found['id'], 'name': found['name'], 'category': category,
+            # A sign in another script keeps the name the traveller can read ("Seychelles", not "Σεϋχέλλες").
+            shown = name if not folded(found['name']) and folded(name) else found['name']
+            batch['places'].append({'id': found['id'], 'name': shown, 'category': category,
                 # The reason goes in description; the practical local tip in why_recommended.
                 'description': (s.get('why') or '')[:400], 'why_recommended': (s.get('tip') or s.get('why') or '')[:400],
                 'address': found.get('address'), 'official_url': found.get('website'), 'source_ids': [sid],
@@ -231,15 +235,31 @@ def osm_resolver(*, fetch=None, user_agent='Trippy/1.0 (trip planner)'):
         if wait > 0: time.sleep(wait)
         last[0] = time.time()
         url = 'https://nominatim.openstreetmap.org/search?' + urllib.parse.urlencode(params)
-        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': user_agent}), timeout=20) as r:
-            return json.load(r)
+        from trippy import call_log
+        with call_log.track('free:nominatim'):
+            with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': user_agent}), timeout=20) as r:
+                return json.load(r)
 
     get = fetch or default_fetch
 
-    def resolve(query, destination, near):
-        key = (query, destination, near)
+    def best(rows, query, near, kinds):
+        """The row that is the kind of place asked for and carries the name asked for: "Acropolis of Athens" is the
+        ancient site, not the metro station or the neighbourhood named after it. With several branches, the nearest."""
+        if not kinds or len(rows) < 2: return rows[0]
+        wanted = ' '.join(folded(query.split(',')[0]))
+        def score(item):
+            index, r = item
+            kind = 'historical_landmark' if r.get('category') == 'historic' else OSM_TYPES.get((r.get('category'), r.get('type')))
+            names = [r.get('name', '')] + list((r.get('namedetails') or {}).values())
+            alike = max((difflib.SequenceMatcher(None, wanted, ' '.join(folded(n))).ratio() for n in names if folded(n)), default=0.5)
+            far = km(near, (float(r['lat']), float(r['lon']))) if near else 0
+            return (kind in kinds, r.get('category') != 'place', round(alike, 1), -round(far), -index)
+        return max(enumerate(rows), key=score)[1]
+
+    def resolve(query, destination, near, kinds=None):
+        key = (query, destination, near, tuple(sorted(kinds)) if kinds else None)
         if key in cache: return cache[key]
-        params = {'q': f'{query}, {destination}', 'format': 'jsonv2', 'limit': 1, 'namedetails': 1, 'extratags': 1}
+        params = {'q': f'{query}, {destination}', 'format': 'jsonv2', 'limit': 5 if kinds else 1, 'namedetails': 1, 'extratags': 1}
         if near: params.update(viewbox=f'{near[1]-0.25},{near[0]+0.25},{near[1]+0.25},{near[0]-0.25}', bounded=1)
         try:
             rows = get(params)
@@ -249,7 +269,7 @@ def osm_resolver(*, fetch=None, user_agent='Trippy/1.0 (trip planner)'):
             rows = []
         result = None
         if rows:
-            r = rows[0]; names = r.get('namedetails') or {}; extra = r.get('extratags') or {}
+            r = best(rows, query, near, kinds); names = r.get('namedetails') or {}; extra = r.get('extratags') or {}
             kind = 'historical_landmark' if r.get('category') == 'historic' else OSM_TYPES.get((r.get('category'), r.get('type')))
             result = {'id': f"osm-{(r.get('osm_type') or 'x')[:1]}{r.get('osm_id')}",
                       'name': names.get('name:en') or names.get('name') or r.get('name', ''),
@@ -262,6 +282,7 @@ def osm_resolver(*, fetch=None, user_agent='Trippy/1.0 (trip planner)'):
         cache[key] = result
         return result
     resolve.label = 'openstreetmap'
+    resolve.takes_kinds = True
     return resolve
 
 

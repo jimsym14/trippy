@@ -1,0 +1,243 @@
+{
+  "_about": "Visitor tickets per city, copied by hand from each operator's own fares page. Every city carries the page and the day it was read; the app shows both. Re-check when `checked` is older than six months or the operator announces new fares. Prices are full adult fares in the city's currency.",
+  "cities": {
+    "athens": {
+      "city": "Athens",
+      "country": "GR",
+      "currency": "EUR",
+      "operator": "OASA",
+      "source": "http://www.oasa.gr/en/tickets/prices-of-products/",
+      "checked": "2026-11-11",
+      "covers": "Metro, buses, trolleybuses, trams and the suburban rail inside the city",
+      "pay_by_card": "Tap a bank card or phone at the gates for the 90-minute, 24-hour and airport fares.",
+      "tickets": [
+        {
+          "id": "single",
+          "name": "90-minute ticket",
+          "price": 1.2,
+          "kind": "single",
+          "minutes": 90,
+          "airport": false,
+          "reduced": 0.5
+        },
+        {
+          "id": "day",
+          "name": "24-hour ticket",
+          "price": 4.1,
+          "kind": "pass",
+          "hours": 24,
+          "airport": false
+        },
+        {
+          "id": "five",
+          "name": "5-day ticket",
+          "price": 8.2,
+          "kind": "pass",
+          "hours": 120,
+          "airport": false
+        },
+        {
+          "id": "tourist",
+          "name": "3-day tourist ticket",
+          "price": 20.0,
+          "kind": "pass",
+          "hours": 72,
+          "airport": true,
+          "note": "Includes one trip to and one from the airport, by metro or express bus."
+        },
+        {
+          "id": "airport-metro",
+          "name": "Airport metro, one way",
+          "price": 9.0,
+          "kind": "airport",
+          "minutes": 90,
+          "reduced": 4.5
+        },
+        {
+          "id": "airport-metro-return",
+          "name": "Airport metro, return",
+          "price": 16.0,
+          "kind": "airport_return",
+          "note": "Use the way back within 30 days."
+        },
+        {
+          "id": "airport-bus",
+          "name": "Airport express bus, one way",
+          "price": 5.5,
+          "kind": "airport",
+          "reduced": 2.7
+        }
+      ],
+      "reduced_for": "Students, under-18s and over-65s with a personalised card; check eligibility with OASA."
+    },
+    "rome": {
+      "city": "Rome",
+      "country": "IT",
+      "currency": "EUR",
+      "operator": "ATAC",
+      "source": "https://www.atac.roma.it/en/tickets-and-passes",
+      "checked": "2026-11-11",
+      "covers": "Metro, buses and trams in Rome",
+      "pay_by_card": "Tap a bank card at the gates and on buses (tap&go).",
+      "note": "Children up to 10 travel free with a paying adult. Airport trains are a separate ticket.",
+      "tickets": [
+        {
+          "id": "single",
+          "name": "BIT single ticket",
+          "price": 1.5,
+          "kind": "single",
+          "minutes": 100,
+          "airport": false
+        },
+        {
+          "id": "ten",
+          "name": "10 single tickets",
+          "price": 15.0,
+          "kind": "bundle",
+          "rides": 10,
+          "minutes": 100,
+          "airport": false
+        },
+        {
+          "id": "day",
+          "name": "Roma 24H",
+          "price": 8.5,
+          "kind": "pass",
+          "hours": 24,
+          "airport": false
+        },
+        {
+          "id": "two",
+          "name": "Roma 48H",
+          "price": 15.0,
+          "kind": "pass",
+          "hours": 48,
+          "airport": false
+        },
+        {
+          "id": "three",
+          "name": "Roma 72H",
+          "price": 22.0,
+          "kind": "pass",
+          "hours": 72,
+          "airport": false
+        },
+        {
+          "id": "week",
+          "name": "Weekly card (CIS)",
+          "price": 29.0,
+          "kind": "pass",
+          "hours": 168,
+          "airport": false,
+          "note": "Runs to midnight of the seventh day."
+        }
+      ]
+    },
+    "barcelona": {
+      "city": "Barcelona",
+      "country": "ES",
+      "currency": "EUR",
+      "operator": "TMB",
+      "source": "https://www.tmb.cat/en/barcelona-fares-metro-bus",
+      "checked": "2026-11-11",
+      "covers": "Metro and buses in Barcelona",
+      "note": "T-casual is for one person and cannot be shared. Most tickets are not valid at the two airport metro stations.",
+      "tickets": [
+        {
+          "id": "single",
+          "name": "Single ticket",
+          "price": 2.9,
+          "kind": "single",
+          "airport": false
+        },
+        {
+          "id": "ten",
+          "name": "T-casual, 10 journeys",
+          "price": 13.0,
+          "kind": "bundle",
+          "rides": 10,
+          "airport": false,
+          "note": "One person only."
+        },
+        {
+          "id": "family",
+          "name": "T-familiar, 8 journeys",
+          "price": 11.5,
+          "kind": "bundle",
+          "rides": 8,
+          "shared": true,
+          "airport": false,
+          "note": "Can be shared; use within 30 days."
+        },
+        {
+          "id": "day",
+          "name": "T-dia, 24 hours",
+          "price": 12.0,
+          "kind": "pass",
+          "hours": 24,
+          "airport": true,
+          "note": "Includes one trip to and one from the airport by metro."
+        },
+        {
+          "id": "airport-metro",
+          "name": "Airport metro ticket",
+          "price": 5.9,
+          "kind": "airport"
+        }
+      ]
+    },
+    "lisbon": {
+      "city": "Lisbon",
+      "country": "PT",
+      "currency": "EUR",
+      "operator": "Metro de Lisboa / Carris",
+      "source": "https://www.metrolisboa.pt/en/buy/",
+      "checked": "2026-11-11",
+      "covers": "Metro, Carris buses, trams and funiculars",
+      "pay_by_card": "Tap a bank card at metro gates (one person per card).",
+      "note": "Tickets load onto a reusable navegante card bought at the machines.",
+      "tickets": [
+        {
+          "id": "single",
+          "name": "Carris/Metro ticket",
+          "price": 1.9,
+          "kind": "single",
+          "minutes": 60,
+          "airport": true
+        },
+        {
+          "id": "zapping",
+          "name": "Zapping, per metro ride",
+          "price": 1.72,
+          "kind": "single",
+          "airport": true,
+          "note": "Pay-as-you-go credit; top up from €3."
+        },
+        {
+          "id": "day",
+          "name": "24 hours, Carris/Metro",
+          "price": 7.25,
+          "kind": "pass",
+          "hours": 24,
+          "airport": true
+        },
+        {
+          "id": "day-ferry",
+          "name": "24 hours with the Cacilhas ferry",
+          "price": 10.35,
+          "kind": "pass_plus",
+          "hours": 24,
+          "airport": true
+        },
+        {
+          "id": "day-train",
+          "name": "24 hours with trains to Sintra and Cascais",
+          "price": 11.4,
+          "kind": "pass_plus",
+          "hours": 24,
+          "airport": true
+        }
+      ]
+    }
+  }
+}

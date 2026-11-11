@@ -305,6 +305,32 @@ def themes_in(text):
     return sorted(t for t, (_, stems) in THEMES.items() if any(_fold(s) in folded for s in stems))
 
 
+# Words that carry no instruction of their own once the themes, the area and the stay are understood.
+_FILLER = set("""a an and are around as at be both but by can do for from get go good great have i im in into is it its just like
+lot lots love loves loving many me more most much my near need nice no not of on or our please really some somewhere stay staying
+that the their them there things this to too trip very visit want wants we were what with would you
+θελω θελουμε θα να και με σε στο στη στην στα στον για το τα τη την της του των ο η οι ενα μια πολυ πολλα λιγο
+μας μου μενουμε διαμονη ταξιδι κοντα αρεσει αρεσουν""".split())
+
+
+def keywords_cover(text, *, area=None, stay=None, leftover=2):
+    """True when the fixed vocabulary read the whole request, so no model is needed to understand it.
+
+    The request minus its theme words, the neighbourhood it names, where the traveller stays and filler words
+    must leave at most `leftover` words. "tapas and wine, staying in El Born" is covered; "somewhere quiet to
+    propose, she hates crowds" is not, and goes to the model as before."""
+    import re
+    folded = ' ' + _fold(text) + ' '
+    if not themes_in(text):
+        return False
+    for phrase in filter(None, [area, stay]):
+        folded = folded.replace(_fold(phrase), ' ')
+    words = [w for w in re.findall(r"[^\W\d_]{3,}", folded) if w not in _FILLER]
+    stems = [_fold(stem).strip() for _, group in THEMES.values() for stem in group]
+    unread = [w for w in words if not any(stem and (stem in w or w in stem) for stem in stems)]
+    return len(unread) <= leftover
+
+
 def keyword_intent(brief: dict) -> Optional[SearchIntent]:
     """Deterministic intent from custom_instructions, or None when nothing matched."""
     text = (brief.get('custom_instructions') or '').strip()[:4000]

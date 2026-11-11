@@ -11,7 +11,11 @@ class PlannerConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError): pc.clean(bad)
 
     def test_estimate_breaks_down_each_step(self):
-        today = pc.estimate({}, days=2, categories=5)
+        default = pc.estimate({}, days=2, categories=5)   # AI ideas checked on OpenStreetMap, Google only for misses
+        self.assertEqual([l['step'] for l in default['lines']],
+                         ['Reading the request', 'Finding places', 'Checking places are real', 'Famous sights', 'Plan notes and day themes'])
+        today = pc.estimate({'place_finder': 'google_search'}, days=2, categories=5)
+        self.assertLess(default['total_usd'], today['total_usd'])
         self.assertEqual([l['step'] for l in today['lines']],
                          ['Reading the request', 'Finding places', 'Famous sights', 'Plan notes and day themes'])
         self.assertAlmostEqual(today['lines'][1]['usd'], 5 * 0.035, places=4)

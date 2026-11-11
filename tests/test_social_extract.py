@@ -104,7 +104,7 @@ class ExtractTests(unittest.TestCase):
                 return json.loads(json.dumps(RESULT)), "fake-model"
         queue = ex.ExtractionQueue(lambda: Pool(), search=None)
         job_id = str(uuid.uuid4())
-        queue.submit(job_id, {"evidence": [{"origin": "post_caption", "text": "x"}]})
+        queue.submit(job_id, {"evidence": [{"origin": "post_caption", "text": "📍 Cozy cafés in Athens"}]})
         for _ in range(100):
             if queue.get(job_id)["status"] == "ready": break
             time.sleep(0.02)
@@ -112,8 +112,48 @@ class ExtractTests(unittest.TestCase):
         self.assertEqual(job["status"], "ready")
         self.assertEqual(job["result"]["model"], "fake-model")
         self.assertNotIn("source", job)
-        queue.submit(job_id, {"evidence": [{"origin": "post_caption", "text": "x"}]})
-        self.assertEqual(Pool.calls, 1)
+        queue.submit(job_id, {"evidence": [{"origin": "post_caption", "text": "📍 Cozy cafés in Athens"}]})
+        self.assertEqual(Pool.calls, 1)   # clear travel text: no gate call, one read
+
+    def test_gate_reads_free_text_first_and_never_trusts_the_caption_alone(self):
+        self.assertEqual(ex.looks_like_travel(["8 spots to eat under 10€ in Rome"]), "yes")
+        self.assertEqual(ex.looks_like_travel(["Θέλουμε να φάμε στο Παγκράτι, date night"]), "yes")
+        self.assertEqual(ex.looks_like_travel(["GRWM for my first day at the gym, outfit and makeup"]), "no")
+        # The Interrail slideshow has an empty caption; the slides carry everything. Unsure means: look.
+        self.assertEqual(ex.looks_like_travel(["", ""]), "unsure")
+        self.assertEqual(ex.looks_like_travel(["", "φθηνά ταξίδια με interrail, πόλεις και κόστος"]), "yes")
+
+        class Pool:
+            def __init__(self, answer): self.answer, self.calls = answer, 0
+            def generate(self, parts, **kw):
+                self.calls += 1
+                if self.answer is None: raise RuntimeError("down")
+                return {"relevant": self.answer}, "lite"
+        empty = {"evidence": [{"origin": "post_caption", "text": ""}], "images": [b"jpeg"] * 9}
+        no = Pool(False)
+        self.assertEqual(ex.triage(no, empty), (False, "model"))
+        self.assertEqual(no.calls, 1)
+        self.assertEqual(ex.triage(Pool(None), empty), (True, "error"))   # a failing gate never drops a post
+        clear = Pool(False)
+        self.assertEqual(ex.triage(clear, {"evidence": [{"origin": "post_caption", "text": "Your guide for Rome #mustsee #traveltips"}]}), (True, "text"))
+        self.assertEqual(clear.calls, 0)
+
+    def test_off_topic_posts_keep_nothing_and_guides_are_normalised(self):
+        off = ex.clean({**json.loads(json.dumps(RESULT)), "relevant": False})
+        self.assertEqual((off["places"], off["tips"], off["guide_types"]), ([], [], []))
+        route = ex.clean({**json.loads(json.dumps(RESULT)), "relevant": True, "guide_types": ["route", "tips", "bogus", "route"],
+                          "theme": "Interrail on a budget",
+                          "scope": {"level": "multi_country", "name": "Central Europe", "region": "Europe", "countries": ["cz", "AT", "hun"]},
+                          "route": {"mode": "train", "days": 10, "cost_hint": "€350", "stops": [{"name": "Prague", "country_code": "cz", "nights": 3},
+                                                                                              {"name": "Vienna", "country_code": "AT"}, {"name": ""}]},
+                          "foods": [{"name": "Trdelník", "where": "Prague"}, {"detail": "no name"}]})
+        self.assertEqual(route["guide_types"], ["route", "tips"])
+        self.assertEqual(route["scope"], {"level": "multi_country", "name": "Central Europe", "region": "Europe", "countries": ["CZ", "AT"]})
+        self.assertEqual([s["name"] for s in route["route"]["stops"]], ["Prague", "Vienna"])
+        self.assertEqual(route["route"]["stops"][0]["country_code"], "CZ")
+        self.assertEqual([f["name"] for f in route["foods"]], ["Trdelník"])
+        # A route label with no stops is not a route.
+        self.assertIsNone(ex.clean({**json.loads(json.dumps(RESULT)), "guide_types": ["route"], "route": {"stops": []}})["route"])
 
     def test_vtt_to_text(self):
         self.assertEqual(vtt_text("WEBVTT\n\n1\n00:00.0 --> 00:01.0\nHello\n\n00:01.0 --> 00:02.0\nHello\nworld"), "Hello world")

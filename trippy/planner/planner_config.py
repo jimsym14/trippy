@@ -35,7 +35,7 @@ MODELS = {
 
 OPTIONS = {
     'place_finder': {'label': 'Places come from', 'choices': {
-        'google_search': 'Google search per category (today)',
+        'google_search': 'Google search per category',
         'gemini_blend': 'AI ideas, checked as real places',
         'open_data': 'Open data only (OpenStreetMap, Wikivoyage)'}},
     'idea_model': {'label': 'AI for place ideas', 'choices': {k: v['label'] for k, v in MODELS.items()}},
@@ -46,7 +46,7 @@ OPTIONS = {
         'google': 'Google for every idea'}},
     'request_reader': {'label': 'Reading the request', 'choices': {'azure-luna': 'GPT-6 Luna (Azure)', 'keywords': 'Keywords only (free)'}},
 }
-DEFAULT = {'place_finder': 'google_search', 'idea_model': 'gemini-3.6-flash', 'gemini_tier': 'free',
+DEFAULT = {'place_finder': 'gemini_blend', 'idea_model': 'gemini-3.6-flash', 'gemini_tier': 'free',
            'place_check': 'osm_then_google', 'request_reader': 'azure-luna'}
 
 GOOGLE_TEXT_SEARCH_ENTERPRISE = 0.035   # today's planner search (rating, hours, website)

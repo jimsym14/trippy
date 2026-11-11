@@ -21,6 +21,12 @@ struct TripGuideView: View {
     @State private var undo: GuideEdits?
     @State private var undoTask: Task<Void, Never>?
     @State private var scrolledID: Block?
+    @State private var mode: GuideMode = {
+        #if DEBUG
+        if let name = UserDefaults.standard.string(forKey: "TrippyGuideMode"), let saved = GuideMode(rawValue: name) { return saved }
+        #endif
+        return .plan
+    }()
     @State private var scrollAnchor: UnitPoint = .top
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -35,6 +41,16 @@ struct TripGuideView: View {
                 let ctx = self.ctx
                 VStack(alignment: .leading, spacing: 36) {
                     GuideHeader(ctx: ctx, tint: tint, flight: $edits.flight, showFacts: $showFacts)
+                    GuideModePicker(mode: $mode, tint: tint,
+                                    mustSeeLeft: MustSeeView.items(ctx).filter { !edits.checklistDone.contains("seen|" + $0.id) }.count)
+                    switch mode {
+                    case .map: GuideMapMode(ctx: ctx).transition(.opacity)
+                    case .mustSee:
+                        MustSeeView(ctx: ctx, edits: $edits, onAdd: { placeID, date in append(placeID, to: date, ctx: ctx) },
+                                    onShowDay: { date in withAnimation(reduceMotion ? nil : .smooth) { mode = .plan }
+                                        Task { try? await Task.sleep(for: .milliseconds(250)); scrolledID = .day(date) } })
+                            .transition(.opacity)
+                    case .plan:
                     ForEach(blocks(ctx), id: \.self) { block in
                         switch block {
                         case .section(let section): sectionView(section, ctx: ctx)
@@ -50,10 +66,12 @@ struct TripGuideView: View {
                             if let day = ctx.days.first(where: { $0.date == date }) {
                                 DayView(day: day, ctx: ctx, edits: $edits, editing: editingDays, beforeRemove: rememberForUndo)
                                 if day.date == ctx.days.last?.date {
+                                    DayTripSection(ctx: ctx)
                                     LeftOutSection(items: ctx.leftOut) { placeID, date in append(placeID, to: date, ctx: ctx) }
                                 }
                             }
                         }
+                    }
                     }
                     Text("Times and prices are suggestions from sources. Anything marked “Check” is unconfirmed.")
                         .font(Sketch.hand(.footnote)).foregroundStyle(Sketch.inkFaint).padding(.bottom, 48)
@@ -69,6 +87,7 @@ struct TripGuideView: View {
             .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .scrollPosition(id: $scrolledID, anchor: scrollAnchor)
             .scrollDismissesKeyboard(.interactively)
+            .animation(reduceMotion ? nil : .snappy, value: mode)
             .overlay(alignment: .bottom) { undoBar }
             .animation(reduceMotion ? nil : .snappy, value: undo != nil)
             .background(PaperBackground())
@@ -253,45 +272,88 @@ private struct GuideHeader: View {
         }
     }
 
-    /// The two times that shape the first and last day, and where every day starts: typed in place.
+    /// When you land, when you leave and where you stay, on one line: they shape the first day, the last day and
+    /// where every day starts. While one is empty the plan suggests it, and a tap fills it in.
     private var essentials: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 timeField("Land", symbol: "airplane.arrival", text: $flight.arrivalTime, field: .arrive)
                 timeField("Leave", symbol: "airplane.departure", text: $flight.departureTime, field: .leave)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("STAY").font(Sketch.eyebrow).tracking(0.8).foregroundStyle(Sketch.inkSoft)
+                    TextField("Area or hotel", text: $flight.stayName)
+                        .font(Sketch.text(15, "Bold", relativeTo: .body)).focused($focus, equals: .stay)
+                        .submitLabel(.done).textContentType(.addressCityAndState)
+                }
+                .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Sketch.card))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(focus == .stay ? tint : Sketch.rule, lineWidth: focus == .stay ? 1.5 : 0.7))
+                Button { showFacts = true } label: {
+                    Image(systemName: "slider.horizontal.3").font(.system(size: 15, weight: .bold)).foregroundStyle(tint)
+                        .frame(width: 44, height: 54).background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(tint.opacity(0.1)))
+                }
+                .buttonStyle(SketchPressStyle()).accessibilityLabel("Flights, stay map and booking")
             }
-            HStack(spacing: 10) {
-                Image(systemName: "bed.double.fill").font(.system(size: 15, weight: .semibold)).foregroundStyle(tint)
-                    .frame(width: 22)
-                TextField("Where are you staying?", text: $flight.stayName)
-                    .font(Sketch.text(15, "SemiBold", relativeTo: .body)).focused($focus, equals: .stay)
-                    .submitLabel(.done).textContentType(.addressCityAndState)
+            let hints = suggestions
+            if !hints.isEmpty {
+                BubbleFlow(spacing: 6) {
+                    ForEach(hints) { hint in
+                        Button { TrippyHaptics.light(); withAnimation(.snappy) { hint.apply() } } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: hint.symbol).font(.system(size: 10, weight: .bold))
+                                Text(hint.text).font(Sketch.text(12, "Bold", relativeTo: .caption))
+                            }
+                            .foregroundStyle(tint).padding(.horizontal, 11).frame(minHeight: 44)
+                            .background(Capsule().strokeBorder(tint.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                        }
+                        .buttonStyle(SketchPressStyle()).accessibilityHint(hint.why)
+                    }
+                }
+                Text(hints[0].why).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkFaint).fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.horizontal, 14).frame(minHeight: 48)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Sketch.card))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(focus == .stay ? tint : Sketch.rule, lineWidth: focus == .stay ? 1.5 : 0.7))
-            Button { showFacts = true } label: {
-                Label(flight.outbound.isEmpty && flight.inbound.isEmpty ? "Flights, stay map & booking" : "Flight details & booking",
-                      systemImage: "slider.horizontal.3")
-                    .font(Sketch.text(13, "Bold", relativeTo: .footnote)).foregroundStyle(tint)
-                    .padding(.horizontal, 12).frame(minHeight: 34)
-                    .background(Capsule().fill(tint.opacity(0.1)))
+            let yours = ctx.model.places.values.filter(\.personal).count
+            let videos = ctx.model.places.values.filter { $0.videoCount > 0 || $0.fromVideo }.count
+            if yours + videos > 0 {
+                // What makes this plan yours, in one line.
+                let parts = [yours > 0 ? "\(yours) \(yours == 1 ? "place" : "places") you saved" : nil, videos > 0 ? "\(videos) from videos" : nil].compactMap { $0 }
+                Label("Built around " + parts.joined(separator: " and "), systemImage: "person.crop.circle.badge.checkmark")
+                    .font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
             }
-            .buttonStyle(SketchPressStyle())
         }
     }
 
-    private func timeField(_ title: String, symbol: String, text: Binding<String>, field: Field) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: symbol).font(.system(size: 15, weight: .semibold)).foregroundStyle(tint)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(title.uppercased()).font(Sketch.eyebrow).tracking(0.8).foregroundStyle(Sketch.inkSoft)
-                TextField("--:--", text: text)
-                    .font(Sketch.text(18, "Bold", relativeTo: .title3)).monospacedDigit()
-                    .keyboardType(.numbersAndPunctuation).focused($focus, equals: field).submitLabel(.done)
+    private struct Hint: Identifiable { let id: String; let symbol: String; let text: String; let why: String; let apply: () -> Void }
+    /// What to put in the empty fields, worked out from the plan itself.
+    private var suggestions: [Hint] {
+        var out: [Hint] = []
+        if flight.stayName.trimmingCharacters(in: .whitespaces).isEmpty {
+            // The parts of town the plan spends most days in make the shortest mornings.
+            let areas = ctx.model.areas.filter { !$0.name.isEmpty && !$0.name.lowercased().hasPrefix("around ") }
+                .sorted { ($0.days.count, $0.importance) > ($1.days.count, $1.importance) }.prefix(3)
+            for area in areas {
+                out.append(Hint(id: "stay:" + area.id, symbol: "bed.double.fill", text: "Stay in \(area.name)",
+                                why: "Suggested bases: the areas your days spend the most time in.") { flight.stayName = area.name })
             }
         }
-        .padding(.horizontal, 14).frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+        if flight.arrivalTime.isEmpty, let first = ctx.days.first?.stops.first, let start = GuideDates.minutes(first.time), start >= 180 {
+            let by = GuideDates.clock(start - 90)
+            out.append(Hint(id: "land", symbol: "airplane.arrival", text: "Land by \(by)", why: "Day 1 starts at \(first.time); landing by \(by) keeps all of it.") { flight.arrivalTime = by })
+        }
+        if flight.departureTime.isEmpty, let last = ctx.days.last?.stops.last, let start = GuideDates.minutes(last.time) {
+            let after = GuideDates.clock(min(23 * 60 + 30, start + last.durationMinutes + 180))
+            out.append(Hint(id: "leave", symbol: "airplane.departure", text: "Leave after \(after)", why: "The last day runs to \(GuideDates.clock(start + last.durationMinutes)); a flight after \(after) keeps it whole.") { flight.departureTime = after })
+        }
+        return out
+    }
+
+    private func timeField(_ title: String, symbol: String, text: Binding<String>, field: Field) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title.uppercased()).font(Sketch.eyebrow).tracking(0.8).foregroundStyle(Sketch.inkSoft)
+            TextField("--:--", text: text)
+                .font(Sketch.text(16, "Bold", relativeTo: .body)).monospacedDigit()
+                .keyboardType(.numbersAndPunctuation).focused($focus, equals: field).submitLabel(.done)
+        }
+        .padding(.horizontal, 12).frame(width: 78, height: 54, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Sketch.card))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(focus == field ? tint : Sketch.rule, lineWidth: focus == field ? 1.5 : 0.7))
         .contentShape(Rectangle())
@@ -541,7 +603,15 @@ private struct DayView: View {
                     BaseStartRow(base: base, minutes: day.stops.first?.fromBaseMinutes, tint: color)
                 }
                 ForEach(Array(day.stops.enumerated()), id: \.element.id) { index, stop in
-                    if let travel = stop.travelMinutes, index > 0 { TravelLeg(minutes: travel, color: color) }
+                    if index > 0, let gap = freeMinutes(before: index), gap >= 60 {
+                        let idea = editing ? nil : ctx.unusedInAreas(of: day).first
+                        FreeTimeRow(minutes: gap, color: color, idea: idea, onAdd: idea.map { place in
+                            { apply(GuideSuggestion(id: "gap|\(place.id)", text: place.name, detail: "", symbol: "plus", action: .addPlace(place.id))) }
+                        })
+                    }
+                    if let travel = stop.travelMinutes, index > 0 {
+                        TravelLegRow(minutes: travel, color: color, from: day.stops[index - 1].place, to: stop.place, input: ctx.input)
+                    }
                     if let warning = ctx.timingWarning(stop, day: day) {
                         Label(warning, systemImage: "exclamationmark.triangle").font(Sketch.text(12, "SemiBold", relativeTo: .caption))
                             .foregroundStyle(Sketch.coral).padding(.leading, 70).padding(.top, 6)
@@ -558,6 +628,7 @@ private struct DayView: View {
                                 note: Binding(get: { edits.notes[stop.key] ?? "" }, set: { edits.notes[stop.key] = $0.nilIfEmpty }),
                                 time: Binding(get: { edits.times[stop.key] ?? stop.time }, set: { edits.times[stop.key] = $0 }),
                                 onMove: { move(stop, by: $0) }, onRemove: { remove(stop) }, onSwap: { swap(stop, with: $0) })
+                            .atlasRise(index)
                     }
                 }
             }
@@ -565,6 +636,12 @@ private struct DayView: View {
         }
     }
 
+    /// Minutes with nothing in them before a stop: after the last one ended and the walk over.
+    private func freeMinutes(before index: Int) -> Int? {
+        let previous = day.stops[index - 1], next = day.stops[index]
+        guard let ended = GuideDates.minutes(previous.time), let starts = GuideDates.minutes(next.time) else { return nil }
+        return starts - (ended + previous.durationMinutes) - (next.travelMinutes ?? 0)
+    }
     private var ids: [String] { day.stops.map(\.itemID) }
     private func apply(_ suggestion: GuideSuggestion) {
         withAnimation(.snappy) {
@@ -628,20 +705,6 @@ private struct DayView: View {
     }
 }
 
-private struct TravelLeg: View {
-    let minutes: Int
-    let color: Color
-    var body: some View {
-        HStack(spacing: 10) {
-            DottedTrail().stroke(color.opacity(0.45), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, dash: [1, 5]))
-                .frame(width: 58, height: 26)
-            Text(minutes >= 30 ? "~\(minutes) min · consider the metro" : "~\(minutes) min walk")
-                .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkFaint)
-        }
-        .accessibilityLabel("About \(minutes) minutes to the next stop")
-    }
-}
-
 private struct StopRow: View {
     let stop: ResolvedStop
     let color: Color
@@ -686,6 +749,7 @@ private struct StopRow: View {
                 .buttonStyle(.plain)
                 .accessibilityHint(expanded ? "Show less" : "Show more")
                 Text(meta).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+                StopSources(place: stop.place)
                 if !stop.includes.isEmpty {
                     Label("With " + ListFormatter.localizedString(byJoining: stop.includes), systemImage: "square.stack.3d.up")
                         .font(Sketch.text(13, "Medium", relativeTo: .footnote)).foregroundStyle(color)
@@ -694,8 +758,12 @@ private struct StopRow: View {
                 if !stop.why.isEmpty {
                     Text(stop.why).font(Sketch.text(14, relativeTo: .subheadline)).foregroundStyle(Sketch.ink.opacity(0.82))
                         .fixedSize(horizontal: false, vertical: true)
-                } else if !stop.place.reason.isEmpty {
-                    Text(stop.place.reason).font(Sketch.text(14, relativeTo: .subheadline)).foregroundStyle(Sketch.inkSoft)
+                } else if !stop.place.plainWhy.isEmpty {
+                    Text(stop.place.plainWhy).font(Sketch.text(14, relativeTo: .subheadline)).foregroundStyle(Sketch.inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !stop.place.shortDescription.isEmpty {
+                    // Every stop says why it is here: with no note or reason, what the place is.
+                    Text(stop.place.shortDescription).font(Sketch.text(14, relativeTo: .subheadline)).foregroundStyle(Sketch.inkSoft)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !stop.tip.isEmpty {
@@ -716,15 +784,12 @@ private struct StopRow: View {
 
     private var meta: String {
         var parts = [stop.place.categoryLabel]
-        if stop.place.fromVideo { parts.append("from a video") }
-        else if stop.place.fromWikivoyage { parts.append("Wikivoyage") }
-        else if stop.place.fame >= 10 { parts.append("well known") }
         if let rating = stop.place.rating { parts.append("★ \(rating.formatted(.number.precision(.fractionLength(1))))") }
         return parts.joined(separator: " · ")
     }
 
     @ViewBuilder private var details: some View {
-        if !stop.place.shortDescription.isEmpty {
+        if !stop.place.shortDescription.isEmpty, !(stop.why.isEmpty && stop.place.plainWhy.isEmpty) {
             Text(stop.place.shortDescription).font(Sketch.text(14, relativeTo: .subheadline)).foregroundStyle(Sketch.inkSoft)
         }
         if let address = stop.place.address {

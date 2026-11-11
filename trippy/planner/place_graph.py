@@ -97,7 +97,10 @@ def graph_batch(graph):
                            'longitude':p.get('longitude') if p['selected'] else None,
                            'source_ids': sorted(set(p['node_ids'])) if p['selected'] else []},
             'identity_status':'source_matched' if p['selected'] else 'candidate',
-            'tags':[], 'price':{'min':None,'max':None,'currency':None,'basis':'unknown'}, 'price_source_ids':[],
+            # Community places rank by how many videos recommend them, so the sight five creators chose
+            # comes before one nobody else mentioned. The traveller's own places need no score: they lead anyway.
+            'tags':([f"quality:{min(96, 64 + 6 * len(set(p['node_ids'])))}", 'source:community']
+                    if all(by_node[n]['kind'] == 'community' for n in p['node_ids']) else []), 'price':{'min':None,'max':None,'currency':None,'basis':'unknown'}, 'price_source_ids':[],
             'cuisine':None,'dietary_options':[],'best_for':[],'best_time':None,'reservation_required':None,
             'image_url':None,'image_source_url':None,'image_attribution':None,
             'rating':{'value':None,'scale':None,'platform':None,'review_count':None},

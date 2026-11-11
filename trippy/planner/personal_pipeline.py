@@ -34,8 +34,13 @@ def missing_tasks(brief, graph, intent=None):
     tasks = []
     for category in retrieval_cats:
         if category == 'event': continue
-        target = min(12, days * (2 if category in {'attraction','food'} else 1))
-        count = sum(p['selected'] and p.get('category') == category for p in graph['places'])
+        # A day holds five or six visits, so sights need more than the two a day that meals do; with fewer,
+        # the last days of a four-day trip ran out of things to see.
+        target = (min(24, days * 4) if category == 'attraction' else min(12, days * 2) if category in {'food', 'museum'}
+                  else min(12, days))
+        # Only what the traveller chose counts towards "enough": their own library, or videos they ticked.
+        # Community videos used automatically add ideas; they never stand in for looking the city up.
+        count = sum(p['selected'] and p.get('category') == category and p.get('priority', 0) > 10 for p in graph['places'])
         if count < target:
             base_task = {'id':'places-'+category, 'category':category, 'target':target-count}
             # Attach AI-derived retrieval signals when extraction succeeded.
@@ -47,6 +52,37 @@ def missing_tasks(brief, graph, intent=None):
             tasks.append(task)
     # One lookup per category, never a per-city transcript campaign.
     return tasks[:10]
+
+
+def one_sight_once(doc):
+    """A sight a video calls "Sagrada Familia" and the city lookup calls "Basilica of the Holy Family" is one sight.
+
+    Two places of the same kind within 60 m are merged when their names match, or when one of them is known only
+    from community videos (whose names are whatever the creator said). The better-identified one stays and keeps
+    the other's sources, so the videos still count for it. Places the traveller saved are never dropped."""
+    import difflib
+    from .plan_engine import distance, key
+    from .areas import strength
+    def community_only(p): return 'source:community' in p.get('tags', [])
+    kept = []
+    for place in sorted(doc['places'], key=lambda p: (community_only(p), -strength(p), p['id'])):
+        if place['coordinates'].get('latitude') is None or place['category'] not in {'attraction', 'museum', 'nature'}:
+            kept.append(place); continue
+        twin = next((other for other in kept if other['category'] == place['category'] and other['coordinates'].get('latitude') is not None
+                     and distance(other, place) <= 60
+                     and (community_only(place) or community_only(other)
+                          or difflib.SequenceMatcher(None, key(other['name']), key(place['name'])).ratio() >= 0.75)), None)
+        if twin is None or (place.get('personal_priority', 0) > 10 and twin.get('personal_priority', 0) > 10):
+            kept.append(place); continue
+        twin['source_ids'] = sorted(set(twin['source_ids']) | set(place['source_ids']))
+        twin['library_node_ids'] = sorted(set(twin.get('library_node_ids', [])) | set(place.get('library_node_ids', [])))
+        twin['personal_priority'] = max(twin.get('personal_priority', 0), place.get('personal_priority', 0))
+        # Several creators using one name is the name people know it by ("Sagrada Familia", not "Basilica of the Holy Family").
+        if len(place.get('library_node_ids', [])) >= 2:
+            twin['name'] = place['name']
+        if place.get('library_node_ids') and not twin.get('description'): twin['description'] = place.get('description', '')
+    doc['places'] = sorted(kept, key=lambda p: p['id'])
+    return doc
 
 
 def run(brief, *, directory, root, place_provider=None, intelligence=None, route_provider=None,
@@ -95,7 +131,15 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
     # Explicit constraints always win over inferred signals.
     raw_request = (brief.get('custom_instructions') or '').strip()
     intent = None
-    if ai_adapter is not None and raw_request:
+    # The fixed vocabulary reads the request first. The model is asked only when it leaves words unread, so
+    # "tapas, wine, staying in El Born" costs nothing and a request with real nuance is read as before.
+    from .search_intent import keywords_cover
+    from .osm_places import stay_from_text as _stay
+    from trippy.catalog.boundaries import AreaIndex as _AreaIndex
+    _areas = _AreaIndex.load(root, brief['destination']) if raw_request else None
+    covered = bool(raw_request) and keywords_cover(raw_request, area=_areas.mentioned_in(raw_request) if _areas else None,
+                                                    stay=_stay(raw_request))
+    if ai_adapter is not None and raw_request and not covered:
         intent = ai_adapter.extract_intent(raw_request, brief)
     if intent is None:
         # No model, or extraction failed: a fixed keyword vocabulary still lets
@@ -125,7 +169,7 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
     tasks = missing_tasks(brief, graph, intent=intent); batches = [validate_batch(graph_batch(graph))]
     failures = []; completed = []
     progress('pipeline_started', {'planned_discovery_tasks':len(tasks)})
-    def document(): return attach_graph(merge_batches(batches, brief), graph)
+    def document(): return one_sight_once(attach_graph(merge_batches(batches, brief), graph))
     primary_down = False
     for task in tasks:
         if place_provider is None: break
@@ -290,6 +334,7 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
         'phase_states':{'2':'failed' if failures else 'completed','3':'completed' if intelligence and not failures else 'skipped','4':'completed' if stops else 'empty'},
         'place_provider':getattr(place_provider,'name',None), 'transcript_campaign_required':False,
         'intent_extraction_path':intent.extraction_path,
+        'intent_read_by_keywords':covered,
         'intent_extraction_model':intent.extraction_model,
         'intent_inferred_categories':intent.inferred_categories,
         'area_shortfalls':area_shortfalls,

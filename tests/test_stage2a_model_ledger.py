@@ -571,7 +571,8 @@ class TestPersonalPipelineStage2AIntegration(unittest.TestCase):
             }
         })
         adapter = AzureIntentAdapter(mock_provider, model_name="test-model", ledger=self.ledger)
-        brief = self._sample_brief()
+        # A request the fixed vocabulary can't fully read, so the model is asked (simple ones cost no call).
+        brief = self._sample_brief(custom_instructions="Cozy food nearby, we walk slowly and dislike crowded tourist streets")
         plan = run_personal_pipeline(
             brief,
             directory=self.work_dir / "run-metrics",

@@ -60,6 +60,12 @@
 		C700000000000000000000C4 /* PlaceSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000C4 /* PlaceSources.swift */; };
 		C7000000000000000000F002 /* CommunityVideos.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F002 /* CommunityVideos.swift */; };
 		C7000000000000000000F0A1 /* LibraryAtlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0A1 /* LibraryAtlas.swift */; };
+		C7000000000000000000F0B1 /* WhereNextBrief.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0B1 /* WhereNextBrief.swift */; };
+		C7000000000000000000F0B2 /* DestinationClimate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0B2 /* DestinationClimate.swift */; };
+		C7000000000000000000F0C1 /* TransitSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0C1 /* TransitSheet.swift */; };
+		C7000000000000000000F0D1 /* GuidePolish.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0D1 /* GuidePolish.swift */; };
+		C7000000000000000000F0E1 /* CommunityGuides.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0E1 /* CommunityGuides.swift */; };
+		C7000000000000000000F0E2 /* GuideModes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0E2 /* GuideModes.swift */; };
 		C7000000000000000000F003 /* LibraryWheel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F003 /* LibraryWheel.swift */; };
 		C7000000000000000000F004 /* DirectionsMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F004 /* DirectionsMode.swift */; };
 		C7000000000000000000F005 /* ZoomAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F005 /* ZoomAdd.swift */; };
@@ -147,6 +153,12 @@
 		C800000000000000000000C4 /* PlaceSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceSources.swift; sourceTree = "<group>"; };
 		C8000000000000000000F002 /* CommunityVideos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommunityVideos.swift; sourceTree = "<group>"; };
 		C8000000000000000000F0A1 /* LibraryAtlas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryAtlas.swift; sourceTree = "<group>"; };
+		C8000000000000000000F0B1 /* WhereNextBrief.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereNextBrief.swift; sourceTree = "<group>"; };
+		C8000000000000000000F0B2 /* DestinationClimate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DestinationClimate.swift; sourceTree = "<group>"; };
+		C8000000000000000000F0C1 /* TransitSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransitSheet.swift; sourceTree = "<group>"; };
+		C8000000000000000000F0D1 /* GuidePolish.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidePolish.swift; sourceTree = "<group>"; };
+		C8000000000000000000F0E1 /* CommunityGuides.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommunityGuides.swift; sourceTree = "<group>"; };
+		C8000000000000000000F0E2 /* GuideModes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuideModes.swift; sourceTree = "<group>"; };
 		C8000000000000000000F003 /* LibraryWheel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWheel.swift; sourceTree = "<group>"; };
 		C8000000000000000000F004 /* DirectionsMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectionsMode.swift; sourceTree = "<group>"; };
 		C8000000000000000000F005 /* ZoomAdd.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomAdd.swift; sourceTree = "<group>"; };
@@ -263,6 +275,12 @@
 				C8000000000000000000F005 /* ZoomAdd.swift */,
 				C8000000000000000000F004 /* DirectionsMode.swift */,
 				C8000000000000000000F003 /* LibraryWheel.swift */,
+				C8000000000000000000F0E2 /* GuideModes.swift */,
+				C8000000000000000000F0E1 /* CommunityGuides.swift */,
+				C8000000000000000000F0D1 /* GuidePolish.swift */,
+				C8000000000000000000F0C1 /* TransitSheet.swift */,
+				C8000000000000000000F0B2 /* DestinationClimate.swift */,
+				C8000000000000000000F0B1 /* WhereNextBrief.swift */,
 				C8000000000000000000F0A1 /* LibraryAtlas.swift */,
 				C8000000000000000000F002 /* CommunityVideos.swift */,
 				C800000000000000000000C4 /* PlaceSources.swift */,
@@ -462,6 +480,12 @@
 				C7000000000000000000F005 /* ZoomAdd.swift in Sources */,
 				C7000000000000000000F004 /* DirectionsMode.swift in Sources */,
 				C7000000000000000000F003 /* LibraryWheel.swift in Sources */,
+				C7000000000000000000F0E2 /* GuideModes.swift in Sources */,
+				C7000000000000000000F0E1 /* CommunityGuides.swift in Sources */,
+				C7000000000000000000F0D1 /* GuidePolish.swift in Sources */,
+				C7000000000000000000F0C1 /* TransitSheet.swift in Sources */,
+				C7000000000000000000F0B2 /* DestinationClimate.swift in Sources */,
+				C7000000000000000000F0B1 /* WhereNextBrief.swift in Sources */,
 				C7000000000000000000F0A1 /* LibraryAtlas.swift in Sources */,
 				C7000000000000000000F002 /* CommunityVideos.swift in Sources */,
 				C700000000000000000000C4 /* PlaceSources.swift in Sources */,

@@ -369,6 +369,18 @@ struct WhereNextQuery: Equatable {
     var newPlacesOnly = true
     var travelers = 2
     var wants: Set<TripTrait> = []
+    // Answers from the brief (WhereNextBrief.swift). The defaults change nothing.
+    /// Every month the trip could fall in. Empty means `month` alone (or any time).
+    var months: Set<Int> = []
+    var region: TripRegion = .anywhere
+    var setting: TripSetting?
+    var climate: TripClimate?
+    var ski = false
+    /// False when the traveller doesn't mind going back somewhere: being new then earns nothing.
+    var noveltyCounts = true
+
+    /// The months to judge a place by.
+    var window: Set<Int> { months.isEmpty ? Set(month.map { [$0] } ?? []) : months }
 }
 
 struct Recommendation: Identifiable, Equatable {
@@ -407,7 +419,8 @@ enum WhereNextEngine {
         return train.mode == .train && Double(train.minutes) <= Double(plane.minutes) * 1.2 ? train : plane
     }
 
-    static func recommend(_ query: WhereNextQuery, taste: TasteProfile, visits: [VisitedPlace], limit: Int = 10) -> [Recommendation] {
+    /// `only` scores a single named place instead of the whole catalog (the "somewhere in mind" check).
+    static func recommend(_ query: WhereNextQuery, taste: TasteProfile, visits: [VisitedPlace], limit: Int = 10, only: Destination? = nil) -> [Recommendation] {
         let history = history(visits)
         let visitedCountries = Set(visits.compactMap { $0.countryCode?.uppercased() })
         let visitedContinents = Set(visitedCountries.map { WorldContinentCatalog.name(for: $0) })
@@ -415,9 +428,17 @@ enum WhereNextEngine {
         let comfortable = Double(query.days) * 45 + 60
 
         var scored: [Recommendation] = []
-        for d in DestinationCatalog.all {
+        for d in only.map({ [$0] }) ?? DestinationCatalog.all {
             let beenThere = visits.contains { Geo.km($0.coordinate, d.coordinate) < 40 }
             if beenThere && query.newPlacesOnly { continue }
+            // Where in the world: a hard choice, so places outside it are left out.
+            let homeContinent = WorldContinentCatalog.name(for: query.origin?.countryCode ?? "GR")
+            switch query.region {
+            case .europe: if d.continent != "Europe" { continue }
+            case .far: if d.continent == homeContinent { continue }
+            case .near, .anywhere: break
+            }
+            if query.ski && !d.skiArea { continue }
             var leg: JourneyLeg?
             var travelFit = 0.7
             if let origin = query.origin {
@@ -427,41 +448,62 @@ enum WhereNextEngine {
                 let ratio = Double(l.minutes) / comfortable
                 if ratio > 2.4 { continue }
                 travelFit = ratio <= 1 ? 1 : max(0, 1 - (ratio - 1) / 1.4)
+                if query.region == .near && l.minutes > 300 { continue }   // "close to home": five hours door to door at most
                 leg = l
             } else if query.mode != nil && d.access == "a" { continue }
 
             let tasteFit = Double(taste.match(d, boosted: query.wants, history: history))
+            // With a window of months the place is judged by its best month in it, and that month is the one named.
             var seasonFit = 0.7
-            if let month = query.month {
-                let near = d.months.contains(month == 12 ? 1 : month + 1) || d.months.contains(month == 1 ? 12 : month - 1)
-                seasonFit = d.months.contains(month) ? 1 : near ? 0.55 : 0.12
+            let window = query.window
+            var bestMonth = query.month
+            if !window.isEmpty {
+                func fit(_ month: Int) -> Double {
+                    let near = d.months.contains(month == 12 ? 1 : month + 1) || d.months.contains(month == 1 ? 12 : month - 1)
+                    return d.months.contains(month) ? 1 : near ? 0.55 : 0.12
+                }
+                // Among equally good months, the one that suits the weather asked for.
+                bestMonth = window.sorted().max { (fit($0), d.climateFit(query.climate, month: $0)) < (fit($1), d.climateFit(query.climate, month: $1)) }
+                seasonFit = bestMonth.map(fit) ?? 0.7
             }
+            // What the brief asked for beyond taste: the kind of place, and the weather.
+            var asked: [Double] = []
+            if let setting = query.setting { asked.append(d.settingFit(setting)) }
+            if let climate = query.climate, let month = bestMonth {
+                let fit = d.climateFit(climate, month: month)
+                if fit < 0.15 { continue }   // snow was asked for and it is 28° there, or the reverse
+                asked.append(fit)
+            }
+            if query.ski { asked.append(bestMonth.map { d.snowLikely($0) ? 1 : 0.2 } ?? 0.6) }
             var budgetFit = 0.75
             if let budget = query.budget {
                 let ratio = Double(d.dailyCost) / Double(budget)
                 budgetFit = ratio <= 1 ? 1 : max(0, 1 - (ratio - 1) * 1.6)
             }
             let newCountry = !visitedCountries.contains(d.countryCode)
-            let novelty = beenThere ? 0 : newCountry ? (visitedContinents.contains(d.continent) || visitedCountries.isEmpty ? 0.85 : 1) : 0.5
+            let novelty = !query.noveltyCounts ? 0.6 : beenThere ? 0 : newCountry ? (visitedContinents.contains(d.continent) || visitedCountries.isEmpty ? 0.85 : 1) : 0.5
             // A two-week trip to a village, or a weekend in a place that needs a week, fits less well.
             let wantedDays = [2.5, 4, 6.5][d.size - 1]
             let lengthFit = max(0.4, 1 - abs(Double(query.days) - wantedDays) / 12)
 
-            let score = 0.4 * tasteFit + 0.19 * seasonFit + 0.13 * budgetFit + 0.13 * travelFit + 0.09 * novelty + 0.06 * lengthFit
+            var score = 0.4 * tasteFit + 0.19 * seasonFit + 0.13 * budgetFit + 0.13 * travelFit + 0.09 * novelty + 0.06 * lengthFit
+            if !asked.isEmpty { score = 0.72 * score + 0.28 * asked.reduce(0, +) / Double(asked.count) }
 
             var reasons: [String] = []
             let strong = taste.strongest(d, boosted: query.wants).prefix(2).map(\.short)
             if !strong.isEmpty { reasons.append("Strong on " + strong.joined(separator: " and ")) }
-            if let month = query.month, d.months.contains(month) { reasons.append("At its best in \(monthNames[month - 1])") }
+            if let month = bestMonth, d.months.contains(month) { reasons.append("At its best in \(monthNames[month - 1])") }
+            if let month = bestMonth, let weather = d.weatherLine(month, wanted: query.climate) { reasons.append(weather) }
             if let leg { reasons.append("\(leg.duration) \(leg.mode.verb)" + (leg.ferry ? " and ferry" : "")) }
-            if newCountry && !visitedCountries.isEmpty { reasons.append("A new country for you") }
+            if newCountry && !visitedCountries.isEmpty && query.noveltyCounts { reasons.append("A new country for you") }
             var caution: String?
-            if let month = query.month, seasonFit < 0.5 { caution = "Not its best time in \(monthNames[month - 1])" }
+            if let month = bestMonth, seasonFit < 0.5 { caution = "Not its best time in \(monthNames[month - 1])" }
             else if let budget = query.budget, d.dailyCost > budget { caution = "Around €\(d.dailyCost) a day, above your €\(budget)" }
             let total = (d.dailyCost * query.days + (leg?.cost ?? 0) * 2) * max(query.travelers, 1)
             scored.append(Recommendation(destination: d, score: score, leg: leg, reasons: reasons, caution: caution, total: total))
         }
 
+        if only != nil { return scored }
         // Maximal marginal relevance: each next pick is good and unlike the ones already chosen.
         func similarity(_ a: Destination, _ b: Destination) -> Double {
             var dot: Float = 0, x: Float = 0, y: Float = 0

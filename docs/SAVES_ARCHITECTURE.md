@@ -14,6 +14,41 @@ Pins, saves, saving a video, saving to a trip and saving a video to a trip all e
 | **Note** | Text about a place (`kind = "place"`, one per `PlaceKey`), a tips post (`kind = "tips"`), or your own (`kind = nil`). | Your memory. Each video writes its own section (`fromSources[sourceID]`), and you write `userText`. |
 | **Take** | Your one-tap answers about a place (`PlaceTake`, one per `PlaceKey`). | Been? Got in? Overhyped / value for money / expensive / cheap / modern / traditional / mid / nothing special. |
 
+### Notes come in four shapes
+
+| Shape (`kind`) | One per | What is in it | Links to |
+| --- | --- | --- | --- |
+| **Place** (`place`) | real place (`placeKey`) | what each video said about that place, plus your own text | the place, every video that mentions it, its trip |
+| **Tips** (`tips`) | city (and trip) | general advice with no single venue: transport, money, etiquette. Every video about the city adds its own section | the videos |
+| **Guide** (`guide`) | video | the whole video on one page: its general tips, then each place with the tips for that place | every place of the video (`linkedPlaceIDs` = their `PlaceKey`s), the video |
+| **Yours** (`nil`) | note you wrote | your text | whatever you linked |
+
+A tips-only post writes a tips note. A places post writes a place note per place and one guide. A mixed post writes all three. Tips with no city stay in a note of their own. Re-reading a video replaces its sections; a section that no longer applies is removed, and a note left empty goes with it. Videos read before guides existed get theirs when the library next loads (`backfillGuideNotes`).
+
+## What a shared post is, and where it is filed
+
+One Gemini read per post (unchanged cost) now also returns:
+
+| Field | Values |
+| --- | --- |
+| `relevant` | false for anything not about travel: nothing is pinned, no note is written, and the verdict is kept so nobody pays to read it again |
+| `guide_types` | venue, area_guide, city_guide, themed_list, route, hidden_spots, must_see, tips, foods (a post can be several) |
+| `scope` | level (place … continent), name, the widest named region ("Alps", "Balkans") and every country it covers |
+| `theme`, `foods`, `route` | "cheap eats"; dishes with where to have them; a route's mode, days, cost and stops in order |
+
+**The relevance gate never trusts the caption alone** (the Interrail slideshow we tested has an empty caption). The free text the phone already has (caption, stickers, slide OCR, auto-captions) is checked first; only when it can't tell either way does a tiny call look at that text plus the cover and first slide. If that call fails, the post is read anyway.
+
+`trippy/social/guides.py` files every read post under its own level and every level above it (a Rome food list shows under Rome, Italy and Europe; an Interrail route under each country it crosses). Tips pool the same way: a city's own, then its country's, then its continent's, each said once. Served by `/api/community/guides` and `/api/community/tips`, shown in **Community → Guides**, and opened as a full-screen story (one idea per page).
+
+## One index: the Library atlas
+
+`ios/Trippy/LibraryAtlas.swift` builds `LibraryAtlas` from the stores above every time the Library draws. Nothing new is stored. It holds one `AtlasPlace` per real place with everything that points at it (pins in General and in trips, the videos, its note, your take, its trips) and the same links backwards (`places(inVideo:)`, `places(inTrip:)`, `noteIDsByVideo`). A place found once by Google ID and once by name is merged; two Google IDs that share a name stay apart. Each place carries a `search` string made of its own words and the words of what links to it, so searching "burnt leek" or a creator's handle finds the place.
+
+- **Pins tab** (`AtlasPlacesView`): each place once, grouped by city, with chips that jump to its videos, note, take and trips. Filters: Must do, From videos, Noted, In trips, Been.
+- **Notes tab** (`AtlasNotesView`): filters by shape (Guides, Places, Tips, Yours); each note shows the places and videos it links to.
+- **Place sheet** (`AtlasPlaceSheet`): everything about one place, opened from any tab.
+- **Videos tab**: each poster shows how many places and notes it produced and the trip it was saved to.
+
 So "save video to trip" is just **video × Trip**: its places become pins in that trip, its notes are filed under that trip, and it is still the same place everywhere else.
 
 ## Video → everything, once
@@ -54,6 +89,16 @@ A shop's card on the map shows a **"N TikToks & videos about this place"** butto
 
 YouTube creator venues already linked to catalog identities are added the same way, so live providers get them too.
 
+### You choose which videos feed a plan
+
+The trip form's last step lists the indexed videos for the destination (`GET /api/community/plan-sources?city=`, a count over what is already indexed, no provider call). The choice travels in the brief as `community: {use, videos}`:
+
+| `use` | What the planner gets |
+| --- | --- |
+| `auto` (default, and what older app versions send by omitting the field) | the rules above |
+| `picked` | only the ticked videos. Everything they recommend counts, not only the trip's categories, and it ranks at 50: above automatic community (10), below your own videos (60) |
+| `off` | no community places, including the YouTube creators' combined picks |
+
 ## Quick take (a button, one question at a time)
 
 Each place in a post, and each place note, shows `PlaceQuickTakeCard`: the summary, the caption timeline, a **Your take** button and a **Note** button. *Your take* opens `PlaceTakeFlow`: *Have you been?* → *Did you get in?* → *How was it?* (multi-select) → *Anything to remember?* Each answer moves on by itself. **Not yet** and **Didn't get in** end the flow there.
@@ -76,5 +121,4 @@ Each place in a post, and each place note, shows `PlaceQuickTakeCard`: the summa
 
 - The shop card shows community videos but not the take card yet.
 - Community YouTube videos exist for Barcelona only (that's what the research pipeline has extracted). Their places have no coordinates of their own, so they can't be pinned one by one; they reach plans through catalog-linked endorsements.
-- The Library *Pins* tab still lists a hearted+pinned place under both Saves and Pins.
 - Trip shares made before this change keep their places on the general map. Only new reads pin into the trip.

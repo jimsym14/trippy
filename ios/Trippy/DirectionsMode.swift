@@ -24,14 +24,50 @@ enum DirectionsEndpoint: Equatable {
 }
 
 enum DirectionsTransport: String, CaseIterable, Identifiable {
-    case car, walk, transit
+    case car, walk, transit, cycle
     var id: String { rawValue }
-    var title: String { switch self { case .car: "Drive"; case .walk: "Walk"; case .transit: "Transit" } }
-    var symbol: String { switch self { case .car: "car.fill"; case .walk: "figure.walk"; case .transit: "tram.fill" } }
-    var mapKit: MKDirectionsTransportType { switch self { case .car: .automobile; case .walk: .walking; case .transit: .transit } }
-    var launchMode: String {
-        switch self { case .car: MKLaunchOptionsDirectionsModeDriving; case .walk: MKLaunchOptionsDirectionsModeWalking; case .transit: MKLaunchOptionsDirectionsModeTransit }
+    /// Cycling routes need iOS 18; older phones don't see the mode.
+    static var allCases: [DirectionsTransport] {
+        if #available(iOS 18.0, *) { return [.car, .walk, .transit, .cycle] }
+        return [.car, .walk, .transit]
     }
+    var title: String { switch self { case .car: "Drive"; case .walk: "Walk"; case .transit: "Transit"; case .cycle: "Cycle" } }
+    var symbol: String { switch self { case .car: "car.fill"; case .walk: "figure.walk"; case .transit: "tram.fill"; case .cycle: "bicycle" } }
+    var mapKit: MKDirectionsTransportType {
+        switch self {
+        case .car: return .automobile
+        case .walk: return .walking
+        case .transit: return .transit
+        case .cycle:
+            if #available(iOS 18.0, *) { return .cycling }
+            return .walking
+        }
+    }
+    var launchMode: String {
+        switch self {
+        case .car: return MKLaunchOptionsDirectionsModeDriving
+        case .walk: return MKLaunchOptionsDirectionsModeWalking
+        case .transit: return MKLaunchOptionsDirectionsModeTransit
+        case .cycle:
+            if #available(iOS 18.0, *) { return MKLaunchOptionsDirectionsModeCycling }
+            return MKLaunchOptionsDirectionsModeWalking
+        }
+    }
+}
+
+/// The lines that stop near both ends of a trip (GET /api/transit/between): a direct line when there is one.
+struct TransitBetween: Decodable, Equatable {
+    struct Line: Decodable, Identifiable, Equatable {
+        let id: String; let mode: String; let modeTitle: String; let ref: String; let color: String?; let international: Bool
+        enum CodingKeys: String, CodingKey { case id, mode, ref, color, international; case modeTitle = "mode_title" }
+        var symbol: String {
+            switch mode { case "bus", "trolleybus", "coach": "bus.fill"; case "train": "train.side.front.car"; case "ferry": "ferry.fill"; default: "tram.fill" }
+        }
+    }
+    let direct: [Line]
+    let from: [Line]
+    let to: [Line]
+    let known: Bool
 }
 
 enum DirectionsTiming: String, CaseIterable, Identifiable {
@@ -55,7 +91,36 @@ final class DirectionsModel: ObservableObject {
     @Published private(set) var etas: [DirectionsTransport: MKDirections.ETAResponse] = [:]
     @Published private(set) var loading = false
     @Published private(set) var error: String?
+    /// Transit only: the lines serving both ends, from OpenStreetMap through our server.
+    @Published private(set) var lines: TransitBetween?
+    @Published private(set) var linesLoading = false
     private var task: Task<Void, Never>?
+    private var linesTask: Task<Void, Never>?
+
+    func coordinate(_ endpoint: DirectionsEndpoint, location: CLLocation?) -> CLLocationCoordinate2D? {
+        switch endpoint { case .currentLocation: location?.coordinate; case .place(_, let coordinate): coordinate }
+    }
+
+    /// Looks up the lines for the current two ends. The first look at a neighbourhood can take a minute.
+    func loadLines(location: CLLocation?, baseURL: String, token: String) {
+        linesTask?.cancel()
+        guard transport == .transit, !token.isEmpty, let a = coordinate(from, location: location), let b = coordinate(to, location: location),
+              var components = URLComponents(string: baseURL + "/api/transit/between") else { lines = nil; linesLoading = false; return }
+        components.queryItems = [URLQueryItem(name: "from", value: String(format: "%.4f,%.4f", a.latitude, a.longitude)),
+                                 URLQueryItem(name: "to", value: String(format: "%.4f,%.4f", b.latitude, b.longitude))]
+        guard let url = components.url else { return }
+        lines = nil; linesLoading = true
+        linesTask = Task {
+            var request = URLRequest(url: url, timeoutInterval: 150)
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            request.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
+            let found = (try? await URLSession.shared.data(for: request)).flatMap { data, response in
+                (response as? HTTPURLResponse)?.statusCode == 200 ? try? JSONDecoder().decode(TransitBetween.self, from: data) : nil
+            }
+            guard !Task.isCancelled else { return }
+            lines = found; linesLoading = false
+        }
+    }
 
     var route: MKRoute? { routes.indices.contains(selected) ? routes[selected] : nil }
     var usesCurrentLocation: Bool {
@@ -377,6 +442,8 @@ struct DirectionsRoutesCard: View {
     @ObservedObject var model: DirectionsModel
     let onAppleMaps: () -> Void
     let onClose: () -> Void
+    /// Loads the transit lines for the current ends (the map owns the server address and the location).
+    var onTransitLines: () -> Void = {}
     enum Size { case mini, normal, routes }
     /// Starts at its normal size; drag down to a strip, up for the other routes.
     @State private var size: Size = .normal
@@ -430,6 +497,13 @@ struct DirectionsRoutesCard: View {
                         }
                         Text(detail).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
                         if let route = model.route, route.transportType == .automobile { tollLine(route) }
+                        // What Apple says about the route: a border crossing, a ferry, a seasonal closure.
+                        if let route = model.route, model.transport != .transit {
+                            ForEach(route.advisoryNotices.prefix(2), id: \.self) { notice in
+                                Label(notice, systemImage: "exclamationmark.circle.fill").font(Sketch.text(12, "SemiBold", relativeTo: .caption))
+                                    .foregroundStyle(Sketch.ochre).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     if model.route != nil {
@@ -440,6 +514,7 @@ struct DirectionsRoutesCard: View {
                 .padding(.horizontal, 18).padding(.bottom, 12)
                 .transition(.opacity)
             }
+            if model.transport == .transit && size != .mini { transitLines.padding(.horizontal, 18).padding(.bottom, 12).transition(.opacity) }
             if size == .routes && model.routes.count > 1 {
                 VStack(spacing: 4) {
                     ForEach(Array(model.routes.enumerated()), id: \.offset) { index, route in
@@ -496,12 +571,48 @@ struct DirectionsRoutesCard: View {
         .animation(.spring(response: 0.42, dampingFraction: 0.85), value: size)
         .animation(.snappy, value: model.selected)
         .onChange(of: model.transport) { _, _ in if size == .routes { size = .normal } }
+        .task(id: "\(model.transport.rawValue)|\(model.from.title)|\(model.to.title)") { if model.transport == .transit { onTransitLines() } }
         .task(id: model.route) {
             #if DEBUG
             if model.route != nil, ProcessInfo.processInfo.arguments.contains("-TrippyDirectionsSteps") { try? await Task.sleep(for: .seconds(1)); showSteps = true }
             #endif
         }
         .sheet(isPresented: $showSteps) { if let route = model.route { DirectionsStepsSheet(route: route, toll: DirectionsToll.estimate(route)) } }
+    }
+
+    /// Transit: the lines that stop near both ends, so "take the M2 or bus 040" is answered here. Changes and
+    /// departure times are Apple's to give, one tap away.
+    @ViewBuilder private var transitLines: some View {
+        if model.linesLoading {
+            HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Looking up the lines here… a new area can take a minute.") }
+                .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).frame(maxWidth: .infinity, alignment: .leading)
+        } else if let lines = model.lines, lines.known {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(lines.direct.isEmpty ? "NO DIRECT LINE" : lines.direct.count == 1 ? "DIRECT LINE" : "DIRECT LINES").font(Sketch.eyebrow).tracking(0.9)
+                    .foregroundStyle(lines.direct.isEmpty ? Sketch.ochre : Sketch.sage)
+                if lines.direct.isEmpty {
+                    Text("\(lines.from.count) \(lines.from.count == 1 ? "line stops" : "lines stop") near the start and \(lines.to.count) near the end, with a change between them. Apple Maps has the connection.")
+                        .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(lines.direct.prefix(14)) { line in
+                                HStack(spacing: 4) {
+                                    Image(systemName: line.symbol).font(.system(size: 10, weight: .bold))
+                                    Text(line.ref).font(Sketch.text(13, "ExtraBold", relativeTo: .footnote))
+                                }
+                                .foregroundStyle(.white).padding(.horizontal, 9).frame(minHeight: 28)
+                                .background(Capsule().fill(line.color.map { Color(sketchHex: $0) } ?? Sketch.inkSoft))
+                                .accessibilityLabel("\(line.modeTitle) \(line.ref)")
+                            }
+                        }
+                    }
+                    Text("These stop within a short walk of both ends. Times and platforms are in Apple Maps. Lines © OpenStreetMap contributors.")
+                        .font(Sketch.text(11, relativeTo: .caption2)).foregroundStyle(Sketch.inkFaint).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     /// "Tolls ≈ €4.20" (Greece, estimated) or "No tolls", on its own line so nothing else wraps.

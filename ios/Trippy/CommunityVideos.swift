@@ -295,16 +295,26 @@ struct CommunityBrowseContent: View {
     @State private var data: CommunityBrowse?
     @State private var filters = CommunityFilters()
     @State private var showMap = false
+    @State private var showGuides: Bool = {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-TrippyGuidesDemo") { return true }
+        #endif
+        return false
+    }()
     @State private var failed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                Chip(title: "List", symbol: "list.bullet", on: !showMap) { showMap = false }
-                Chip(title: "Map", symbol: "map", on: showMap) { showMap = true }
+                Chip(title: "Videos", symbol: "list.bullet", on: !showMap && !showGuides) { showMap = false; showGuides = false }
+                Chip(title: "Guides", symbol: "book.pages", on: showGuides) { showGuides = true; showMap = false }
+                Chip(title: "Map", symbol: "map", on: showMap) { showMap = true; showGuides = false }
                 Spacer(minLength: 0)
-                sortMenu
+                if !showGuides { sortMenu }
             }
+            if showGuides {
+                GuidesBrowseView(baseURL: baseURL, token: token, query: query)
+            } else {
             filterChips
             if showMap {
                 CommunityMapSection(baseURL: baseURL, token: token, filters: filters, onOpen: onOpen) { box in
@@ -315,6 +325,7 @@ struct CommunityBrowseContent: View {
                     Chip(title: "In the map area · clear", symbol: "xmark", on: true) { filters.bbox = nil }
                 }
                 list
+            }
             }
         }
         .task(id: "\(filters.hashValue)|\(query)") { await load() }

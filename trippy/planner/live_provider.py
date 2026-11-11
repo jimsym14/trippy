@@ -59,8 +59,12 @@ class AzureResearchProvider:
         try:
             conversation=self.agent.conversations.create()
             stage='web_response'
-            response=self.agent.responses.create(conversation=conversation.id,
-                input=[{'role':'user','content':prompt}],max_output_tokens=6000,max_tool_calls=4)
+            from trippy import call_log
+            with call_log.track('ai:azure',model='web-agent') as call:
+                response=self.agent.responses.create(conversation=conversation.id,
+                    input=[{'role':'user','content':prompt}],max_output_tokens=6000,max_tool_calls=4)
+                used=getattr(response,'usage',None)
+                call.tokens(getattr(used,'input_tokens',None),getattr(used,'output_tokens',None))
             raw=response.model_dump()
             (folder/f'{request_id}.json').write_text(json.dumps(raw,ensure_ascii=False))
             if getattr(response,'status',None)!='completed':

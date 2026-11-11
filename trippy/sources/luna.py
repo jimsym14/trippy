@@ -127,10 +127,14 @@ def make_provider(values, ledger, *, client_factory=None, max_output_tokens=None
             # Keep the raw completion before parsing, including truncated output.
             # Request the same strict schema; local Pydantic/evidence validation
             # still controls which candidates can enter the validated cache.
-            response = client.chat.completions.create(model=values['AZURE_DEPLOYMENT_LUNA'],
-                messages=messages, response_format={'type':'json_schema','json_schema':
-                    {'name':'Extraction','strict':True,'schema':chunk['response_schema']}},
-                max_completion_tokens=max_output_tokens,reasoning_effort=effort)
+            from trippy import call_log
+            with call_log.track('ai:azure',model=values['AZURE_DEPLOYMENT_LUNA']) as call:
+                response = client.chat.completions.create(model=values['AZURE_DEPLOYMENT_LUNA'],
+                    messages=messages, response_format={'type':'json_schema','json_schema':
+                        {'name':'Extraction','strict':True,'schema':chunk['response_schema']}},
+                    max_completion_tokens=max_output_tokens,reasoning_effort=effort)
+                used=getattr(response,'usage',None)
+                call.tokens(getattr(used,'prompt_tokens',None),getattr(used,'completion_tokens',None))
             usage=getattr(response,'usage',None)
             choice=response.choices[0]
             raw=response.model_dump() if hasattr(response,'model_dump') else {'finish_reason':choice.finish_reason,

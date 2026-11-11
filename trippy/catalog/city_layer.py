@@ -62,11 +62,13 @@ class Fetcher:
             if wait > 0: time.sleep(wait)
             self._last = time.monotonic()
             try:
-                with urlopen(Request(url, headers={'User-Agent': USER_AGENT, 'Accept': 'application/json'}),
-                             timeout=60) as response:
-                    if urlparse(response.url).hostname not in ALLOWED_HOSTS:
-                        raise ValueError('Unexpected redirect')
-                    data = json.loads(response.read(20_000_001))
+                from trippy import call_log
+                with call_log.track('free:' + ('wikivoyage' if 'wikivoyage' in host else 'wikidata' if 'wikidata' in host else host)):
+                    with urlopen(Request(url, headers={'User-Agent': USER_AGENT, 'Accept': 'application/json'}),
+                                 timeout=60) as response:
+                        if urlparse(response.url).hostname not in ALLOWED_HOSTS:
+                            raise ValueError('Unexpected redirect')
+                        data = json.loads(response.read(20_000_001))
             except HTTPError as exc:
                 if exc.code not in (429, 500, 502, 503, 504):
                     raise

@@ -510,12 +510,22 @@ struct SlotRow: View {
     var base: GuideBase? = nil
     @StateObject private var pool = SlotOptionsModel()
     @State private var showAll = false
+    /// How many recommendations are showing; "Show more" adds three.
+    @State private var shown = 3
     #if DEBUG
     @MainActor static var debugOpened = false
     #endif
 
     private var picked: Bool { slot.pickedID != nil }
-    private var others: [SlotOption] { pool.options.filter { $0.id != slot.pickedID } }
+    /// The other choices, best first: places you saved, then the planner's with a reason, then the nearest.
+    private var others: [SlotOption] {
+        pool.options.filter { $0.id != slot.pickedID }.sorted { a, b in
+            func rank(_ o: SlotOption) -> (Int, Double) {
+                (o.place.reason == "Saved by you" ? 0 : o.fromPlan && !o.place.plainWhy.isEmpty ? 1 : o.fromPlan ? 2 : 3, o.metres ?? 9_999)
+            }
+            return rank(a) < rank(b)
+        }
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -545,7 +555,7 @@ struct SlotRow: View {
                     .buttonStyle(SketchPressStyle())
                     .accessibilityHint("Shows all nearby options")
 
-                if !others.isEmpty { nearbyStrip }
+                if !others.isEmpty { recommendations }
                 if editing {
                     HStack(spacing: 4) {
                         iconButton("arrow.up", "Move up") { onMove(-1) }
@@ -609,37 +619,69 @@ struct SlotRow: View {
 
     private var cardDetail: String {
         let count = pool.options.count
-        if !picked { return count > 0 ? "\(count) places nearby to choose from" : "Pick a place now or on the day" }
+        if !picked { return count > 0 ? "Pick one below, or leave it for the day" : "Pick a place now or on the day" }
         var parts: [String] = []
         if stop.place.id == slot.suggestedID { parts.append("Planner's pick") }
         else if stop.place.tags.contains("apple_maps") { parts.append("Your pick") }
         if let option = pool.options.first(where: { $0.id == stop.place.id }), let walk = option.walk { parts.append(walk) }
         if let rating = stop.place.rating { parts.append("★ \(rating.formatted(.number.precision(.fractionLength(1))))") }
-        if count > 1 { parts.append("\(count - 1) other options") }
         return parts.joined(separator: " · ")
     }
 
-    private var nearbyStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 8) {
-                ForEach(others.prefix(6)) { option in
-                    Button { onPick(option) } label: { OptionTile(option: option, tint: color) }
-                        .buttonStyle(SketchPressStyle())
-                        .accessibilityLabel("Choose \(option.place.name)\(option.walk.map { ", \($0)" } ?? "")")
-                }
-                if others.count > 6 {
-                    Button { showAll = true } label: {
-                        VStack(spacing: 6) {
-                            Image(systemName: "square.grid.2x2").font(.system(size: 16, weight: .semibold))
-                            Text("All \(pool.options.count)").font(Sketch.text(12, "Bold", relativeTo: .caption))
+    /// Three places with the reason for each, one tap to choose. "Show more" brings the next three; the map has all.
+    private var recommendations: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(picked ? "OR TRY" : "RECOMMENDED").font(Sketch.eyebrow).tracking(0.9).foregroundStyle(Sketch.inkFaint).padding(.bottom, 4)
+            ForEach(Array(others.prefix(shown).enumerated()), id: \.element.id) { index, option in
+                if index > 0 { Divider().overlay(Sketch.rule).padding(.leading, 60) }
+                Button { TrippyHaptics.light(); withAnimation(.snappy) { onPick(option) } } label: {
+                    HStack(spacing: 12) {
+                        PlacePhoto(place: option.place, tint: color).frame(width: 48, height: 48)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(option.place.name).font(Sketch.text(14, "Bold", relativeTo: .subheadline)).foregroundStyle(Sketch.ink).lineLimit(1)
+                            Text(why(option)).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).lineLimit(2)
+                                .multilineTextAlignment(.leading)
                         }
-                        .foregroundStyle(color).frame(width: 84, height: 112)
-                        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(color.opacity(0.08)))
-                    }.buttonStyle(SketchPressStyle())
+                        Spacer(minLength: 4)
+                        Image(systemName: "plus.circle.fill").font(.system(size: 20)).foregroundStyle(color)
+                    }
+                    .frame(minHeight: 60).contentShape(Rectangle())
                 }
+                .buttonStyle(SketchPressStyle())
+                .accessibilityLabel("Choose \(option.place.name). \(why(option))")
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
+            BubbleFlow(spacing: 8) {
+                if others.count > shown {
+                    chip("Show more", "chevron.down") { withAnimation(.snappy) { shown += 3 } }
+                }
+                chip("On the map", "map") { showAll = true }
+                if picked { chip("Leave open", "circle.dashed") { withAnimation(.snappy) { onPick(nil) } } }
+            }
+            .padding(.top, 8)
         }
-        .scrollClipDisabled()
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Sketch.card.opacity(0.6)))
+    }
+
+    /// Why this one: the strongest thing we know about it, then how far it is.
+    private func why(_ option: SlotOption) -> String {
+        var parts: [String] = []
+        if !option.place.plainWhy.isEmpty { parts.append(option.place.plainWhy) }
+        else if option.place.fromWikivoyage { parts.append("In the travel guide") }
+        else if option.place.fromVideo || option.place.videoCount > 0 { parts.append("From a video") }
+        else if option.fromPlan { parts.append("On the planner's shortlist") }
+        if let walk = option.walk { parts.append(walk) }
+        if let rating = option.place.rating { parts.append("★ \(rating.formatted(.number.precision(.fractionLength(1))))") }
+        return parts.isEmpty ? option.place.categoryLabel : parts.joined(separator: " · ")
+    }
+
+    private func chip(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol).font(Sketch.text(12, "Bold", relativeTo: .caption)).foregroundStyle(color)
+                .lineLimit(1).fixedSize().padding(.horizontal, 12).frame(minHeight: 44).background(Capsule().fill(color.opacity(0.1)))
+        }.buttonStyle(SketchPressStyle())
     }
 
     private func iconButton(_ symbol: String, _ label: String, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {

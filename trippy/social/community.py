@@ -166,6 +166,8 @@ def tiktok_videos(index_path, takes=None):
     videos = []
     for key, raw, indexed_at, readers in rows:
         result = json.loads(raw)
+        if result.get("relevant") is False:
+            continue   # read once, found not to be about travel: kept only so nobody pays to read it again
         post_id = key.split(":", 1)[1] if key.startswith("tiktok:") else ""
         author = (result.get("source") or {}).get("author") or ""
         url = (result.get("source") or {}).get("url") or (f"https://www.tiktok.com/@{author}/video/{post_id}" if author and post_id
@@ -188,7 +190,11 @@ def tiktok_videos(index_path, takes=None):
         video = _finish({"key": key, "platform": "tiktok", "url": url, "title": result.get("post_title") or "TikTok",
                          "author": author or None, "published_at": None, "language": None, "city": result.get("city") or "",
                          "country_code": result.get("country_code"), "summary": result.get("post_summary"),
-                         "places": places, "tips": tips, "savers": readers, "indexed_at": indexed_at})
+                         "places": places, "tips": tips, "savers": readers, "indexed_at": indexed_at,
+                         # What kind of guide it is and how wide (trippy/social/guides.py files it by these).
+                         "relevant": result.get("relevant", True), "guide_types": result.get("guide_types") or [],
+                         "theme": result.get("theme") or "", "scope": result.get("scope") or {},
+                         "foods": result.get("foods") or [], "route": result.get("route")})
         if takes is not None:
             ids = [p["google_place_id"] for p in places if p.get("google_place_id")]
             summary = takes.summary(ids) if ids else {}
@@ -446,6 +452,9 @@ def plan_nodes(brief, *, videos, takes=None, plan_categories=(), limit=40):
         for p in video["places"]:
             if p.get("latitude") is None or p["stance"] not in ("recommended", "mixed"):
                 continue
+            # Only real venues can be a stop: a neighbourhood, a dish or a walking route is context, not a place to go.
+            if p.get("kind") not in (None, "venue"):
+                continue
             # A video the traveller ticked counts for everything it recommends, not only the trip's categories.
             category = PLAN_CATEGORY.get(p["category"])
             if category is None or (use != "picked" and category not in wanted) or p["id"] in excluded:
@@ -464,6 +473,40 @@ def plan_nodes(brief, *, videos, takes=None, plan_categories=(), limit=40):
                           "picked": use == "picked"})
         if sum(len(n["places"]) for n in nodes) >= limit:
             break
+    return _one_place_once(nodes)
+
+
+def _one_place_once(nodes):
+    """The same sight named by five videos ("Casa Milà", "La Pedrera", "Κάζα Μιλά") is one place with five videos
+    behind it. Places of one category within 120 m, or with the same name within 400 m, take one id, name and
+    position: the commonest name, in Latin script when there is one."""
+    groups = []
+    for node in nodes:
+        for place in node["places"]:
+            spot = (place["latitude"], place["longitude"])
+            for group in groups:
+                if group["category"] != place["category"]:
+                    continue
+                apart = _km(group["spot"], spot) * 1000
+                if apart <= 120 or (apart <= 400 and _fold(place["name"]) in group["names"]):
+                    break
+            else:
+                group = {"category": place["category"], "spot": spot, "names": set(), "members": []}
+                groups.append(group)
+            group["names"].add(_fold(place["name"])); group["members"].append(place)
+    for group in groups:
+        counts = Counter(m["name"] for m in group["members"])
+        name = max(counts, key=lambda n: (bool(re.search("[A-Za-z]", n)), counts[n], len(n), n))
+        lead = next(m for m in group["members"] if m["name"] == name)
+        for member in group["members"]:
+            member.update(id=lead["id"], name=name, latitude=lead["latitude"], longitude=lead["longitude"],
+                          address=lead.get("address"), provider_id=lead.get("provider_id"))
+    for node in nodes:   # a video that named the place twice still counts once
+        seen, kept = set(), []
+        for place in node["places"]:
+            if place["id"] not in seen:
+                seen.add(place["id"]); kept.append(place)
+        node["places"] = kept
     return nodes
 
 

@@ -23,6 +23,21 @@ Google sets the free calls per **billing SKU**, not per feature. Plans, video ma
 bill as *Text Search (Enterprise)* and share **1,000 free calls a month**. The old admin table showed 1,000 free
 for each of the three, which overstated the free room three times over. The new SKU table fixes this.
 
+### Measured on 11 Nov 2026: the new default planner
+
+`scripts/planner_cost_quality.py` runs real plans through the live path (AI place ideas checked on OpenStreetMap, notes by Gemini, no Google call) and counts every call. Costs are paid-tier list prices with tokens estimated from text length; on Gemini's free tier each of these is $0.
+
+| Trip | First plan | AI calls | OpenStreetMap lookups | Paid-tier cost | Same request again |
+|---|---|---|---|---|---|
+| Rome, 3 days, 2 people | 2.5–4.5 min | 3 ideas + 1 notes | 37–43 | **≈ $0.03** | 0 calls, under 3 s |
+| Athens, 2 days, 4 friends | 1.5 min | 3 + 1 | 24–28 | **≈ $0.025** | 0 calls, instant |
+| Lisbon, 4 days, 3 people | 2 min | 3 + 1 | 34–41 | **≈ $0.03** | 0 calls, instant |
+| Barcelona, 2 days, with 23 indexed videos | 1 min | 2 + 1 | 20 | **≈ $0.02** | 1 notes call, 20 s |
+
+Against the old default (10 Google Text Search calls, ≈ $0.36 a plan after the free calls) that is roughly **a twelfth of the cost**, and no Google rating is used to choose places. The price is time: the free OpenStreetMap check allows one lookup a second, so a first plan for a new request takes minutes. Lookups are kept for a month and shared by everyone, so a city gets faster as it is planned. A self-hosted or paid lookup server would remove the wait (see the optimization path).
+
+Automatic checks on those plans (every day has stops, two meals a day, asked-for categories and must-sees present, no repeats, walks between stops under 45 minutes): Athens, Lisbon and Barcelona pass; Rome fails one check (one 48-minute walk between two stops). Known gap: the last day of the 4-day Lisbon trip has an empty afternoon. Whether a plan is one you would enjoy still needs a person to read it.
+
 ## 2. Bottlenecks in every part of the app
 
 "When" means when the limit bites: **Now** = with a handful of users, **Soon** = tens to a hundred,

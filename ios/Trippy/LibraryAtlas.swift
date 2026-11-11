@@ -183,7 +183,7 @@ struct LibraryAtlas {
                 let covered = (note.linkedPlaceIDs ?? []).compactMap { alias[$0] ?? (index[$0] == nil ? nil : $0) }
                 let linkedVideos = note.sourceIDs.filter { self.videos[$0] != nil }
                 let trip = note.tripID.flatMap { tripByID[$0] }
-                let body = (note.fromSources ?? [:]).sorted { $0.key < $1.key }.map(\.value).joined(separator: "\n")
+                let body = (note.fromSources ?? [:]).sorted { $0.key < $1.key }.map(\.value).joined(separator: "\n").atlasPreview
                 self.notes.append(AtlasNote(id: note.id, title: note.title, kind: .guide,
                                             preview: note.userText.trimmingCharacters(in: .whitespacesAndNewlines).nonEmptyAtlas ?? body,
                                             updatedAt: note.updatedAt, city: note.city?.nonEmptyAtlas ?? trip?.city ?? "", placeKey: nil,
@@ -201,7 +201,7 @@ struct LibraryAtlas {
             if let found = key, index[found] == nil { key = nil }
             let trip = note.tripID.flatMap { tripByID[$0] }
             let kind: AtlasNote.Kind = note.kind == "tips" ? .tips : (key != nil || note.kind == "place" ? .place : .own)
-            let fromVideos = (note.fromSources ?? [:]).sorted { $0.key < $1.key }.map(\.value).joined(separator: "\n")
+            let fromVideos = (note.fromSources ?? [:]).sorted { $0.key < $1.key }.map(\.value).joined(separator: "\n").atlasPreview
             let preview = note.userText.trimmingCharacters(in: .whitespacesAndNewlines).nonEmptyAtlas ?? fromVideos
             let linkedVideos = note.sourceIDs.filter { self.videos[$0] != nil }
             let city = note.city?.nonEmptyAtlas ?? key.flatMap { index[$0] }.map { places[$0].city } ?? trip?.city ?? ""
@@ -227,6 +227,10 @@ struct LibraryAtlas {
 }
 
 private extension String {
+    /// A note's video text as a preview: without the "From @creator" line (the chip says it) and without blank lines.
+    var atlasPreview: String {
+        split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && !$0.hasPrefix("From ") }.joined(separator: "\n")
+    }
     var nonEmptyAtlas: String? { let text = trimmingCharacters(in: .whitespacesAndNewlines); return text.isEmpty ? nil : text }
 }
 
@@ -675,7 +679,7 @@ struct AtlasNoteRow: View {
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(note.title).font(Sketch.text(15, "Bold", relativeTo: .headline)).foregroundStyle(Sketch.ink).lineLimit(2).multilineTextAlignment(.leading)
-                    Text(note.updatedAt.formatted(.dateTime.day().month(.abbreviated)) + (place.map { " · " + $0.category } ?? detail))
+                    Text(note.updatedAt.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "en"))) + (place.map { " · " + $0.category } ?? detail))
                         .font(Sketch.text(12, "Medium", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

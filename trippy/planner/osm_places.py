@@ -68,8 +68,10 @@ def _nominatim(query):
     from trippy import usage
     usage.hit('free:nominatim')
     url = 'https://nominatim.openstreetmap.org/search?' + urllib.parse.urlencode({'q': query, 'format': 'jsonv2', 'limit': 1})
-    with urllib.request.urlopen(urllib.request.Request(url, headers=AGENT), timeout=10) as response:
-        rows = json.load(response)
+    from trippy import call_log
+    with call_log.track('free:nominatim'):
+        with urllib.request.urlopen(urllib.request.Request(url, headers=AGENT), timeout=10) as response:
+            rows = json.load(response)
     return (float(rows[0]['lat']), float(rows[0]['lon'])) if rows else None
 
 
@@ -89,8 +91,10 @@ def overpass(query, *, timeout=100, mirrors=2):
     for endpoint in OVERPASS[:mirrors]:
         try:
             request = urllib.request.Request(endpoint, data=body, headers=AGENT)
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.load(response).get('elements', [])
+            from trippy import call_log
+            with call_log.track('free:overpass'):
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    return json.load(response).get('elements', [])
         except Exception as exc:  # noqa: BLE001 - try the mirror
             error = exc
     raise error or RuntimeError('overpass_unavailable')
