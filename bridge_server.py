@@ -1065,6 +1065,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 evidence = [{'origin': str(b.get('origin', ''))[:40], 'text': str(b.get('text', ''))[:40000]}
                             for b in (body.get('evidence') or [])[:40] if isinstance(b, dict)]
+                # A song's auto-captions are lyrics (older apps still send them): drop them when the phone heard only music.
+                if body.get('sound') in ('music', 'silent'): evidence = [b for b in evidence if b['origin'] != 'auto_caption']
                 images = [(str(i.get('mime', 'image/jpeg')), base64.b64decode(i['data']))
                           for i in (body.get('images') or [])[:35] if isinstance(i, dict) and i.get('data')]
                 audio = body.get('audio') or None
@@ -1078,7 +1080,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError): frame_times = []
             source = {'url': str(body.get('url') or '')[:500], 'author': str(body.get('author') or '')[:120],
                       'evidence': evidence, 'images': images, 'video': video, 'audio': audio, 'frame_times': frame_times,
-                      'expects_video': body.get('expects_video') is True, 'media_note': str(body.get('media_note') or '')[:120]}
+                      'expects_video': body.get('expects_video') is True, 'media_note': str(body.get('media_note') or '')[:120],
+                      'sound': body.get('sound') if body.get('sound') in ('speech','mixed','music','silent') else None}
             from trippy.social.extract import richer
             stored = social_queue().cached(key)
             if stored is not None and not richer(source, stored):

@@ -117,20 +117,24 @@ enum SocialExtractionClient {
         if let probe = try? await send(jsonRequest(url, body: body.merging(["probe": true]) { $1 }, token: token, timeout: 20)),
            probe.status != "unindexed" { return probe }
         body["images"] = await Task.detached(priority: .utility) { slideImages(source) }.value
-        // Videos go as a shrunken copy (1 fps, 540 px, mono audio) so Gemini can read place names drawn on the
-        // frames, not just the speech. If that fails, fall back to audio only (when there is no transcript).
+        // Videos are read on the phone first (VideoReading): only the frames where text appears go, with what
+        // the phone read on them, and the sound check decides whether the transcript and the audio are worth sending.
         if let post, isVideo {
-            // What the read will see is reported, so a caption-only read of a video is never mistaken for a full one.
-            let (media, note) = await videoMedia(for: post, audioFallback: (post.transcript ?? "").isEmpty)
-            body["media_note"] = note
-            switch media {
-            case .video(let data): body["video"] = ["mime": "video/mp4", "data": data.base64EncodedString()]
-            case .audio(let data): body["audio"] = ["mime": "audio/mp4", "data": data.base64EncodedString()]
-            case .frames(let images, let times):
-                body["images"] = images.map { ["mime": "image/jpeg", "data": $0.base64EncodedString()] }
-                body["frame_times"] = times
-            case nil: break
+            let upload = await videoUpload(for: post)
+            body["media_note"] = upload.note
+            if let sound = upload.sound {
+                body["sound"] = sound.kind.rawValue
+                // A song's auto-captions are lyrics: they would only mislead the read.
+                if !sound.hasVoice { evidence.removeAll { $0["origin"] == "auto_caption" } }
             }
+            if !upload.frameText.isEmpty { evidence.append(["origin": "frame_text", "text": upload.frameText]) }
+            body["evidence"] = evidence
+            if let video = upload.video { body["video"] = ["mime": "video/mp4", "data": video.base64EncodedString()] }
+            if !upload.frames.isEmpty {
+                body["images"] = upload.frames.map { ["mime": "image/jpeg", "data": $0.jpeg.base64EncodedString()] }
+                body["frame_times"] = upload.frames.map(\.time)
+            }
+            if let audio = upload.audio { body["audio"] = ["mime": "audio/mp4", "data": audio.base64EncodedString()] }
         }
         var request = URLRequest(url: url, timeoutInterval: 120)
         request.httpMethod = "POST"
@@ -192,44 +196,50 @@ enum SocialExtractionClient {
         }
     }
 
-    enum PostMedia { case video(Data), audio(Data), frames([Data], [Double]) }
-
-    /// Fresh read (signed URLs expire), download the video with that session's cookies, shrink it for Gemini,
-    /// delete the original. When shrinking fails, frames go instead (text drawn on the video is often the whole
-    /// point: a route's numbered stops), then the audio. Up to five minutes. The note says what happened.
-    private static func videoMedia(for post: TikTokPostSnapshot, audioFallback: Bool) async -> (PostMedia?, String) {
-        guard (post.durationSeconds ?? 0) <= 300, let link = URL(string: post.canonicalURL) else { return (nil, "too long") }
-        let reader = TikTokPageReader()
-        guard (try? await reader.read(link, into: nil)) != nil else { return (nil, "page not readable") }
-        let video: URL
-        do { video = try await reader.downloadVideo() } catch { return (nil, "download failed: \(error)") }
-        defer { try? FileManager.default.removeItem(at: video) }
-        if let small = await shrunkenVideo(video) { return (.video(small), "video") }
-        if let (images, times) = await frames(of: video), !images.isEmpty { return (.frames(images, times), "frames: video could not be shrunk") }
-        guard audioFallback, let audio = await audioTrack(of: video) else { return (nil, "video could not be prepared") }
-        return (.audio(audio), "audio only")
+    struct VideoUpload {
+        var video: Data? = nil
+        var audio: Data? = nil
+        var frames: [VideoKeyframe] = []
+        var frameText = ""
+        var sound: SoundVerdict? = nil
+        var note = ""
     }
 
-    /// One frame a second (at most 35, the server's limit; longer videos are spread evenly), 720 px on the long
-    /// side. A stop's name card is often on screen for about a second, so a two-second step misses some.
-    private static func frames(of video: URL) async -> ([Data], [Double])? {
-        let asset = AVURLAsset(url: video)
-        guard let duration = try? await asset.load(.duration).seconds, duration > 0 else { return nil }
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 720, height: 720)
-        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
-        let step = max(1, duration / 35)
-        var images: [Data] = [], times: [Double] = []
-        var time = 0.5
-        while time < duration, images.count < 35 {
-            if let (image, _) = try? await generator.image(at: CMTime(seconds: time, preferredTimescale: 600)),
-               let data = UIImage(cgImage: image).jpegData(compressionQuality: 0.72) {
-                images.append(data); times.append((time * 10).rounded() / 10)
-            }
-            time += step
+    /// Fresh read (signed URLs expire), download the video with that session's cookies, then decide on the phone
+    /// what is worth sending: the frames where text appears (VideoReading.keyframes), and the audio only when
+    /// someone speaks and TikTok has no captions of it. A video with no text on it at all goes as a small copy
+    /// instead, so its pictures still reach the read. Up to five minutes.
+    private static func videoUpload(for post: TikTokPostSnapshot) async -> VideoUpload {
+        var upload = VideoUpload()
+        guard (post.durationSeconds ?? 0) <= 300, let link = URL(string: post.canonicalURL) else { upload.note = "too long"; return upload }
+        let reader = TikTokPageReader()
+        guard (try? await reader.read(link, into: nil)) != nil else { upload.note = "page not readable"; return upload }
+        let video: URL
+        do { video = try await reader.downloadVideo() } catch { upload.note = "download failed: \(error)"; return upload }
+        defer { try? FileManager.default.removeItem(at: video) }
+        let ignore = Set((post.authorHandle ?? "").lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
+        async let sound = VideoReading.sound(of: video)
+        async let frames = VideoReading.keyframes(of: video, ignoring: ignore)
+        upload.sound = await sound
+        let picked = await frames
+        let hasText = picked.contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if hasText {
+            upload.frames = picked
+            upload.frameText = picked.filter { !$0.text.isEmpty }
+                .map { "[\(Int($0.time) / 60):\(String(format: "%02d", Int($0.time) % 60))] " + $0.text.replacingOccurrences(of: "\n", with: " / ") }
+                .joined(separator: "\n")
+            upload.note = "\(picked.count) frames with text"
+        } else if let small = await shrunkenVideo(video) {
+            upload.video = small; upload.note = "video (no text on the frames)"
+        } else {
+            upload.frames = picked; upload.note = "\(picked.count) frames"
         }
-        return (images, times)
+        // Speech with no TikTok captions: send the voice. A song or silence: nothing to listen to.
+        if upload.video == nil, upload.sound?.hasVoice == true, (post.transcript ?? "").isEmpty, let audio = await audioTrack(of: video) {
+            upload.audio = audio; upload.note += " + voice"
+        }
+        if let sound = upload.sound { upload.note += " · sound: \(sound.kind.rawValue)" }
+        return upload
     }
 
     /// 1 fps (Gemini samples video at 1 fps anyway), at most 540 px wide, H.264 + mono AAC, under ~8 MB so the

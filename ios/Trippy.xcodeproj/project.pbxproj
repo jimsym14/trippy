@@ -66,6 +66,7 @@
 		C7000000000000000000F0D1 /* GuidePolish.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0D1 /* GuidePolish.swift */; };
 		C7000000000000000000F0E1 /* CommunityGuides.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0E1 /* CommunityGuides.swift */; };
 		C7000000000000000000F0E2 /* GuideModes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0E2 /* GuideModes.swift */; };
+		C7000000000000000000F0F1 /* VideoReading.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F0F1 /* VideoReading.swift */; };
 		C7000000000000000000F003 /* LibraryWheel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F003 /* LibraryWheel.swift */; };
 		C7000000000000000000F004 /* DirectionsMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F004 /* DirectionsMode.swift */; };
 		C7000000000000000000F005 /* ZoomAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F005 /* ZoomAdd.swift */; };
@@ -160,6 +161,7 @@
 		C8000000000000000000F0D1 /* GuidePolish.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidePolish.swift; sourceTree = "<group>"; };
 		C8000000000000000000F0E1 /* CommunityGuides.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommunityGuides.swift; sourceTree = "<group>"; };
 		C8000000000000000000F0E2 /* GuideModes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuideModes.swift; sourceTree = "<group>"; };
+		C8000000000000000000F0F1 /* VideoReading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoReading.swift; sourceTree = "<group>"; };
 		C8000000000000000000F003 /* LibraryWheel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWheel.swift; sourceTree = "<group>"; };
 		C8000000000000000000F004 /* DirectionsMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectionsMode.swift; sourceTree = "<group>"; };
 		C8000000000000000000F005 /* ZoomAdd.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomAdd.swift; sourceTree = "<group>"; };
@@ -278,6 +280,7 @@
 				C80000000000000000005A1C /* LaunchSplash.swift */,
 				C8000000000000000000F004 /* DirectionsMode.swift */,
 				C8000000000000000000F003 /* LibraryWheel.swift */,
+				C8000000000000000000F0F1 /* VideoReading.swift */,
 				C8000000000000000000F0E2 /* GuideModes.swift */,
 				C8000000000000000000F0E1 /* CommunityGuides.swift */,
 				C8000000000000000000F0D1 /* GuidePolish.swift */,
@@ -484,6 +487,7 @@
 				C70000000000000000005A1C /* LaunchSplash.swift in Sources */,
 				C7000000000000000000F004 /* DirectionsMode.swift in Sources */,
 				C7000000000000000000F003 /* LibraryWheel.swift in Sources */,
+				C7000000000000000000F0F1 /* VideoReading.swift in Sources */,
 				C7000000000000000000F0E2 /* GuideModes.swift in Sources */,
 				C7000000000000000000F0E1 /* CommunityGuides.swift in Sources */,
 				C7000000000000000000F0D1 /* GuidePolish.swift in Sources */,

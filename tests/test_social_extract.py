@@ -271,3 +271,31 @@ class ScopeCleanupTests(unittest.TestCase):
         self.assertEqual(result["scope"]["countries"], [p["country_code"] for p in result["places"] if p["country_code"]][:1])
         named = ex.clean({**json.loads(json.dumps(RESULT)), "relevant": True, "scope": {"level": "region", "name": "Dolomites", "region": "Alps"}})
         self.assertEqual(named["scope"]["region"], "Alps")
+
+
+class SoundAndFrameTextTests(unittest.TestCase):
+    def test_music_only_posts_tell_the_model_to_ignore_lyrics_and_frame_text_is_labelled(self):
+        parts = ex.build_parts({"url": "u", "sound": "music", "evidence": [{"origin": "frame_text", "text": "[0:07] Piazza del Popolo"}],
+                                "images": [("image/jpeg", b"a")], "frame_times": [7.2]})
+        prompt = parts[0]["text"]
+        self.assertIn("music only", prompt)
+        self.assertIn("Text the phone read on the frames", prompt)
+        self.assertIn("video 0:07", [p["text"] for p in parts if "text" in p])
+        self.assertIn("speaks over music", ex.build_parts({"url": "u", "sound": "mixed", "evidence": [{"origin": "post_caption", "text": "x"}]})[0]["text"])
+        self.assertEqual(ex.media_of({"images": [b"a"], "frame_times": [1.0], "sound": "music"})["sound"], "music")
+
+    def test_the_server_drops_song_captions_when_the_phone_heard_only_music(self):
+        captured = {}
+        class Queue:
+            def cached(self, key): return None
+            def final(self, key): return None
+            def submit(self, job_id, source, key="", reread=False):
+                captured.update(source); return {"job_id": job_id, "status": "queued"}
+        body = {"source_id": str(uuid.uuid4()), "url": "https://www.tiktok.com/@a/video/5", "sound": "music",
+                "evidence": [{"origin": "post_caption", "text": "8 stops"}, {"origin": "auto_caption", "text": "It's beginning to look a lot like Christmas"}],
+                "images": [{"mime": "image/jpeg", "data": base64.b64encode(b"img").decode()}], "frame_times": [7.2]}
+        handler = EndpointTests.handler(self, "/api/social/extract", body)
+        with patch.object(bridge, "places_access_allowed", return_value=True), patch.object(bridge, "social_queue", return_value=Queue()):
+            handler.do_POST()
+        self.assertEqual([b["origin"] for b in captured["evidence"]], ["post_caption"])
+        self.assertEqual((captured["sound"], captured["frame_times"]), ("music", [7.2]))

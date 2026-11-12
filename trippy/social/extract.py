@@ -138,8 +138,13 @@ def build_parts(source):
         text = (block.get("text") or "").strip()
         if text:
             label = {"post_caption": "Caption", "on_screen_text": "On-screen text", "auto_caption": "Transcript (TikTok auto-captions)",
+                     "frame_text": "Text the phone read on the frames, by time (may have small misreadings; the frames are the truth)",
                      "slide_ocr": "Slide text (OCR)", "shared_text": "Shared text"}.get(block.get("origin"), block.get("origin", "Text"))
             lines.append(f"\n[{label}]\n{text[:20000]}")
+    if source.get("sound") == "music":
+        lines.append("\n[Sound: music only, nobody speaks. Ignore any lyrics; the places are in the text and frames.]")
+    elif source.get("sound") == "mixed":
+        lines.append("\n[Sound: someone speaks over music. Use what is said; ignore song lyrics.]")
     images = source.get("images") or []
     frame_times = source.get("frame_times") or []
     if images and frame_times:
@@ -256,6 +261,7 @@ def media_of(source):
     elif source.get("audio"): kind = "audio"
     else: kind = "none"
     return {"kind": kind, "count": len(source.get("images") or []), "note": str(source.get("media_note") or "")[:120],
+            "sound": str(source.get("sound") or "")[:10],
             "expects_video": bool(source.get("expects_video"))}
 
 
