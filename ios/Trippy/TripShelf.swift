@@ -339,60 +339,54 @@ struct ShelfCard: View {
     }
 }
 
-/// The default trip card: a tinted panel with the trip's doodle and city code, then when, what and how long.
-/// One fixed size, so a row of them lines up; the top-right corner stays clear for the card's buttons.
+/// The default trip card: a smaller relative of the next-trip card (tinted top with when and what, the doodle,
+/// then the city code, days, stops and travellers), so the next trip leads and the rest read as the same family.
+/// One fixed size, so a row lines up; the top-right corner stays clear for the card's buttons.
 private struct Postcard: View {
     let trip: ShelfTrip, look: ShelfLook
     var body: some View {
         let color = shelfTint(trip, look)
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
-        HStack(spacing: 0) {
-            VStack(spacing: 6) {
-                DoodleView(doodle: look.doodle ?? .balloon, tint: color, lineWidth: 2.2).frame(width: 62, height: 62)
-                Text(ShelfDates.code(trip.city)).font(.system(size: 15, weight: .heavy, design: .rounded)).tracking(1)
-                    .foregroundStyle(color)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 6) {
+                    // The row's heading already says "Upcoming": the card says how soon (or that it's a draft).
+                    Group {
+                        if !trip.hasPlan { SketchTag(text: "Draft", tint: Sketch.ochre) }
+                        else if let countdown = ShelfDates.countdown(trip) { SketchTag(text: countdown, tint: color) }
+                    }
+                    .fixedSize().frame(height: 24, alignment: .leading)
+                    Text(trip.title).font(Sketch.display(.title3, weight: .bold)).foregroundStyle(Sketch.ink)
+                        .lineLimit(2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                    Text(trip.hasPlan ? ShelfDates.range(trip) : "No plan yet").font(Sketch.text(14, relativeTo: .subheadline))
+                        .foregroundStyle(trip.hasPlan ? Sketch.inkSoft : Sketch.ochre).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                DoodleView(doodle: look.doodle ?? .balloon, tint: color, lineWidth: 2.2)
+                    .frame(width: 62, height: 62).padding(.top, 34)
             }
-            .frame(width: 96).frame(maxHeight: .infinity)
-            .background(color.opacity(0.14))
-            VStack(alignment: .leading, spacing: 6) {
-                // Clear of the delete and more buttons in the corner.
-                Group {
-                    if !trip.hasPlan { SketchTag(text: "Draft", tint: Sketch.ochre) }
-                    else if let countdown = ShelfDates.countdown(trip) { SketchTag(text: countdown, tint: color) }
-                    else { Color.clear.frame(height: 22) }
-                }
-                .padding(.trailing, 78).frame(height: 28, alignment: .leading)
-                Text(trip.title).font(Sketch.display(.headline, weight: .bold)).foregroundStyle(Sketch.ink)
-                    .lineLimit(2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-                if !trip.city.isEmpty {
-                    Text([trip.flag, trip.city].compactMap { $0 }.joined(separator: " "))
-                        .font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
-                }
-                Spacer(minLength: 2)
-                Label(trip.hasPlan ? ShelfDates.range(trip) : "No plan yet", systemImage: "calendar")
-                    .labelStyle(CompactLabel()).font(Sketch.text(12, "SemiBold", relativeTo: .caption))
-                    .foregroundStyle(trip.hasPlan ? Sketch.ink : Sketch.ochre).lineLimit(1)
-                HStack(spacing: 12) {
-                    if trip.days > 0 { Label("\(trip.days)", systemImage: "sun.max").accessibilityLabel("\(trip.days) days") }
-                    if trip.stops > 0 { Label("\(trip.stops)", systemImage: "mappin.and.ellipse").accessibilityLabel("\(trip.stops) stops") }
-                    Label("\(trip.travelers)", systemImage: "person.2").accessibilityLabel("\(trip.travelers) travelers")
-                }
-                .labelStyle(CompactLabel())
-                .font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
+            .padding(16)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .background(color.opacity(0.1))
+            HStack(spacing: 0) {
+                stat(ShelfDates.code(trip.city), "city")
+                stat(trip.days > 0 ? "\(trip.days)" : "–", trip.days == 1 ? "day" : "days")
+                stat(trip.stops > 0 ? "\(trip.stops)" : "–", "stops")
+                stat("\(trip.travelers)", trip.travelers == 1 ? "traveler" : "travelers")
             }
-            .padding(.horizontal, 14).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16).padding(.vertical, 10)
         }
-        .frame(width: 300, height: 176)
+        .frame(width: 300, height: 196)
         .background(shape.fill(Sketch.card))
         .clipShape(shape)
         .overlay(shape.strokeBorder(Sketch.ink.opacity(0.08), lineWidth: 1))
     }
-}
-
-/// An icon and its value close together: "📅 5 – 9 Dec  ☀ 5  📍 20".
-private struct CompactLabel: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 4) { configuration.icon.font(.system(size: 11, weight: .semibold)); configuration.title }
+    private func stat(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(value).font(Sketch.text(15, "ExtraBold", relativeTo: .subheadline)).monospacedDigit().lineLimit(1)
+            Text(label).font(Sketch.text(11, relativeTo: .caption2)).foregroundStyle(Sketch.inkSoft)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
