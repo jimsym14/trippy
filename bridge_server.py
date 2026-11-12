@@ -1052,15 +1052,16 @@ class RequestHandler(BaseHTTPRequestHandler):
             except (ValueError, KeyError, TypeError, json.JSONDecodeError):
                 self.send_json(422, {'error': 'invalid_social_source'}); return
             key = video_key(str(body.get('url') or ''), str(body.get('video_id') or ''))
-            if social_queue().cached(key) is not None:
+            reread = body.get('reread') is True
+            # A thin stored read (a video read from its caption alone) is not handed out as final: the phone is
+            # told to send what it has, and the read is repeated when that is more than the stored one saw.
+            if not reread and social_queue().final(key) is not None:
                 # Indexed once already (by anyone): no credit, no Gemini, same places and notes.
                 usage.hit('social:extract_cached',self.client_id)
                 self.send_json(200, social_queue().submit(source_id, None, key)); return
             if body.get('probe'):
                 # The phone asks before preparing/uploading media; not indexed yet means "send it".
                 self.send_json(200, {'job_id': source_id, 'status': 'unindexed'}); return
-            if not self.spend_credit('videos','credit:video'): return
-            usage.hit('social:extract',self.client_id)
             try:
                 evidence = [{'origin': str(b.get('origin', ''))[:40], 'text': str(b.get('text', ''))[:40000]}
                             for b in (body.get('evidence') or [])[:40] if isinstance(b, dict)]
@@ -1073,9 +1074,20 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if not evidence and not images and not audio and not video: raise ValueError('no_evidence')
             except (ValueError, KeyError, TypeError, json.JSONDecodeError, base64.binascii.Error):
                 self.send_json(422, {'error': 'invalid_social_source'}); return
+            try: frame_times = [float(t) for t in (body.get('frame_times') or [])[:35]]
+            except (TypeError, ValueError): frame_times = []
             source = {'url': str(body.get('url') or '')[:500], 'author': str(body.get('author') or '')[:120],
-                      'evidence': evidence, 'images': images, 'video': video, 'audio': audio}
-            self.send_json(202, social_queue().submit(source_id, source, key)); return
+                      'evidence': evidence, 'images': images, 'video': video, 'audio': audio, 'frame_times': frame_times,
+                      'expects_video': body.get('expects_video') is True, 'media_note': str(body.get('media_note') or '')[:120]}
+            from trippy.social.extract import richer
+            stored = social_queue().cached(key)
+            if stored is not None and not richer(source, stored):
+                # Nothing new to look at: the stored read stands, and no credit is spent on repeating it.
+                usage.hit('social:extract_cached',self.client_id)
+                self.send_json(200, social_queue().submit(source_id, None, key)); return
+            if not self.spend_credit('videos','credit:video'): return
+            usage.hit('social:extract',self.client_id)
+            self.send_json(202, social_queue().submit(source_id, source, key, reread=reread)); return
         if urlsplit(self.path).path == '/api/places/takes':
             if not places_access_allowed(self): self.send_json(401, {'error': 'access_token_required'}); return
             if self.voter_id is None: self.send_json(422, {'error': 'install_id_required'}); return

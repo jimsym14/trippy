@@ -4,21 +4,23 @@
     <dependencies>
         <deployment identifier="iOS" />
         <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="23084" />
+        <capability name="Named colors" minToolsVersion="9.0" />
         <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0" />
     </dependencies>
     <scenes>
         <scene sceneID="launch-scene">
             <objects>
+                <!-- The first frame of TrippySplashView: same colour, same mark, same place. -->
                 <viewController id="launch-controller" sceneMemberID="viewController">
                     <view key="view" contentMode="scaleToFill" id="launch-view">
                         <rect key="frame" x="0.0" y="0.0" width="393" height="852" />
-                        <color key="backgroundColor" red="0.9725" green="0.9569" blue="0.9255" alpha="1" colorSpace="custom" customColorSpace="sRGB" />
+                        <color key="backgroundColor" name="LaunchBackground" />
                         <subviews>
-                            <imageView userInteractionEnabled="NO" contentMode="scaleAspectFit" image="LaunchEmblem" translatesAutoresizingMaskIntoConstraints="NO" id="launch-mark">
-                                <rect key="frame" x="156.5" y="386" width="80" height="80" />
+                            <imageView userInteractionEnabled="NO" contentMode="scaleAspectFit" image="SplashMark" translatesAutoresizingMaskIntoConstraints="NO" id="launch-mark">
+                                <rect key="frame" x="122.5" y="346" width="148" height="160" />
                                 <constraints>
-                                    <constraint firstAttribute="width" constant="194" id="mark-width" />
-                                    <constraint firstAttribute="height" constant="190" id="mark-height" />
+                                    <constraint firstAttribute="width" constant="148" id="mark-width" />
+                                    <constraint firstAttribute="height" constant="160" id="mark-height" />
                                 </constraints>
                             </imageView>
                         </subviews>
@@ -34,6 +36,9 @@
         </scene>
     </scenes>
     <resources>
-        <image name="LaunchEmblem" width="1280" height="1232" />
+        <image name="SplashMark" width="975" height="1053" />
+        <namedColor name="LaunchBackground">
+            <color red="0.9725" green="0.9569" blue="0.9255" alpha="1" colorSpace="custom" customColorSpace="sRGB" />
+        </namedColor>
     </resources>
 </document>

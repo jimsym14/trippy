@@ -26,8 +26,6 @@ enum TrippyPerformance {
 struct TrippyApp: App {
     init() {
         TrippyPerformance.mark("app.init")
-        // Start the animated emblem now, so it is ready when SwiftUI first draws.
-        SVGLoadingAnimation.prewarm()
     }
     var body: some Scene {
         WindowGroup {
@@ -45,39 +43,50 @@ struct TrippyApp: App {
     }
 }
 
-// Paint a small launch hierarchy before resolving the full app's view metadata.
+// Paint the launch banner before resolving the full app's view metadata.
+// The banner continues the system launch screen (same colour, same mark) and
+// animates on the render server, so it keeps moving while the app builds below.
 private struct TrippyStartupHost: View {
     @State private var mountApp = false
     @State private var ready = false
-    @State private var logoLoaded = false
     @State private var appReady = false
+    @State private var shownLongEnough = false
     @AppStorage("trippy.native.darkMode") private var dark = false
     var body: some View {
         ZStack {
             if mountApp { TrippyScreen { TripFlowView() } }
             if !ready {
-                TrippyAppLaunchScreen(dark: dark) {
-                    Task { @MainActor in
-                        logoLoaded = true
-                        if appReady { withAnimation(.easeOut(duration: 0.24)) { ready = true } }
-                    }
-                }
-                    .transition(.opacity).zIndex(20)
+                TrippySplash(dark: dark)
+                    .ignoresSafeArea()
+                    .transition(.opacity.combined(with: .scale(scale: 1.05)))
+                    .zIndex(20)
             }
         }
         .task {
-            // One frame for the launch view, then build the app behind it.
-            await Task.yield()
+            // Let the banner commit its first frame and start its loops, then
+            // build the app behind it.
+            try? await Task.sleep(for: .milliseconds(30))
             TrippyPerformance.mark("app.mount")
             mountApp = true
-            try? await Task.sleep(for: .seconds(2.5))
+            // Long enough to read as an intro rather than a flash on warm launches.
+            try? await Task.sleep(for: .seconds(0.7))
+            shownLongEnough = true
+            finishIfReady()
+            // Never hold a usable app behind the banner.
+            try? await Task.sleep(for: .seconds(1.8))
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.24)) { ready = true }
+            dismiss()
         }
         .onReceive(NotificationCenter.default.publisher(for: .trippyAppReady)) { _ in
             appReady = true
-            withAnimation(.easeOut(duration: 0.24)) { ready = true }
+            finishIfReady()
         }
+    }
+    private func finishIfReady() { if appReady && shownLongEnough { dismiss() } }
+    private func dismiss() {
+        guard !ready else { return }
+        TrippyPerformance.mark("splash.dismiss")
+        withAnimation(.easeOut(duration: 0.32)) { ready = true }
     }
 }
 
@@ -1534,23 +1543,6 @@ private extension Notification.Name {
     static let trippyInitialGeneralMapDidRender = Notification.Name("trippy.initial-general-map-did-render")
 }
 
-private struct TrippyAppLaunchScreen: View {
-    let dark: Bool
-    let onLogoLoaded: () -> Void
-    var body: some View {
-        ZStack {
-            Color(hex: dark ? "111512" : "F8F4EC")
-            // The storyboard shows this exact frame, so the hand-off is invisible.
-            if !dark { Image("LaunchEmblem").resizable().scaledToFit().frame(width: 194, height: 190) }
-            TrippyLoadingEmblem(active: true, onLoaded: onLogoLoaded)
-                .frame(width: 194, height: 190)
-        }
-        .ignoresSafeArea()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityLabel("Loading Trippy")
-    }
-}
-
 private struct PlacesGatewayHealthResponse: Decodable {
     let gateway: String?
     let googlePlaces: String?
@@ -1569,7 +1561,6 @@ private struct TripFlowView: View {
     @State private var didBootstrap = false
     @State private var hasRenderedInitialMap = false
     @State private var initialMapDidRender = false
-    @State private var initialLogoDidLoad = false
     @State private var bridgeToken = ""
     @State private var showOnboarding = OnboardingStore.shouldShow
     @State private var showAccountHub = false
@@ -1941,14 +1932,6 @@ private struct TripFlowView: View {
         .onReceive(NotificationCenter.default.publisher(for: .trippyInitialGeneralMapDidRender)) { _ in
             initialMapDidRender = true
             guard !hasRenderedInitialMap else { return }
-            withAnimation(.easeOut(duration: 0.24)) { hasRenderedInitialMap = true }
-        }
-    }
-
-    private var launchScreen: some View {
-        TrippyAppLaunchScreen(dark: darkMode) {
-            initialLogoDidLoad = true
-            guard initialMapDidRender, !hasRenderedInitialMap else { return }
             withAnimation(.easeOut(duration: 0.24)) { hasRenderedInitialMap = true }
         }
     }
@@ -12740,81 +12723,6 @@ private struct ResearchStepSymbol: View {
     }
 }
 
-// Render the complete supplied SVG with its original SMIL timing and artwork.
-private struct TrippyLoadingEmblem: View {
-    let active: Bool
-    var onLoaded: (() -> Void)? = nil
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
-    var body: some View {
-        SVGLoadingAnimation(animate: active && !reduceMotion && scenePhase != .background, onLoaded: onLoaded)
-            .accessibilityHidden(true)
-    }
-}
-private struct SVGLoadingAnimation: UIViewRepresentable {
-    let animate: Bool
-    var onLoaded: (() -> Void)? = nil
-    final class Coordinator: NSObject, WKNavigationDelegate {
-        var animate = true
-        var onLoaded: (() -> Void)?
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            webView.evaluateJavaScript(animate ? "document.querySelector('svg').unpauseAnimations()" : "document.querySelector('svg').pauseAnimations()")
-            TrippyPerformance.mark("svg.ready")
-            onLoaded?()
-        }
-    }
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    private static var warm: WKWebView?
-    private static let warmDelegate = Coordinator()
-    /// Creates and loads the emblem's web view before the first SwiftUI pass.
-    static func prewarm() {
-        guard warm == nil else { return }
-        let web = makeWebView(delegate: warmDelegate)
-        warm = web
-    }
-    private static func makeWebView(delegate: Coordinator) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 194, height: 190), configuration: configuration)
-        web.isOpaque = false; web.backgroundColor = .clear
-        web.scrollView.backgroundColor = .clear; web.scrollView.isScrollEnabled = false
-        web.isUserInteractionEnabled = false; web.navigationDelegate = delegate
-        if let url = Bundle.main.url(forResource: "logo-idle", withExtension: "svg", subdirectory: "Brand"),
-           let svg = try? String(contentsOf: url, encoding: .utf8) {
-            web.loadHTMLString("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}svg{width:100%;height:100%;display:block}</style></head><body>" + svg + "</body></html>", baseURL: url.deletingLastPathComponent())
-        }
-        return web
-    }
-    func makeUIView(context: Context) -> WKWebView {
-        if let web = Self.warm {
-            // Hand the already-loading view over once; later emblems build their own.
-            Self.warm = nil
-            context.coordinator.animate = animate; context.coordinator.onLoaded = onLoaded
-            let finished = !web.isLoading
-            web.navigationDelegate = context.coordinator
-            if finished { DispatchQueue.main.async { context.coordinator.webView(web, didFinish: nil) } }
-            return web
-        }
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        let web = WKWebView(frame: .zero, configuration: configuration)
-        web.isOpaque = false; web.backgroundColor = .clear
-        web.scrollView.backgroundColor = .clear; web.scrollView.isScrollEnabled = false
-        web.isUserInteractionEnabled = false; web.navigationDelegate = context.coordinator
-        context.coordinator.animate = animate; context.coordinator.onLoaded = onLoaded
-        if let url = Bundle.main.url(forResource: "logo-idle", withExtension: "svg", subdirectory: "Brand"),
-           let svg = try? String(contentsOf: url, encoding: .utf8) {
-            web.loadHTMLString("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}svg{width:100%;height:100%;display:block}</style></head><body>" + svg + "</body></html>", baseURL: url.deletingLastPathComponent())
-        }
-        return web
-    }
-    func updateUIView(_ web: WKWebView, context: Context) {
-        context.coordinator.animate = animate; context.coordinator.onLoaded = onLoaded
-        web.evaluateJavaScript(animate ? "document.querySelector('svg')?.unpauseAnimations()" : "document.querySelector('svg')?.pauseAnimations()")
-    }
-    static func dismantleUIView(_ web: WKWebView, coordinator: Coordinator) { web.stopLoading(); web.navigationDelegate = nil }
-}
-
 // MARK: - Personal social-source library
 private extension TripFlowView {
     func persistSocialLibrary() {
@@ -12866,7 +12774,14 @@ private extension TripFlowView {
                     guard let job else { socialSources[fresh].extractionStatus = nil; continue }
                     socialSources[fresh].extractionStatus = job.status
                     socialSources[fresh].extractionError = job.error ?? job.note
-                    if job.status == "ready", let result = job.result { applySocialExtraction(result, sourceIndex: fresh, fromIndex: job.cached == true) }
+                    if job.status == "ready", let result = job.result {
+                        socialSources[fresh].rereadRequested = nil
+                        applySocialExtraction(result, sourceIndex: fresh, fromIndex: job.cached == true)
+                        // "8 stops" in the post, fewer found: say so on the video, with Read again one tap away.
+                        if result.incomplete == true, let stated = result.statedCount {
+                            socialSources[fresh].extractionError = "Found \(result.places.count) of the \(stated) places this post mentions. Read again to look closer."
+                        }
+                    }
                 } catch {
                     if socialSources.indices.contains(index) { socialSources[index].extractionError = error.localizedDescription }
                 }
@@ -13389,6 +13304,7 @@ private extension TripFlowView {
         guard let index = socialSources.firstIndex(where: { $0.id == id }) else { return }
         socialSources[index].extractionStatus = nil
         socialSources[index].extractionError = nil
+        socialSources[index].rereadRequested = true   // read it again even though it was indexed before
         persistSocialLibrary()
         Task { await runSocialExtractions() }
     }

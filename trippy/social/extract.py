@@ -68,6 +68,8 @@ scope: how wide the post is. level = place, neighbourhood, city, region, country
   name = that place, neighbourhood, city, region, country or continent as written in English; region = the widest
   named area it belongs to when there is one ("Alps", "Balkans", "Amalfi Coast", "Europe"), else "";
   countries = ISO 3166-1 alpha-2 codes of every country it covers.
+stated_count: how many places the post itself says it covers ("8 stops", "10 spots", "top 5"), else 0.
+  Count every numbered stop or card you can see; if you find fewer than stated, look again at every frame.
 foods: dishes or drinks the post says to try, each {{name, detail, where}} (where = the venue or city, if said).
 route: only for a route — mode (walk, hike, train, car, bus, ferry, mixed), days (number, 0 if not said),
   cost_hint (as stated, else ""), and stops in order, each {{name, city, country_code, nights}} (nights 0 if not said).
@@ -99,6 +101,7 @@ SCHEMA = {
         "country_code": {"type": "STRING"},
         "post_kind": {"type": "STRING", "enum": POST_KINDS},
         "relevant": {"type": "BOOLEAN"},
+        "stated_count": {"type": "NUMBER"},
         "guide_types": {"type": "ARRAY", "items": {"type": "STRING", "enum": GUIDE_TYPES}},
         "theme": {"type": "STRING"},
         "scope": {"type": "OBJECT", "properties": {"level": {"type": "STRING", "enum": SCOPE_LEVELS}, "name": {"type": "STRING"},
@@ -138,7 +141,11 @@ def build_parts(source):
                      "slide_ocr": "Slide text (OCR)", "shared_text": "Shared text"}.get(block.get("origin"), block.get("origin", "Text"))
             lines.append(f"\n[{label}]\n{text[:20000]}")
     images = source.get("images") or []
-    if images:
+    frame_times = source.get("frame_times") or []
+    if images and frame_times:
+        lines.append(f"\n[{len(images)} frames from the video follow, in order, each labelled with its time — read every place"
+                     " name, number, 📍 pin or address drawn on them]")
+    elif images:
         lines.append(f"\n[{len(images)} slide images follow, in order: slide 1 … slide {len(images)}]")
     if source.get("video"):
         lines.append("\n[Video follows (1 frame per second, with sound) — read every place name, 📍 pin, address or price"
@@ -147,8 +154,11 @@ def build_parts(source):
         lines.append("\n[Audio track follows — transcribe it and use what is said]")
     parts = [{"text": PROMPT.format(categories=", ".join(CATEGORIES), guide_types=", ".join(GUIDE_TYPES), url=source.get("url") or "unknown",
                                     author=source.get("author") or "unknown", evidence="".join(lines) or "(no text)")}]
+    def clock(seconds):
+        return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
     for index, image in enumerate(images[:35], 1):
-        parts += [{"text": f"slide {index}"}, inline(image[0], image[1]) if isinstance(image, tuple) else inline("image/jpeg", image)]
+        label = f"video {clock(frame_times[index - 1])}" if index - 1 < len(frame_times) else f"slide {index}"
+        parts += [{"text": label}, inline(image[0], image[1]) if isinstance(image, tuple) else inline("image/jpeg", image)]
     if source.get("video"):
         mime, data = source["video"]
         parts.append(inline(mime, data))
@@ -188,6 +198,11 @@ def clean(result):
     if kind == "tips" and places:
         kind = "mixed"
     result["post_kind"] = kind
+    try: stated = max(0, int(result.get("stated_count") or 0))
+    except (TypeError, ValueError): stated = 0
+    result["stated_count"] = stated
+    # "8 stops" in the post and fewer found: say so, so the read can be repeated with more to look at.
+    result["incomplete"] = bool(stated and len(places) < stated)
     # Off-topic posts keep nothing, so nothing gets pinned or written into notes.
     result["relevant"] = result.get("relevant") is not False
     if not result["relevant"]:
@@ -204,8 +219,14 @@ def clean(result):
     countries = [str(c).strip().upper()[:2] for c in scope.get("countries") or [] if len(str(c).strip()) == 2]
     if not countries and result.get("country_code"):
         countries = [str(result["country_code"]).upper()[:2]]
+    if not countries:   # the places know their country even when the post-level answer left it out
+        countries = [p["country_code"] for p in places if p.get("country_code")]
+    # A region is a short proper name ("Alps", "Amalfi Coast"); anything that reads like a sentence is dropped.
+    region = str(scope.get("region") or "").strip()
+    if len(region.split()) > 4 or any(ch in region for ch in ",;:()") or "-level" in region or "scope" in region.lower():
+        region = ""
     result["scope"] = {"level": level, "name": str(scope.get("name") or result.get("city") or result.get("country") or "").strip()[:80],
-                       "region": str(scope.get("region") or "").strip()[:60], "countries": list(dict.fromkeys(countries))[:20]}
+                       "region": region[:60], "countries": list(dict.fromkeys(countries))[:20]}
     result["foods"] = [{"name": str(f.get("name") or "").strip()[:80], "detail": str(f.get("detail") or "").strip()[:240],
                         "where": str(f.get("where") or "").strip()[:80]}
                        for f in result.get("foods") or [] if isinstance(f, dict) and str(f.get("name") or "").strip()][:20]
@@ -217,6 +238,60 @@ def clean(result):
                         "cost_hint": str(route.get("cost_hint") or "").strip()[:80], "stops": stops}
                        if route and stops and "route" in types else None)
     return result
+
+
+# ----------------------------------------------------- What the read saw ---
+# A video read from its caption alone misses everything drawn on the frames (a walking route's eight numbered
+# stops, say). Each read records what it was given, and a thin one is never final: the next save that brings the
+# video, or frames, or a "read again", replaces it.
+
+MEDIA_RANK = {"none": 0, "audio": 1, "frames": 2, "images": 2, "video": 3}
+
+
+def media_of(source):
+    """What visual or sound evidence a read had: video, frames, slide images, audio or none."""
+    if source.get("video"): kind = "video"
+    elif source.get("frame_times") and source.get("images"): kind = "frames"
+    elif source.get("images"): kind = "images"
+    elif source.get("audio"): kind = "audio"
+    else: kind = "none"
+    return {"kind": kind, "count": len(source.get("images") or []), "note": str(source.get("media_note") or "")[:120],
+            "expects_video": bool(source.get("expects_video"))}
+
+
+def is_thin(result):
+    """A read that can't be trusted to be complete: a video read without its frames or sound, or one that
+    found fewer places than the post itself says it has. Reads stored before this was recorded are judged by
+    their places: one place or none, known only from the caption or speech."""
+    if not result or result.get("relevant") is False:
+        return False
+    media = result.get("media")
+    if media:
+        return (media.get("expects_video") and media.get("kind") in ("none", "audio")) or bool(result.get("incomplete"))
+    places = result.get("places") or []
+    textual = {"caption", "transcript", "on-screen text", "audio"}
+    return len(places) <= 1 and not result.get("tips") and all(set(p.get("evidence") or []) <= textual for p in places)
+
+
+def richer(source, result):
+    """Would reading this upload see more than the stored read did?"""
+    old = (result or {}).get("media") or {"kind": "none"}
+    new = media_of(source)
+    return MEDIA_RANK[new["kind"]] > MEDIA_RANK.get(old.get("kind"), 0) or (new["kind"] == old.get("kind") and new["count"] > old.get("count", 0))
+
+
+def server_video(url, reader_factory=None):
+    """Last try when the phone could send nothing to look at: fetch and shrink the video here (needs ffmpeg)."""
+    import shutil
+    if not url or not shutil.which("ffmpeg"):
+        return None
+    try:
+        from .tiktok import Reader
+        reader = (reader_factory or Reader)()
+        reader.read(url, max_slides=0)
+        return reader.video()
+    except Exception:  # noqa: BLE001 - best effort; the caption read still happens and is marked thin
+        return None
 
 
 # ----------------------------------------------------------- Is it travel? ---
@@ -383,9 +458,17 @@ class ExtractionQueue:
     def cached(self, video_key):
         return self._index.get(video_key) if self._index and video_key else None
 
-    def submit(self, source_id, source, video_key=""):
+    def final(self, video_key):
+        """The stored read, when it is good enough to hand out without reading again."""
+        hit = self.cached(video_key)
+        return hit if hit is not None and not is_thin(hit) else None
+
+    def submit(self, source_id, source, video_key="", reread=False):
         with self._lock:
             hit = self.cached(video_key)
+            # A thin stored read (or a "read again") is replaced when this upload can see more than it did.
+            if hit is not None and source is not None and (is_thin(hit) or reread) and richer(source, hit):
+                hit = None
             if hit is not None:
                 # Already read for someone: hand over the same result, no Gemini call, no Places call.
                 self._index.count_reader(video_key)
@@ -441,6 +524,12 @@ class ExtractionQueue:
             try:
                 if self._pool is None:
                     self._pool = self._pool_factory()
+                source = job["source"]
+                if source.get("expects_video") and media_of(source)["kind"] in ("none", "audio"):
+                    fetched = server_video(source.get("url"))
+                    if fetched:
+                        source["video"] = fetched
+                        source["media_note"] = (source.get("media_note") or "") + " · fetched by the server"
                 relevant, judged_by = triage(self._pool, job["source"])
                 if not relevant:
                     # Not travel: no full read, no place lookups, and the verdict is kept for the next saver.
@@ -459,6 +548,8 @@ class ExtractionQueue:
                             result["refine_error"] = str(error)[:200]  # the post-only cards are still good
                 source = job.get("source") or {}
                 result["source"] = {"url": source.get("url") or "", "author": source.get("author") or ""}
+                result["media"] = media_of(source)
+                result["thin"] = is_thin(result)
                 job.update(status="ready", result=result, finished_at=self._clock())
                 if self._index and job.get("video_key"):
                     self._index.put(job["video_key"], result)

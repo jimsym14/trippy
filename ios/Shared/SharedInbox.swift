@@ -65,6 +65,8 @@ struct ImportedSocialSource: Codable, Identifiable, Equatable {
     var tips: [SocialTip]? = nil
     /// True when the server handed back an earlier read of the same post (indexed once for everyone).
     var fromIndex: Bool? = nil
+    /// "Read again" was asked for: the next upload is read even if the post was indexed before.
+    var rereadRequested: Bool? = nil
     var isTips: Bool { postKind == "tips" }
 }
 /// One beat of a post's timeline: when ("0:12", "slide 3", "caption") and what was said or shown.
@@ -117,9 +119,13 @@ struct SocialExtractionJob: Decodable {
         let postTitle: String; let postSummary: String; let city: String; let country: String; let countryCode: String?
         let places: [Place]; let model: String?
         let postKind: String?; let tips: [SocialTip]?
+        /// How many places the post says it has ("8 stops"), and whether fewer were found.
+        var statedCount: Int? = nil
+        var incomplete: Bool? = nil
         enum CodingKeys: String, CodingKey {
-            case city, country, places, model, tips
+            case city, country, places, model, tips, incomplete
             case postTitle = "post_title", postSummary = "post_summary", countryCode = "country_code", postKind = "post_kind"
+            case statedCount = "stated_count"
         }
     }
     let jobID: String
@@ -252,6 +258,9 @@ final class TikTokPageReader {
     static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
     private(set) var session: URLSession
     private(set) var videoURL: URL?
+    /// Every address TikTok gives for the video, best first: some posts have no playable `playAddr` but do have
+    /// `downloadAddr` or a bitrate variant.
+    private(set) var videoURLs: [URL] = []
     private let timeout: TimeInterval
 
     init(timeout: TimeInterval = 15) {
@@ -294,6 +303,12 @@ final class TikTokPageReader {
         let extras = item["textExtra"] as? [[String: Any]] ?? []
         let handle = author["uniqueId"] as? String
         videoURL = (video["playAddr"] as? String).flatMap(URL.init(string:))
+        let variants = (video["bitrateInfo"] as? [[String: Any]] ?? []).compactMap { info -> String? in
+            ((info["PlayAddr"] as? [String: Any])?["UrlList"] as? [String])?.first
+        }
+        videoURLs = ([video["playAddr"] as? String, video["downloadAddr"] as? String] + variants.map(Optional.some))
+            .compactMap { $0.flatMap(URL.init(string:)) }
+            .reduce(into: [URL]()) { if !$0.contains($1) { $0.append($1) } }
 
         var transcript: String?, language: String?
         let subtitles = (video["subtitleInfos"] as? [[String: Any]] ?? []).filter { ($0["Format"] as? String)?.lowercased() == "webvtt" }
@@ -336,7 +351,16 @@ final class TikTokPageReader {
 
     /// Downloads the video (cookies from `read` are required). Caller deletes the file.
     func downloadVideo(maximumBytes: Int = 60_000_000) async throws -> URL {
-        guard let videoURL else { throw TikTokReaderError.unavailable }
+        let candidates = videoURLs.isEmpty ? [videoURL].compactMap { $0 } : videoURLs
+        guard !candidates.isEmpty else { throw TikTokReaderError.unavailable }
+        var lastError: Error = TikTokReaderError.unavailable
+        for candidate in candidates {
+            do { return try await download(candidate, maximumBytes: maximumBytes) } catch { lastError = error }
+        }
+        throw lastError
+    }
+
+    private func download(_ videoURL: URL, maximumBytes: Int) async throws -> URL {
         var request = URLRequest(url: videoURL)
         request.setValue("https://www.tiktok.com/", forHTTPHeaderField: "Referer")
         let (file, response) = try await session.download(for: request)

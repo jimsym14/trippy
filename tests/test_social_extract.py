@@ -177,8 +177,9 @@ class EndpointTests(unittest.TestCase):
     def test_submit_and_poll(self):
         class Queue:
             def __init__(self): self.jobs = {}; self.keys = {}
-            def cached(self, key): return {"places": []} if key == "tiktok:999999999" else None
-            def submit(self, job_id, source, key=""):
+            def cached(self, key): return {"places": [], "media": {"kind": "video"}} if key == "tiktok:999999999" else None
+            def final(self, key): return self.cached(key)
+            def submit(self, job_id, source, key="", reread=False):
                 self.keys[job_id] = key
                 if source is None: return {"job_id": job_id, "status": "ready", "cached": True}
                 self.jobs[job_id] = source; return {"job_id": job_id, "status": "queued"}
@@ -204,3 +205,69 @@ class EndpointTests(unittest.TestCase):
             self.assertEqual(handler.replies[0][1]["status"], "ready")
             handler = self.handler("/api/social/extract", {"source_id": "nope"}); handler.do_POST()
             self.assertEqual(handler.replies[0][0], 422)
+
+
+class ThinReadTests(unittest.TestCase):
+    """A walking-route video whose eight stops are drawn on the frames, read once from its caption alone."""
+    CAPTION_ONLY = {"post_title": "Christmas in Rome", "relevant": True, "post_kind": "places", "tips": [],
+                    "places": [{"name": "Piazza Navona", "evidence": ["caption"]}]}
+
+    def test_a_caption_only_read_of_a_video_is_thin_and_a_richer_upload_replaces_it(self):
+        legacy = json.loads(json.dumps(self.CAPTION_ONLY))                      # stored before media was recorded
+        self.assertTrue(ex.is_thin(legacy))
+        recorded = {**legacy, "media": {"kind": "none", "count": 0, "expects_video": True}}
+        self.assertTrue(ex.is_thin(recorded))
+        self.assertFalse(ex.is_thin({**legacy, "media": {"kind": "video", "count": 0, "expects_video": True}}))
+        self.assertTrue(ex.richer({"video": ("video/mp4", b"x")}, recorded))
+        self.assertTrue(ex.richer({"images": [b"a"] * 12, "frame_times": list(range(0, 24, 2))}, recorded))
+        self.assertFalse(ex.richer({"evidence": [{"origin": "post_caption", "text": "x"}]}, recorded))
+        # A full read that found fewer places than the post says it has is thin too.
+        self.assertTrue(ex.is_thin({**legacy, "media": {"kind": "video", "expects_video": True}, "incomplete": True}))
+
+    def test_stated_count_flags_an_incomplete_read(self):
+        result = ex.clean({**json.loads(json.dumps(RESULT)), "relevant": True, "stated_count": 8})
+        self.assertEqual(result["stated_count"], 8)
+        self.assertTrue(result["incomplete"])
+        self.assertFalse(ex.clean({**json.loads(json.dumps(RESULT)), "relevant": True, "stated_count": 0})["incomplete"])
+
+    def test_frames_are_labelled_with_their_time(self):
+        parts = ex.build_parts({"url": "u", "evidence": [{"origin": "post_caption", "text": "8 stops"}],
+                                "images": [("image/jpeg", b"a"), ("image/jpeg", b"b")], "frame_times": [0, 3]})
+        labels = [p["text"] for p in parts if "text" in p][1:]
+        self.assertEqual(labels, ["video 0:00", "video 0:03"])
+        self.assertIn("frames from the video", parts[0]["text"])
+
+    def test_the_queue_hands_out_a_good_read_but_rereads_a_thin_one_when_frames_arrive(self):
+        class Index:
+            def __init__(self, stored): self.stored = stored; self.counted = 0
+            def get(self, key): return self.stored
+            def put(self, key, result): self.stored = result
+            def count_reader(self, key): self.counted += 1
+        class Pool:
+            calls = 0
+            def generate(self, parts, **kw):
+                Pool.calls += 1
+                return json.loads(json.dumps(RESULT)), "fake-model"
+        index = Index({**json.loads(json.dumps(self.CAPTION_ONLY))})
+        queue = ex.ExtractionQueue(lambda: Pool(), search=None, index=index)
+        self.assertIsNone(queue.final("tiktok:1"))                             # thin: not final
+        caption_only = {"evidence": [{"origin": "post_caption", "text": "📍 8 stops in Rome"}], "expects_video": True}
+        self.assertEqual(queue.submit("a", caption_only, "tiktok:1")["status"], "ready")   # nothing new: the stored read stands
+        self.assertEqual(Pool.calls, 0)
+        frames = {**caption_only, "images": [b"jpeg"] * 10, "frame_times": list(range(0, 30, 3))}
+        job = queue.submit(str(uuid.uuid4()), frames, "tiktok:1")
+        for _ in range(100):
+            if queue.get(job["job_id"])["status"] == "ready": break
+            time.sleep(0.02)
+        self.assertEqual(Pool.calls, 1)
+        self.assertEqual(index.stored["media"]["kind"], "frames")
+
+
+class ScopeCleanupTests(unittest.TestCase):
+    def test_sentences_are_not_regions_and_countries_come_from_places(self):
+        result = ex.clean({**json.loads(json.dumps(RESULT)), "relevant": True, "country_code": "",
+                           "scope": {"level": "city", "name": "Rome", "region": "Lazio, Italy-level city scope covered in walking route forma", "countries": []}})
+        self.assertEqual(result["scope"]["region"], "")
+        self.assertEqual(result["scope"]["countries"], [p["country_code"] for p in result["places"] if p["country_code"]][:1])
+        named = ex.clean({**json.loads(json.dumps(RESULT)), "relevant": True, "scope": {"level": "region", "name": "Dolomites", "region": "Alps"}})
+        self.assertEqual(named["scope"]["region"], "Alps")

@@ -109,19 +109,27 @@ enum SocialExtractionClient {
         for block in source.evidence where block.origin == "slide_ocr" || (post == nil && block.origin == "shared_text") {
             evidence.append(["origin": block.origin, "text": block.text])
         }
+        let isVideo = post.map { !$0.isSlideshow && ($0.durationSeconds ?? 0) > 0 } ?? false
         var body: [String: Any] = ["source_id": source.id.uuidString, "url": source.envelope.sourceURL ?? "",
-                                   "author": post?.authorHandle ?? "", "evidence": evidence, "video_id": post?.postID ?? ""]
+                                   "author": post?.authorHandle ?? "", "evidence": evidence, "video_id": post?.postID ?? "",
+                                   "expects_video": isVideo, "reread": source.rereadRequested == true]
         // Every post is read once for everyone: ask first, so an indexed post costs no upload and no credit.
         if let probe = try? await send(jsonRequest(url, body: body.merging(["probe": true]) { $1 }, token: token, timeout: 20)),
            probe.status != "unindexed" { return probe }
         body["images"] = await Task.detached(priority: .utility) { slideImages(source) }.value
         // Videos go as a shrunken copy (1 fps, 540 px, mono audio) so Gemini can read place names drawn on the
         // frames, not just the speech. If that fails, fall back to audio only (when there is no transcript).
-        if let post, !post.isSlideshow, (post.durationSeconds ?? 0) > 0,
-           let media = await videoMedia(for: post, audioFallback: (post.transcript ?? "").isEmpty) {
+        if let post, isVideo {
+            // What the read will see is reported, so a caption-only read of a video is never mistaken for a full one.
+            let (media, note) = await videoMedia(for: post, audioFallback: (post.transcript ?? "").isEmpty)
+            body["media_note"] = note
             switch media {
             case .video(let data): body["video"] = ["mime": "video/mp4", "data": data.base64EncodedString()]
             case .audio(let data): body["audio"] = ["mime": "audio/mp4", "data": data.base64EncodedString()]
+            case .frames(let images, let times):
+                body["images"] = images.map { ["mime": "image/jpeg", "data": $0.base64EncodedString()] }
+                body["frame_times"] = times
+            case nil: break
             }
         }
         var request = URLRequest(url: url, timeoutInterval: 120)
@@ -184,18 +192,44 @@ enum SocialExtractionClient {
         }
     }
 
-    enum PostMedia { case video(Data), audio(Data) }
+    enum PostMedia { case video(Data), audio(Data), frames([Data], [Double]) }
 
     /// Fresh read (signed URLs expire), download the video with that session's cookies, shrink it for Gemini,
-    /// delete the original. Falls back to the audio track alone when shrinking fails. Up to five minutes.
-    private static func videoMedia(for post: TikTokPostSnapshot, audioFallback: Bool) async -> PostMedia? {
-        guard (post.durationSeconds ?? 0) <= 300, let link = URL(string: post.canonicalURL) else { return nil }
+    /// delete the original. When shrinking fails, frames go instead (text drawn on the video is often the whole
+    /// point: a route's numbered stops), then the audio. Up to five minutes. The note says what happened.
+    private static func videoMedia(for post: TikTokPostSnapshot, audioFallback: Bool) async -> (PostMedia?, String) {
+        guard (post.durationSeconds ?? 0) <= 300, let link = URL(string: post.canonicalURL) else { return (nil, "too long") }
         let reader = TikTokPageReader()
-        guard (try? await reader.read(link, into: nil)) != nil, let video = try? await reader.downloadVideo() else { return nil }
+        guard (try? await reader.read(link, into: nil)) != nil else { return (nil, "page not readable") }
+        let video: URL
+        do { video = try await reader.downloadVideo() } catch { return (nil, "download failed: \(error)") }
         defer { try? FileManager.default.removeItem(at: video) }
-        if let small = await shrunkenVideo(video) { return .video(small) }
-        guard audioFallback, let audio = await audioTrack(of: video) else { return nil }
-        return .audio(audio)
+        if let small = await shrunkenVideo(video) { return (.video(small), "video") }
+        if let (images, times) = await frames(of: video), !images.isEmpty { return (.frames(images, times), "frames: video could not be shrunk") }
+        guard audioFallback, let audio = await audioTrack(of: video) else { return (nil, "video could not be prepared") }
+        return (.audio(audio), "audio only")
+    }
+
+    /// One frame a second (at most 35, the server's limit; longer videos are spread evenly), 720 px on the long
+    /// side. A stop's name card is often on screen for about a second, so a two-second step misses some.
+    private static func frames(of video: URL) async -> ([Data], [Double])? {
+        let asset = AVURLAsset(url: video)
+        guard let duration = try? await asset.load(.duration).seconds, duration > 0 else { return nil }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 720, height: 720)
+        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
+        let step = max(1, duration / 35)
+        var images: [Data] = [], times: [Double] = []
+        var time = 0.5
+        while time < duration, images.count < 35 {
+            if let (image, _) = try? await generator.image(at: CMTime(seconds: time, preferredTimescale: 600)),
+               let data = UIImage(cgImage: image).jpegData(compressionQuality: 0.72) {
+                images.append(data); times.append((time * 10).rounded() / 10)
+            }
+            time += step
+        }
+        return (images, times)
     }
 
     /// 1 fps (Gemini samples video at 1 fps anyway), at most 540 px wide, H.264 + mono AAC, under ~8 MB so the
