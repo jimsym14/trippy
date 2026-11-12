@@ -136,7 +136,10 @@ struct TripShelfView: View {
                         Button { onOpen(trip.id) } label: { ShelfCard(trip: trip, look: look(trip)) }
                             .buttonStyle(SketchPressStyle())
                             .contextMenu { menu(trip) }
-                            .overlay(alignment: .topTrailing) { cardActions(trip).padding(8) }
+                            // The postcard keeps its top clear: its buttons sit at the end of its stats bar.
+                            .overlay(alignment: look(trip).style == .postcard ? .bottomTrailing : .topTrailing) {
+                                cardActions(trip).padding(.horizontal, 8).padding(.vertical, look(trip).style == .postcard ? 6 : 8)
+                            }
                             .accessibilityLabel("\(trip.title), \(ShelfDates.range(trip))")
                     }
                 }
@@ -339,46 +342,49 @@ struct ShelfCard: View {
     }
 }
 
-/// The default trip card: a smaller relative of the next-trip card (tinted top with when and what, the doodle,
-/// then the city code, days, stops and travellers), so the next trip leads and the rest read as the same family.
-/// One fixed size, so a row lines up; the top-right corner stays clear for the card's buttons.
+/// The default trip card: a smaller relative of the next-trip card, mirrored. The doodle and the city code lead on
+/// the left, when and what sit beside them on the same centre line, and the stats run along the bottom with the
+/// card's buttons at its end (where the next-trip card has its arrow). One fixed size, so a row lines up.
 private struct Postcard: View {
     let trip: ShelfTrip, look: ShelfLook
+    /// Room the row's delete and more buttons take at the bottom right (see TripShelf.row).
+    static let buttonsWidth: CGFloat = 84
+
     var body: some View {
         let color = shelfTint(trip, look)
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
-            // The next-trip card mirrored: the doodle leads on the left, when and what follow it, below the card's buttons.
-            HStack(alignment: .top, spacing: 14) {
-                DoodleView(doodle: look.doodle ?? .balloon, tint: color, lineWidth: 2.2)
-                    .frame(width: 62, height: 62)
-                VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 14) {
+                VStack(spacing: 4) {
+                    DoodleView(doodle: look.doodle ?? .balloon, tint: color, lineWidth: 2.2).frame(width: 56, height: 56)
+                    Text(ShelfDates.code(trip.city)).font(.system(size: 13, weight: .heavy, design: .rounded)).tracking(1)
+                        .foregroundStyle(color)
+                }
+                .frame(width: 64)
+                VStack(alignment: .leading, spacing: 5) {
                     // The row's heading says "Upcoming": the card says how soon (or that it's a draft).
-                    Group {
-                        if !trip.hasPlan { SketchTag(text: "Draft", tint: Sketch.ochre) }
-                        else if let countdown = ShelfDates.countdown(trip) { SketchTag(text: countdown, tint: color) }
-                    }
-                    .fixedSize().frame(height: 24, alignment: .leading)
+                    if !trip.hasPlan { SketchTag(text: "Draft", tint: Sketch.ochre).fixedSize() }
+                    else if let countdown = ShelfDates.countdown(trip) { SketchTag(text: countdown, tint: color).fixedSize() }
                     Text(trip.title).font(Sketch.display(.title3, weight: .bold)).foregroundStyle(Sketch.ink)
                         .lineLimit(2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
                     Text(trip.hasPlan ? ShelfDates.range(trip) : "No plan yet").font(Sketch.text(14, relativeTo: .subheadline))
                         .foregroundStyle(trip.hasPlan ? Sketch.inkSoft : Sketch.ochre).lineLimit(1)
                 }
-                .padding(.top, 26)   // clear of the delete and more buttons in the corner
-                Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(16)
-            .frame(maxHeight: .infinity, alignment: .top)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(color.opacity(0.1))
             HStack(spacing: 0) {
-                stat(ShelfDates.code(trip.city), "city")
                 stat(trip.days > 0 ? "\(trip.days)" : "–", trip.days == 1 ? "day" : "days")
                 stat(trip.stops > 0 ? "\(trip.stops)" : "–", "stops")
                 stat("\(trip.travelers)", trip.travelers == 1 ? "traveler" : "travelers")
+                Color.clear.frame(width: Self.buttonsWidth)
             }
-            .padding(.horizontal, 16).padding(.vertical, 10)
+            .padding(.leading, 16).padding(.vertical, 10)
+            .frame(height: 58)
         }
-        .frame(width: 300, height: 212)
+        .frame(width: 300, height: 196)
         .background(shape.fill(Sketch.card))
         .clipShape(shape)
         .overlay(shape.strokeBorder(Sketch.ink.opacity(0.08), lineWidth: 1))
@@ -386,7 +392,7 @@ private struct Postcard: View {
     private func stat(_ value: String, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(value).font(Sketch.text(15, "ExtraBold", relativeTo: .subheadline)).monospacedDigit().lineLimit(1)
-            Text(label).font(Sketch.text(11, relativeTo: .caption2)).foregroundStyle(Sketch.inkSoft)
+            Text(label).font(Sketch.text(11, relativeTo: .caption2)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
