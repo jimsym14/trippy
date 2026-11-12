@@ -141,6 +141,11 @@ def build_parts(source):
                      "frame_text": "Text the phone read on the frames, by time (may have small misreadings; the frames are the truth)",
                      "slide_ocr": "Slide text (OCR)", "shared_text": "Shared text"}.get(block.get("origin"), block.get("origin", "Text"))
             lines.append(f"\n[{label}]\n{text[:20000]}")
+    trip = source.get("trip") or {}
+    if trip.get("city") or trip.get("country"):
+        where = ", ".join(x for x in (trip.get("city"), trip.get("country")) if x)
+        lines.append(f"\n[The saver filed this post under their trip to {where}. When the post doesn't say where a venue is,"
+                     " it is most likely there; never invent a venue to fit the trip.]")
     if source.get("sound") == "music":
         lines.append("\n[Sound: music only, nobody speaks. Ignore any lyrics; the places are in the text and frames.]")
     elif source.get("sound") == "mixed":
@@ -484,7 +489,8 @@ class ExtractionQueue:
                 return self.public(job)
             if video_key:
                 for other in self._jobs.values():
-                    if other.get("video_key") == video_key and other["status"] in ("queued", "running") and other["job_id"] != source_id:
+                    if (other.get("video_key") == video_key and other["status"] in ("queued", "running")
+                            and other["job_id"] != source_id and not other.get("forgotten")):
                         self._aliases[source_id] = other["job_id"]
                         view = self.public(other)
                         view["job_id"] = source_id
@@ -497,6 +503,27 @@ class ExtractionQueue:
             self._order.append(source_id)
             self._lock.notify()
             return self.public(job)
+
+    def forget(self, video_key):
+        """A developer deleted this post: drop the stored read, its place links and every finished job for it,
+        so the next share starts from scratch. A read already running finishes but is not stored."""
+        if not video_key:
+            return False
+        removed = self._index.remove(video_key) if self._index else False
+        if self._takes:
+            self._takes.remove_video(video_key)
+        with self._lock:
+            for job_id, job in list(self._jobs.items()):
+                if job.get("video_key") != video_key:
+                    continue
+                if job["status"] in ("queued", "running"):
+                    job["forgotten"] = True
+                else:
+                    self._jobs.pop(job_id, None)
+            for alias, target in list(self._aliases.items()):
+                if target not in self._jobs:
+                    self._aliases.pop(alias, None)
+        return removed
 
     def get(self, job_id):
         with self._lock:
@@ -536,7 +563,11 @@ class ExtractionQueue:
                     if fetched:
                         source["video"] = fetched
                         source["media_note"] = (source.get("media_note") or "") + " · fetched by the server"
-                relevant, judged_by = triage(self._pool, job["source"])
+                if (source.get("trip") or {}).get("city") or (source.get("trip") or {}).get("country"):
+                    # Saved straight into a trip: the saver already said it is travel, so no triage call.
+                    relevant, judged_by = True, "trip"
+                else:
+                    relevant, judged_by = triage(self._pool, job["source"])
                 if not relevant:
                     # Not travel: no full read, no place lookups, and the verdict is kept for the next saver.
                     result = clean({"post_title": "Not a travel post", "post_summary": "", "transcript": "", "city": "", "country": "",
@@ -557,7 +588,7 @@ class ExtractionQueue:
                 result["media"] = media_of(source)
                 result["thin"] = is_thin(result)
                 job.update(status="ready", result=result, finished_at=self._clock())
-                if self._index and job.get("video_key"):
+                if self._index and job.get("video_key") and not job.get("forgotten"):
                     self._index.put(job["video_key"], result)
                     if self._takes:
                         self._takes.add_video(job["video_key"], result.get("places"))

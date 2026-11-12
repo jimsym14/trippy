@@ -322,7 +322,11 @@ class CommunityVideos:
         all_videos = self.all()
         areas = Counter(p["neighborhood"] for v in all_videos if not city or v["city"].casefold() == city.casefold()
                         for p in v["places"] if p.get("neighborhood"))
-        return {"videos": out, "cities": sorted({v["city"] for v in all_videos if v["city"]}),
+        per_city = Counter(v["city"] for v in all_videos if v["city"])
+        codes = {v["city"]: v.get("country_code") for v in all_videos if v["city"] and v.get("country_code")}
+        return {"videos": out, "cities": sorted(per_city),
+                # City cards: most-covered first, with a flag and a count.
+                "city_stats": [{"name": c, "country_code": codes.get(c), "videos": n} for c, n in per_city.most_common()],
                 "areas": [a for a, _ in areas.most_common(20)],
                 "categories": [{"id": c, "title": t} for c, t in CATEGORY_TITLES.items()
                                if any(c in {x["id"] for x in v["categories"]} for v in all_videos)]}

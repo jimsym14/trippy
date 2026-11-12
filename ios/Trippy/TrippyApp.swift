@@ -1648,8 +1648,8 @@ private struct TripFlowView: View {
     @State private var openCommunityVideo: CommunityVideoKey?
     @State private var mapDirectionsActive = false
     /// The Videos tab shows your own videos or everyone's (Community).
-    @State private var videosCommunity = false
-    @Namespace private var videosScopeSpace
+    /// Community is its own Library section now (it used to be a toggle inside Videos).
+    private var videosCommunity: Bool { librarySection == "Community" }
     @State private var selectedTravelNoteID: UUID?
     /// The place whose sheet is open (Library): everything linked to it in one place.
     @State private var atlasPlaceKey: String?
@@ -1867,7 +1867,7 @@ private struct TripFlowView: View {
             }
             #endif
             if CommunityDemo.browse != nil || GuidesDemo.browse != nil {
-                rootTab = "library"; librarySection = "Videos"; videosCommunity = true; libraryHasMounted = true
+                rootTab = "library"; librarySection = "Community"; libraryHasMounted = true
                 if let video = CommunityDemo.video, ProcessInfo.processInfo.arguments.contains("-TrippyCommunityDetail") {
                     Task { try? await Task.sleep(for: .seconds(1.2)); openCommunityVideo = CommunityVideoKey(id: video.key) }
                 }
@@ -6989,7 +6989,7 @@ private extension TripFlowView {
     }
     var librarySearchPrompt: String {
         switch librarySection {
-        case "Videos" where videosCommunity: return "Search places, creators, titles"
+        case "Community": return "Search places, creators, titles"
         case "Notes": return "Search notes"
         case "Videos": return "Search videos"
         case "Pins": return "Search places, notes, videos"
@@ -7010,7 +7010,8 @@ private extension TripFlowView {
     private var libraryCollectionTitle: String {
         switch librarySection {
         case "Pins": "Your places"
-        case "Videos": videosCommunity ? "Community" : "Your videos"
+        case "Videos": "Your videos"
+        case "Community": "Community"
         case "World": "Been to"
         case "Notes": "Your notes"
         default: "Your trips"
@@ -7045,7 +7046,6 @@ private extension TripFlowView {
                             if librarySection == "Pins" { libraryPinFilterMenu }
                             librarySearchButton
                         }.padding(.bottom, 4)
-                        if librarySection == "Videos" { videosScopePicker }
                         if librarySearchVisible || !libraryQuery.isEmpty { librarySearchField }
                         TrippyScreen { libraryCollectionContent }
                     }.padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 32)
@@ -7064,7 +7064,7 @@ private extension TripFlowView {
     }
     /// Library sections on the dial above the tab bar.
     var librarySections: [LibraryWheel.Item] {
-        ["Trips", "Pins", "Videos", "Notes", "Been to"].map { section in
+        ["Trips", "Pins", "Videos", "Community", "Notes", "Been to"].map { section in
             LibraryWheel.Item(id: section == "Been to" ? "World" : section, title: section, symbol: libraryTabSymbol(section))
         }
     }
@@ -7074,29 +7074,6 @@ private extension TripFlowView {
                 libraryMapFilter = nil; librarySection = section; libraryQuery = ""; librarySearchVisible = false
             }
         })
-    }
-    /// "Your videos | Community" at the top of the Videos tab.
-    private var videosScopePicker: some View {
-        HStack(spacing: 4) {
-            ForEach([false, true], id: \.self) { community in
-                let on = videosCommunity == community
-                Button {
-                    TrippyHaptics.selection()
-                    withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.8)) { videosCommunity = community; libraryQuery = "" }
-                } label: {
-                    Label(community ? "Community" : "Your videos", systemImage: community ? "person.3.fill" : "play.rectangle.fill")
-                        .font(.custom("PlusJakartaSans-Bold", size: 14, relativeTo: .subheadline))
-                        .foregroundStyle(on ? Sketch.paper : AppPalette.secondaryInk)
-                        .frame(maxWidth: .infinity, minHeight: 40)
-                        .background { if on { Capsule().fill(Sketch.ink).matchedGeometryEffect(id: "videosScope", in: videosScopeSpace) } }
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(QuietPressStyle())
-                .accessibilityAddTraits(on ? .isSelected : [])
-            }
-        }
-        .padding(4)
-        .background(Capsule().fill(Sketch.card).shadow(color: .black.opacity(0.06), radius: 8, y: 3))
     }
     private var libraryPinFilterMenu: some View {
                         Menu {
@@ -7124,7 +7101,7 @@ private extension TripFlowView {
         ScrollViewReader { proxy in
         ScrollView(.horizontal) {
             HStack(spacing: 4) {
-                ForEach(["Trips", "Pins", "Videos", "Notes", "Been to"], id: \.self) { section in
+                ForEach(["Trips", "Pins", "Videos", "Community", "Notes", "Been to"], id: \.self) { section in
                     let selection = section == "Been to" ? "World" : section
                     let selected = librarySection == selection
                     Button {
@@ -7208,8 +7185,8 @@ private extension TripFlowView {
         case "Trips": libraryTripsCollection
         case "Pins":
             atlasPlacesLibrary
-        case "Videos" where !videosCommunity: videoLibrary
-        case "Videos":
+        case "Videos": videoLibrary
+        case "Community":
             CommunityBrowseContent(baseURL: bridgeBaseURL, token: bridgeToken, initialCity: libraryCity, query: libraryQuery,
                                    preview: CommunityDemo.browse) { openCommunityVideo = CommunityVideoKey(id: $0) }
         case "Notes": atlasNotesLibrary
@@ -7726,6 +7703,11 @@ private extension TripFlowView {
         }
     }
     private func deleteLibraryVideo(_ id: UUID) {
+        // A developer's delete also takes the video out of the community, so a later share is read from scratch.
+        if AccountSession.shared.isAdmin, let source = socialSources.first(where: { $0.id == id }) {
+            let token = bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines), base = bridgeBaseURL
+            Task { await SocialExtractionClient.forgetInCommunity(source, baseURL: base, token: token) }
+        }
         var deleted = deletedSourceIDs
         LibraryDeletion.video(id, sources: &socialSources, notes: &travelNotes, deleted: &deleted)
         deletedSourceStorage = deleted.map(\.uuidString).sorted().joined(separator: "|")

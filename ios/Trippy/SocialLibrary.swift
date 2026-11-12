@@ -113,6 +113,10 @@ enum SocialExtractionClient {
         var body: [String: Any] = ["source_id": source.id.uuidString, "url": source.envelope.sourceURL ?? "",
                                    "author": post?.authorHandle ?? "", "evidence": evidence, "video_id": post?.postID ?? "",
                                    "expects_video": isVideo, "reread": source.rereadRequested == true]
+        // Shared straight into a trip: the server skips its "is this travel?" check and reads places in that city.
+        if source.envelope.destination.tripID != nil, let city = source.city?.trimmingCharacters(in: .whitespacesAndNewlines), !city.isEmpty {
+            body["trip"] = ["city": city, "country": source.country ?? ""]
+        }
         // Every post is read once for everyone: ask first, so an indexed post costs no upload and no credit.
         if let probe = try? await send(jsonRequest(url, body: body.merging(["probe": true]) { $1 }, token: token, timeout: 20)),
            probe.status != "unindexed" { return probe }
@@ -155,6 +159,21 @@ enum SocialExtractionClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
+    }
+
+    /// Developer delete: the post leaves the community videos, and the next share of it is read from the start.
+    static func forgetInCommunity(_ source: ImportedSocialSource, baseURL: String, token: String) async {
+        guard let url = URL(string: baseURL + "/api/admin/community/delete") else { return }
+        let body: [String: Any] = ["url": source.envelope.sourceURL ?? "", "video_id": source.envelope.tiktok?.postID ?? ""]
+        guard let request = try? jsonRequest(url, body: body, token: token, timeout: 20) else { return }
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
+    static func forgetInCommunity(key: String, baseURL: String, token: String) async -> Bool {
+        guard let url = URL(string: baseURL + "/api/admin/community/delete"),
+              let request = try? jsonRequest(url, body: ["key": key], token: token, timeout: 20),
+              let (_, response) = try? await URLSession.shared.data(for: request) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
     static func poll(_ jobID: String, baseURL: String, token: String) async throws -> SocialExtractionJob? {

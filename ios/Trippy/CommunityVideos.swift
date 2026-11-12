@@ -85,8 +85,15 @@ struct CommunityVideo: Decodable, Hashable {
     }
 }
 struct CommunityVideoKey: Identifiable, Hashable { let id: String }
+struct CommunityCityStat: Decodable, Identifiable, Hashable {
+    let name: String; let countryCode: String?; let videos: Int?
+    var id: String { name }
+    enum CodingKeys: String, CodingKey { case name, videos; case countryCode = "country_code" }
+}
 struct CommunityBrowse: Decodable {
     let videos: [CommunityVideoSummary]; let cities: [String]; let categories: [CommunityCategory]; var areas: [String]? = nil
+    var cityStats: [CommunityCityStat]? = nil
+    enum CodingKeys: String, CodingKey { case videos, cities, categories, areas; case cityStats = "city_stats" }
 }
 /// One place on the Community map (GET /api/community/map) with the videos that mention it.
 struct CommunityMapPin: Decodable, Identifiable, Hashable {
@@ -193,6 +200,10 @@ private extension String {
 enum CommunityStyle {
     static let youtubeRed = Color(red: 0.89, green: 0.15, blue: 0.12)
     static let tiktokBlack = Color(white: 0.086)
+    /// Platform fills that read in both modes: TikTok's black flips to cream on the dark paper.
+    static func platformFill(_ platform: String) -> Color { platform == "youtube" ? youtubeRed : Sketch.ink }
+    static func platformText(_ platform: String) -> Color { platform == "youtube" ? .white : Sketch.paper }
+    static func platformSymbol(_ platform: String) -> String { platform == "youtube" ? "play.rectangle.fill" : "music.note" }
     static func symbol(_ category: String) -> String {
         switch category {
         case "sights": "building.columns.fill"
@@ -213,13 +224,27 @@ enum CommunityStyle {
         default: "mappin"
         }
     }
+    /// A pigment per category. Never the ink colour: white glyphs on it vanish in dark mode.
     static func tint(_ category: String) -> Color {
         switch category {
         case "food", "coffee": Sketch.coral
         case "bars", "clubs", "events": Sketch.plum
         case "outdoors", "day_trips": Sketch.sage
         case "transport", "tickets", "budget_practical": Sketch.ochre
-        default: Sketch.ink
+        case "sights", "museums": Sketch.sky
+        default: Sketch.clay
+        }
+    }
+    /// Deep, fixed poster colours (the same in both modes, so the white artwork on them always reads).
+    static func poster(_ category: String) -> (Color, Color) {
+        func c(_ hex: UInt32) -> Color { Color(red: Double(hex >> 16 & 0xFF) / 255, green: Double(hex >> 8 & 0xFF) / 255, blue: Double(hex & 0xFF) / 255) }
+        switch category {
+        case "food", "coffee": return (c(0xD9614E), c(0x8E2F2A))
+        case "bars", "clubs", "events": return (c(0x7D5FA0), c(0x3B2A5A))
+        case "outdoors", "day_trips": return (c(0x5A8A70), c(0x24473A))
+        case "transport", "tickets", "budget_practical": return (c(0xC79437), c(0x7A5418))
+        case "sights", "museums": return (c(0x4F82AB), c(0x22405E))
+        default: return (c(0xC0603F), c(0x6E2F1E))
         }
     }
     static func stance(_ stance: String) -> (String, String, Color) {
@@ -232,11 +257,11 @@ enum CommunityStyle {
     }
     static func platformBadge(_ platform: String) -> some View {
         HStack(spacing: 4) {
-            Image(systemName: platform == "youtube" ? "play.rectangle.fill" : "music.note").font(.system(size: 10, weight: .black))
+            Image(systemName: platformSymbol(platform)).font(.system(size: 10, weight: .black))
             Text(platform == "youtube" ? "YouTube" : "TikTok").font(Sketch.text(10, "Bold", relativeTo: .caption2))
         }
-        .foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 4)
-        .background(platform == "youtube" ? CommunityStyle.youtubeRed : CommunityStyle.tiktokBlack, in: Capsule())
+        .foregroundStyle(platformText(platform)).padding(.horizontal, 8).padding(.vertical, 4)
+        .background(platformFill(platform), in: Capsule())
     }
     /// YouTube links open at the moment; TikTok has no timestamp links.
     static func link(_ url: String, seconds: Double?) -> URL? {
@@ -246,14 +271,30 @@ enum CommunityStyle {
         }
         return components.url
     }
+    /// YouTube's public still for a video key ("youtube:<id>"). TikTok has none we may keep.
+    static func thumbnail(_ key: String, large: Bool = false) -> URL? {
+        guard key.hasPrefix("youtube:") else { return nil }
+        let id = key.dropFirst("youtube:".count)
+        return URL(string: "https://i.ytimg.com/vi/\(id)/\(large ? "hqdefault" : "mqdefault").jpg")
+    }
     static func year(_ iso: String?) -> String? { iso.flatMap { $0.count >= 4 ? String($0.prefix(4)) : nil } }
+    static func flag(_ code: String?) -> String? {
+        guard let code, code.count == 2 else { return nil }
+        let scalars = code.uppercased().unicodeScalars.compactMap { UnicodeScalar(127397 + $0.value) }
+        return scalars.count == 2 ? String(String.UnicodeScalarView(scalars)) : nil
+    }
+    static func handle(_ author: String?) -> String? {
+        guard let author = author?.trimmingCharacters(in: .whitespacesAndNewlines), !author.isEmpty else { return nil }
+        return author.contains(" ") ? author : "@" + author.replacingOccurrences(of: "@", with: "")
+    }
 }
 
+/// A small toggle used inside a video's detail (stance filter). Selected = ink fill with paper text, so it reads in both modes.
 private struct Chip: View {
     let title: String
     var symbol: String? = nil
     let on: Bool
-    var tint: Color = Sketch.ink
+    var tint: Color? = nil
     let action: () -> Void
     var body: some View {
         Button(action: { TrippyHaptics.selection(); action() }) {
@@ -261,9 +302,11 @@ private struct Chip: View {
                 if let symbol { Image(systemName: symbol).font(.system(size: 11, weight: .bold)) }
                 Text(title).font(Sketch.text(13, on ? "Bold" : "SemiBold", relativeTo: .footnote))
             }
-            .foregroundStyle(on ? Color.white : Sketch.ink)
+            // Tinted chips stay tinted text on a wash: white on the lighter dark-mode pigments wouldn't read.
+            .foregroundStyle(on ? (tint ?? Sketch.paper) : Sketch.ink)
             .padding(.horizontal, 12).frame(minHeight: 34)
-            .background(Capsule().fill(on ? tint : Sketch.paperDeep))
+            .background(Capsule().fill(on ? (tint.map { $0.opacity(0.18) } ?? Sketch.ink) : Sketch.paperDeep))
+            .overlay(Capsule().strokeBorder(on ? (tint ?? .clear).opacity(0.5) : .clear, lineWidth: 1))
         }
         .buttonStyle(BubblePressStyle())
         .animation(.spring(response: 0.3, dampingFraction: 0.65), value: on)
@@ -284,7 +327,16 @@ private struct Stat: View {
 
 /// Every video anyone has indexed: TikTok shares (read once for everyone) and YouTube creator videos.
 /// Lives inside the Library as its Community tab; opening a video is the host's job (`onOpen`).
+///
+/// Layout, top to bottom: a segmented Videos · Guides · Map switch; a rail of city cards; one row of
+/// dropdown filters (source, category, area, show); the result count with the sort menu; the videos.
 struct CommunityBrowseContent: View {
+    enum Mode: String, CaseIterable {
+        case videos = "Videos", guides = "Guides", places = "Places", map = "Map"
+        var symbol: String {
+            switch self { case .videos: "play.rectangle"; case .guides: "book.pages"; case .places: "mappin.and.ellipse"; case .map: "map" }
+        }
+    }
     let baseURL: String
     let token: String
     var initialCity: String? = nil
@@ -294,58 +346,169 @@ struct CommunityBrowseContent: View {
     let onOpen: (String) -> Void
     @State private var data: CommunityBrowse?
     @State private var filters = CommunityFilters()
-    @State private var showMap = false
-    @State private var showGuides: Bool = {
+    @State private var mode: Mode = {
         #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("-TrippyGuidesDemo") { return true }
+        let args = ProcessInfo.processInfo.arguments
+        if args.contains("-TrippyGuidesDemo") { return .guides }
+        if args.contains("-TrippyCommunityShowMap") { return .map }
+        if let i = args.firstIndex(of: "-TrippyCommunityMode"), i + 1 < args.count, let mode = Mode(rawValue: args[i + 1].capitalized) { return mode }
         #endif
-        return false
+        return .videos
     }()
     @State private var failed = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Chip(title: "Videos", symbol: "list.bullet", on: !showMap && !showGuides) { showMap = false; showGuides = false }
-                Chip(title: "Guides", symbol: "book.pages", on: showGuides) { showGuides = true; showMap = false }
-                Chip(title: "Map", symbol: "map", on: showMap) { showMap = true; showGuides = false }
-                Spacer(minLength: 0)
-                if !showGuides { sortMenu }
-            }
-            if showGuides {
+        VStack(alignment: .leading, spacing: 16) {
+            CommunityTabs(mode: $mode)
+            switch mode {
+            case .guides:
                 GuidesBrowseView(baseURL: baseURL, token: token, query: query)
-            } else {
-            filterChips
-            if showMap {
+            case .places:
+                cityRail
+                filterBar
+                CommunityPlacesSection(baseURL: baseURL, token: token, filters: filters, query: query, onOpen: onOpen)
+            case .map:
+                cityRail
+                filterBar
                 CommunityMapSection(baseURL: baseURL, token: token, filters: filters, onOpen: onOpen) { box in
-                    filters.bbox = box; showMap = false
+                    filters.bbox = box; withAnimation(.snappy) { mode = .videos }
                 }
-            } else {
-                if filters.bbox != nil {
-                    Chip(title: "In the map area · clear", symbol: "xmark", on: true) { filters.bbox = nil }
-                }
+            case .videos:
+                cityRail
                 list
-            }
             }
         }
         .task(id: "\(filters.hashValue)|\(query)") { await load() }
-        .onAppear {
-            if filters.city == nil { filters.city = initialCity }
-            #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("-TrippyCommunityShowMap") { showMap = true }
-            #endif
+        .onAppear { if filters.city == nil { filters.city = initialCity } }
+    }
+
+    // MARK: Cities
+
+    private var cityStats: [CommunityCityStat] {
+        if let stats = data?.cityStats, !stats.isEmpty { return stats }
+        return (data?.cities ?? []).map { CommunityCityStat(name: $0, countryCode: nil, videos: nil) }
+    }
+
+    @ViewBuilder private var cityRail: some View {
+        if cityStats.count > 0 {
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    CityCard(title: "Everywhere", flag: nil, count: cityStats.compactMap(\.videos).reduce(0, +), on: filters.city == nil) {
+                        filters.city = nil; filters.area = nil
+                    }
+                    ForEach(cityStats) { city in
+                        CityCard(title: city.name, flag: city.countryCode, count: city.videos, on: filters.city == city.name) {
+                            filters.city = filters.city == city.name ? nil : city.name; filters.area = nil
+                        }
+                    }
+                }
+                .padding(.horizontal, 20).padding(.vertical, 2)
+            }
+            .scrollIndicators(.hidden)
+            .padding(.horizontal, -20)
+            .animation(.snappy, value: filters.city)
         }
     }
 
+    // MARK: Filters
+
+    private var activeFilters: Int {
+        [filters.platform, filters.category, filters.area, filters.only].compactMap { $0 }.count + (filters.bbox == nil ? 0 : 1)
+    }
+
+    private var filterBar: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                if activeFilters > 0 {
+                    Button {
+                        TrippyHaptics.selection()
+                        withAnimation(.snappy) { filters.platform = nil; filters.category = nil; filters.area = nil; filters.only = nil; filters.bbox = nil }
+                    } label: {
+                        Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(Sketch.ink)
+                            .frame(width: 36, height: 36).background(Sketch.card, in: Circle())
+                            .overlay(Circle().strokeBorder(Sketch.rule, lineWidth: 1))
+                    }
+                    .buttonStyle(BubblePressStyle()).accessibilityLabel("Clear filters")
+                }
+                if filters.bbox != nil {
+                    Button { withAnimation(.snappy) { filters.bbox = nil } } label: { FilterButton(title: "Map area", symbol: "map", value: "In map area") }
+                        .buttonStyle(BubblePressStyle()).accessibilityHint("Clears the map area")
+                }
+                Menu {
+                    Picker("Source", selection: $filters.platform) {
+                        Label("All sources", systemImage: "square.stack").tag(String?.none)
+                        Label("TikTok", systemImage: "music.note").tag(String?.some("tiktok"))
+                        Label("YouTube", systemImage: "play.rectangle.fill").tag(String?.some("youtube"))
+                    }
+                } label: {
+                    FilterButton(title: "Source", symbol: filters.platform.map(CommunityStyle.platformSymbol) ?? "square.stack",
+                                 value: filters.platform.map { $0 == "youtube" ? "YouTube" : "TikTok" })
+                }
+                if let categories = data?.categories, !categories.isEmpty {
+                    Menu {
+                        Picker("Category", selection: $filters.category) {
+                            Label("All categories", systemImage: "square.grid.2x2").tag(String?.none)
+                            ForEach(categories) { item in Label(item.title, systemImage: CommunityStyle.symbol(item.id)).tag(String?.some(item.id)) }
+                        }
+                    } label: {
+                        FilterButton(title: "Category", symbol: filters.category.map(CommunityStyle.symbol) ?? "square.grid.2x2",
+                                     value: filters.category.flatMap { id in categories.first { $0.id == id }?.title })
+                    }
+                }
+                if filters.city != nil, let areas = data?.areas, !areas.isEmpty {
+                    Menu {
+                        Picker("Area", selection: $filters.area) {
+                            Text("Whole city").tag(String?.none)
+                            ForEach(areas, id: \.self) { Text($0).tag(String?.some($0)) }
+                        }
+                    } label: {
+                        FilterButton(title: "Area", symbol: "square.dashed", value: filters.area)
+                    }
+                }
+                if mode == .videos { Menu {
+                    Picker("Show", selection: $filters.only) {
+                        Label("Everything", systemImage: "circle.grid.2x2").tag(String?.none)
+                        Label("Recommended places", systemImage: "hand.thumbsup.fill").tag(String?.some("recommended"))
+                        Label("Has travel tips", systemImage: "lightbulb.fill").tag(String?.some("tips"))
+                    }
+                } label: {
+                    FilterButton(title: "Show", symbol: filters.only == "tips" ? "lightbulb.fill" : filters.only == nil ? "line.3.horizontal.decrease" : "hand.thumbsup.fill",
+                                 value: ["recommended": "Recommended", "tips": "With tips"][filters.only ?? ""])
+                } }
+            }
+            .padding(.horizontal, 20).padding(.vertical, 1)
+        }
+        .scrollIndicators(.hidden)
+        .padding(.horizontal, -20)
+        .animation(.snappy, value: activeFilters)
+    }
+
+    // MARK: Results
+
     @ViewBuilder private var list: some View {
         if let data {
-            Text("\(data.videos.count) video\(data.videos.count == 1 ? "" : "s") · read once, shared with everyone. Nothing is pinned until you save it.")
-                .font(Sketch.text(12, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
-            if data.videos.isEmpty {
-                ContentUnavailableView("No videos match", systemImage: "play.slash", description: Text("Try another city, area or filter."))
+            // One quiet line instead of a big count: what's here, and how it's sorted.
+            HStack(spacing: 8) {
+                Text(countLine(data.videos)).font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                    .lineLimit(1).contentTransition(.numericText())
+                Spacer(minLength: 8)
+                sortMenu
             }
-            ForEach(data.videos) { video in
-                Button { onOpen(video.key) } label: { CommunityVideoCard(video: video) }.buttonStyle(BubblePressStyle())
+            filterBar
+            if data.videos.isEmpty {
+                ContentUnavailableView("No videos match", systemImage: "play.slash", description: Text("Try another city or clear a filter."))
+            }
+            LazyVStack(spacing: 12) {
+                ForEach(Array(data.videos.enumerated()), id: \.element.id) { index, video in
+                    Button { TrippyHaptics.light(); onOpen(video.key) } label: {
+                        if index == 0 && data.videos.count > 2 { CommunityFeatureCard(video: video) } else { CommunityVideoCard(video: video) }
+                    }
+                    .buttonStyle(BubblePressStyle())
+                }
+            }
+            if !data.videos.isEmpty {
+                Label("Each video is read once and shared with everyone. Nothing is pinned until you save it.", systemImage: "person.2")
+                    .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkFaint).padding(.top, 4)
             }
         } else if failed {
             ContentUnavailableView("Couldn’t load community videos", systemImage: "wifi.exclamationmark",
@@ -355,63 +518,29 @@ struct CommunityBrowseContent: View {
         }
     }
 
+    private func countLine(_ videos: [CommunityVideoSummary]) -> String {
+        let places = videos.reduce(0) { $0 + $1.counts.places }, tips = videos.reduce(0) { $0 + $1.counts.tips }
+        return ["\(videos.count) video\(videos.count == 1 ? "" : "s")", places > 0 ? "\(places) places" : nil, tips > 0 ? "\(tips) tips" : nil]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
+
     private var sortMenu: some View {
         Menu {
             Picker("Sort", selection: $filters.sort) {
-                Text("Most saved").tag(String?.none)
-                Text("Newest").tag(String?.some("newest"))
-                Text("Most places").tag(String?.some("places"))
-                Text("Most tips").tag(String?.some("tips"))
+                Label("Most saved", systemImage: "person.2").tag(String?.none)
+                Label("Newest", systemImage: "clock").tag(String?.some("newest"))
+                Label("Most places", systemImage: "mappin").tag(String?.some("places"))
+                Label("Most tips", systemImage: "lightbulb").tag(String?.some("tips"))
             }
         } label: {
-            Label(["newest": "Newest", "places": "Most places", "tips": "Most tips"][filters.sort ?? ""] ?? "Most saved", systemImage: "arrow.up.arrow.down")
-                .font(Sketch.text(12, "Bold", relativeTo: .caption)).foregroundStyle(Sketch.ink)
-                .padding(.horizontal, 10).frame(minHeight: 32).background(Sketch.paperDeep, in: Capsule())
+            HStack(spacing: 4) {
+                Text(["newest": "Newest", "places": "Most places", "tips": "Most tips"][filters.sort ?? ""] ?? "Most saved")
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 10, weight: .bold))
+            }
+            .font(Sketch.text(13, "Bold", relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+            .frame(minHeight: 44)
         }
         .accessibilityLabel("Sort videos")
-    }
-
-    private var filterChips: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 8) {
-                    Chip(title: "All", on: filters.platform == nil) { filters.platform = nil }
-                    Chip(title: "TikTok", symbol: "music.note", on: filters.platform == "tiktok", tint: CommunityStyle.tiktokBlack) { filters.platform = filters.platform == "tiktok" ? nil : "tiktok" }
-                    Chip(title: "YouTube", symbol: "play.rectangle.fill", on: filters.platform == "youtube", tint: CommunityStyle.youtubeRed) { filters.platform = filters.platform == "youtube" ? nil : "youtube" }
-                    Chip(title: "Recommended", symbol: "hand.thumbsup.fill", on: filters.only == "recommended") { filters.only = filters.only == "recommended" ? nil : "recommended" }
-                    Chip(title: "With tips", symbol: "lightbulb.fill", on: filters.only == "tips") { filters.only = filters.only == "tips" ? nil : "tips" }
-                }
-            }.scrollIndicators(.hidden)
-            if let cities = data?.cities, !cities.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        ForEach(cities, id: \.self) { name in
-                            Chip(title: name, symbol: "mappin", on: filters.city == name) { filters.city = filters.city == name ? nil : name; filters.area = nil }
-                        }
-                    }
-                }.scrollIndicators(.hidden)
-            }
-            if let areas = data?.areas, !areas.isEmpty, filters.city != nil {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        ForEach(areas, id: \.self) { name in
-                            Chip(title: name, symbol: "square.dashed", on: filters.area == name) { filters.area = filters.area == name ? nil : name }
-                        }
-                    }
-                }.scrollIndicators(.hidden)
-            }
-            if let categories = data?.categories, !categories.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        ForEach(categories) { item in
-                            Chip(title: item.title, symbol: CommunityStyle.symbol(item.id), on: filters.category == item.id, tint: CommunityStyle.tint(item.id)) {
-                                filters.category = filters.category == item.id ? nil : item.id
-                            }
-                        }
-                    }
-                }.scrollIndicators(.hidden)
-            }
-        }
     }
 
     private func load() async {
@@ -423,6 +552,243 @@ struct CommunityBrowseContent: View {
             withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) { data = result; failed = false }
         } catch is CancellationError {
         } catch { if data == nil { failed = true } }
+    }
+}
+
+/// Videos · Guides · Places · Map: icon over name, the open one sits on a sliding ink tile.
+private struct CommunityTabs: View {
+    @Binding var mode: CommunityBrowseContent.Mode
+    @Namespace private var space
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(CommunityBrowseContent.Mode.allCases, id: \.self) { item in
+                let on = mode == item
+                Button {
+                    TrippyHaptics.selection()
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.82)) { mode = item }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: item.symbol).font(.system(size: 13, weight: .semibold)).symbolVariant(on ? .fill : .none)
+                        Text(item.rawValue).font(Sketch.text(13, on ? "ExtraBold" : "SemiBold", relativeTo: .footnote))
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                    }
+                    .foregroundStyle(on ? Sketch.paper : Sketch.inkSoft)
+                    .frame(maxWidth: .infinity, minHeight: 40)
+                    .background {
+                        if on { Capsule().fill(Sketch.ink).matchedGeometryEffect(id: "communityTab", in: space) }
+                    }
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(item.rawValue)
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+        .padding(3)
+        .background(Capsule().fill(Sketch.card))
+        .overlay(Capsule().strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+    }
+}
+
+/// Every place the community's videos mention, as cards: most-covered first. Tap one for the videos that mention it.
+struct CommunityPlacesSection: View {
+    let baseURL: String
+    let token: String
+    let filters: CommunityFilters
+    var query = ""
+    let onOpen: (String) -> Void
+    @State private var map: CommunityMap?
+    @State private var open: String?
+    @State private var failed = false
+    @State private var limit = 30
+
+    private var places: [CommunityMapPin] {
+        let wanted = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (map?.places ?? [])
+            .filter { wanted.isEmpty || $0.name.localizedCaseInsensitiveContains(wanted) || $0.videos.contains { $0.title.localizedCaseInsensitiveContains(wanted) } }
+            .sorted { ($0.videos.count, $0.recommended, $1.name) > ($1.videos.count, $1.recommended, $0.name) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if map != nil {
+                let all = places
+                Text("\(all.count) place\(all.count == 1 ? "" : "s") · most-mentioned first")
+                    .font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                if all.isEmpty {
+                    ContentUnavailableView("No places match", systemImage: "mappin.slash", description: Text("Try another city or clear a filter."))
+                }
+                LazyVStack(spacing: 10) {
+                    ForEach(all.prefix(limit)) { pin in placeCard(pin) }
+                }
+                if all.count > limit {
+                    Button { withAnimation(.snappy) { limit += 30 } } label: {
+                        Text("Show \(min(30, all.count - limit)) more").font(Sketch.text(14, "Bold", relativeTo: .subheadline)).foregroundStyle(Sketch.ink)
+                            .frame(maxWidth: .infinity, minHeight: 44).background(Sketch.card, in: Capsule())
+                            .overlay(Capsule().strokeBorder(Sketch.rule, lineWidth: 1))
+                    }.buttonStyle(BubblePressStyle())
+                }
+            } else if failed {
+                ContentUnavailableView("Couldn’t load places", systemImage: "wifi.exclamationmark", description: Text("Check your connection and try again."))
+            } else {
+                ProgressView().frame(maxWidth: .infinity, minHeight: 200)
+            }
+        }
+        .animation(.snappy, value: open)
+        .task(id: "\(filters.city ?? "")|\(filters.platform ?? "")|\(filters.category ?? "")") { await load() }
+    }
+
+    private func placeCard(_ pin: CommunityMapPin) -> some View {
+        let expanded = open == pin.id
+        let colors = CommunityStyle.poster(pin.category)
+        return VStack(alignment: .leading, spacing: 0) {
+            Button { TrippyHaptics.selection(); open = expanded ? nil : pin.id } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: CommunityStyle.symbol(pin.category)).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(LinearGradient(colors: [colors.0, colors.1], startPoint: .topLeading, endPoint: .bottomTrailing), in: Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(pin.name).font(Sketch.text(15, "ExtraBold", relativeTo: .subheadline)).foregroundStyle(Sketch.ink).lineLimit(1)
+                        HStack(spacing: 12) {
+                            if !pin.city.isEmpty { Text(pin.city).font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).lineLimit(1) }
+                            CommunityMeta(symbol: "play.rectangle.fill", value: pin.videos.count)
+                            if pin.recommended > 0 { CommunityMeta(symbol: "hand.thumbsup.fill", value: pin.recommended, tint: Sketch.sage) }
+                            if pin.avoid > 0 { CommunityMeta(symbol: "hand.thumbsdown.fill", value: pin.avoid, tint: Sketch.coral) }
+                        }
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.down").font(.system(size: 12, weight: .bold)).foregroundStyle(Sketch.inkFaint)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                }
+                .padding(.vertical, 8).padding(.horizontal, 10).padding(.trailing, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(pin.name), \(pin.videos.count) video\(pin.videos.count == 1 ? "" : "s")")
+            .accessibilityHint(expanded ? "Hides its videos" : "Shows the videos that mention it")
+            if expanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(pin.videos, id: \.key) { mention in
+                        Divider().overlay(Sketch.rule)
+                        Button { onOpen(mention.key) } label: {
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: CommunityStyle.platformSymbol(mention.platform)).font(.system(size: 10, weight: .black))
+                                    .foregroundStyle(CommunityStyle.platformText(mention.platform)).frame(width: 22, height: 22)
+                                    .background(CommunityStyle.platformFill(mention.platform), in: Circle())
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(mention.title).font(Sketch.text(14, "Bold", relativeTo: .subheadline)).foregroundStyle(Sketch.ink).lineLimit(2)
+                                    if !mention.summary.isEmpty {
+                                        Text(mention.summary).font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft).lineLimit(2)
+                                    }
+                                    let meta = [CommunityStyle.handle(mention.author), mention.at.isEmpty ? nil : "at " + mention.at].compactMap { $0 }
+                                    if !meta.isEmpty { Text(meta.joined(separator: " · ")).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkFaint) }
+                                }
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold)).foregroundStyle(Sketch.inkFaint)
+                            }
+                            .multilineTextAlignment(.leading)
+                            .padding(.horizontal, 14).padding(.vertical, 12)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Sketch.rule.opacity(0.7), lineWidth: 0.7))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func load() async {
+        do {
+            let result: CommunityMap
+            if let demo = CommunityDemo.map { result = demo }
+            else { result = try await CommunityVideosClient.map(filters, baseURL: baseURL, token: token) }
+            withAnimation(.snappy) { map = result; failed = false; limit = 30 }
+        } catch is CancellationError {
+        } catch { if map == nil { failed = true } }
+    }
+}
+
+/// The app's map pin (round head, small tail) with the country code in it; a globe for "Everywhere".
+private struct CommunityCityPin: View {
+    let code: String?
+    var body: some View {
+        VStack(spacing: 0) {
+            Group {
+                if let code, code.count == 2 {
+                    Text(code.uppercased()).font(.system(size: 9, weight: .heavy, design: .rounded)).tracking(0.3)
+                } else {
+                    Image(systemName: "globe.europe.africa.fill").font(.system(size: 11, weight: .bold))
+                }
+            }
+            .foregroundStyle(.white)
+            .frame(width: 26, height: 26)
+            .background(Circle().fill(code == nil ? Sketch.sky : Sketch.coral))
+            .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
+            .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
+            Image(systemName: "arrowtriangle.down.fill").font(.system(size: 7))
+                .foregroundStyle(code == nil ? Sketch.sky : Sketch.coral).offset(y: -2)
+        }
+        .offset(y: 2)
+        .accessibilityHidden(true)
+    }
+}
+
+/// A selectable city: pin, name and how many videos cover it. Selected = ink card with paper text.
+private struct CityCard: View {
+    let title: String
+    let flag: String?
+    let count: Int?
+    let on: Bool
+    let action: () -> Void
+    var body: some View {
+        Button { TrippyHaptics.selection(); action() } label: {
+            // One line high: the flag (or globe) in a small disc, then name over count.
+            HStack(spacing: 10) {
+                CommunityCityPin(code: flag)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title).font(Sketch.text(14, "ExtraBold", relativeTo: .subheadline)).lineLimit(1)
+                        .foregroundStyle(on ? Sketch.paper : Sketch.ink)
+                    if let count {
+                        Text("\(count) video\(count == 1 ? "" : "s")").font(Sketch.text(11, "SemiBold", relativeTo: .caption2)).lineLimit(1)
+                            .foregroundStyle(on ? Sketch.paper.opacity(0.7) : Sketch.inkSoft)
+                    }
+                }
+            }
+            .padding(.leading, 10).padding(.trailing, 14)
+            .frame(height: 48)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(on ? Sketch.ink : Sketch.card))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(on ? Color.clear : Sketch.rule, lineWidth: 1))
+        }
+        .buttonStyle(BubblePressStyle())
+        .accessibilityLabel("\(title)\(count.map { ", \($0) videos" } ?? "")")
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+/// The face of one dropdown filter: icon, its value (or its name when unset) and a chevron. Set = ink fill.
+private struct FilterButton: View {
+    let title: String
+    let symbol: String
+    let value: String?
+    var body: some View {
+        let on = value != nil
+        HStack(spacing: 6) {
+            Image(systemName: symbol).font(.system(size: 12, weight: .semibold))
+            Text(value ?? title).font(Sketch.text(14, on ? "Bold" : "SemiBold", relativeTo: .subheadline)).lineLimit(1)
+            Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).opacity(0.6)
+        }
+        .foregroundStyle(on ? Sketch.paper : Sketch.ink)
+        .padding(.horizontal, 14).frame(height: 36)
+        .background(Capsule().fill(on ? Sketch.ink : Sketch.card))
+        .overlay(Capsule().strokeBorder(on ? Color.clear : Sketch.rule, lineWidth: 1))
+        .contentShape(Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(on ? "\(title): \(value ?? "")" : title)
     }
 }
 
@@ -536,46 +902,137 @@ struct CommunityMapSection: View {
     }
 }
 
+/// The poster beside each video: YouTube's still when there is one, otherwise artwork from the video's main
+/// category (TikTok covers are not kept). Platform mark in the corner, place count along the bottom.
+private struct CommunityPoster: View {
+    let video: CommunityVideoSummary
+    var large = false
+    var body: some View {
+        let category = video.categories.first?.id ?? "other"
+        let colors = CommunityStyle.poster(category)
+        ZStack {
+            LinearGradient(colors: [colors.0, colors.1], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Image(systemName: CommunityStyle.symbol(category))
+                .font(.system(size: large ? 120 : 64, weight: .bold)).foregroundStyle(.white.opacity(0.13))
+                .rotationEffect(.degrees(-12)).offset(x: large ? 90 : 18, y: large ? 10 : 14)
+            if let url = CommunityStyle.thumbnail(video.key, large: large) {
+                // Sized by the frame, never by the image: a filled still would otherwise grow the card.
+                Color.clear.overlay {
+                    AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.25))) { phase in
+                        if let image = phase.image { image.resizable().scaledToFill() } else { Color.clear }
+                    }
+                }
+                .clipped()
+            }
+            LinearGradient(colors: [.clear, .black.opacity(large ? 0.7 : 0.45)], startPoint: .center, endPoint: .bottom)
+        }
+        .overlay(alignment: .topLeading) {
+            Image(systemName: CommunityStyle.platformSymbol(video.platform)).font(.system(size: 10, weight: .black))
+                .foregroundStyle(.white).frame(width: 22, height: 22)
+                .background(video.platform == "youtube" ? CommunityStyle.youtubeRed : Color.black.opacity(0.55), in: Circle())
+                .padding(8)
+        }
+        .clipped()
+        .accessibilityHidden(true)
+    }
+}
+
+/// Icon + number, the quiet way to show what a video holds.
+private struct CommunityMeta: View {
+    let symbol: String
+    let value: Int
+    var tint: Color = Sketch.inkSoft
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
+            Text("\(value)").font(Sketch.text(12, "Bold", relativeTo: .caption)).monospacedDigit()
+        }.foregroundStyle(tint)
+    }
+}
+
+private func communityByline(_ video: CommunityVideoSummary) -> String {
+    [CommunityStyle.handle(video.author), video.city.isEmpty ? nil : video.city].compactMap { $0 }.joined(separator: " · ")
+}
+
+private func communityMetaRow(_ video: CommunityVideoSummary) -> some View {
+    HStack(spacing: 12) {
+        if video.counts.places > 0 { CommunityMeta(symbol: "mappin.and.ellipse", value: video.counts.places) }
+        if video.counts.recommended > 0 { CommunityMeta(symbol: "hand.thumbsup.fill", value: video.counts.recommended, tint: Sketch.sage) }
+        if video.counts.tips > 0 { CommunityMeta(symbol: "lightbulb.fill", value: video.counts.tips, tint: Sketch.ochre) }
+        if let savers = video.savers, savers > 1 { CommunityMeta(symbol: "person.2.fill", value: savers) }
+        Spacer(minLength: 0)
+        HStack(spacing: 4) {
+            ForEach(video.categories.prefix(3)) { item in
+                Circle().fill(CommunityStyle.tint(item.id)).frame(width: 7, height: 7)
+            }
+        }
+    }
+}
+
+/// One video in the list: poster on the left; creator, title, what it covers and a quiet meta row on the right.
 private struct CommunityVideoCard: View {
     let video: CommunityVideoSummary
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                CommunityStyle.platformBadge(video.platform)
-                Text([video.author, CommunityStyle.year(video.publishedAt), video.city].compactMap { $0 }.joined(separator: " · "))
-                    .font(Sketch.text(11, "SemiBold", relativeTo: .caption2)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
-            }
-            Text(video.title).font(Sketch.text(16, "ExtraBold", relativeTo: .headline)).foregroundStyle(Sketch.ink)
-                .multilineTextAlignment(.leading).lineLimit(3)
-            if let matched = video.matchedPlaces, !matched.isEmpty {
-                Label("Mentions " + matched.joined(separator: ", "), systemImage: "text.magnifyingglass")
-                    .font(Sketch.text(12, "Bold", relativeTo: .caption)).foregroundStyle(Sketch.sage).lineLimit(1)
-            }
-            if !video.topPlaces.isEmpty {
-                Text(video.topPlaces.joined(separator: " · ")).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.ink.opacity(0.8)).lineLimit(2)
-            }
-            HStack(spacing: 6) {
-                pill("📍 \(video.counts.places)")
-                if video.counts.recommended > 0 { pill("👍 \(video.counts.recommended)") }
-                if video.counts.tips > 0 { pill("💡 \(video.counts.tips)") }
-                if video.counts.avoid > 0 { pill("⚠️ \(video.counts.avoid)") }
-                Spacer(minLength: 0)
-                HStack(spacing: -4) {
-                    ForEach(video.categories.prefix(4)) { item in
-                        Image(systemName: CommunityStyle.symbol(item.id)).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                            .frame(width: 22, height: 22).background(CommunityStyle.tint(item.id), in: Circle())
-                            .overlay(Circle().strokeBorder(Sketch.card, lineWidth: 1.5))
-                    }
+        HStack(alignment: .top, spacing: 14) {
+            CommunityPoster(video: video)
+                .frame(width: 88, height: 116)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            VStack(alignment: .leading, spacing: 5) {
+                Text(communityByline(video)).font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
+                Text(video.title).font(Sketch.text(16, "ExtraBold", relativeTo: .headline)).foregroundStyle(Sketch.ink)
+                    .multilineTextAlignment(.leading).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                if let matched = video.matchedPlaces, !matched.isEmpty {
+                    Label(matched.joined(separator: ", "), systemImage: "text.magnifyingglass")
+                        .font(Sketch.text(13, "Bold", relativeTo: .footnote)).foregroundStyle(Sketch.sage).lineLimit(1)
+                } else if !video.topPlaces.isEmpty {
+                    Text(video.topPlaces.prefix(3).joined(separator: " · ")).font(Sketch.text(13, relativeTo: .footnote))
+                        .foregroundStyle(Sketch.inkSoft).lineLimit(1)
                 }
+                Spacer(minLength: 4)
+                communityMetaRow(video)
             }
+            .frame(minHeight: 116, alignment: .topLeading)
         }
-        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10).padding(.trailing, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Sketch.card))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Sketch.rule.opacity(0.7), lineWidth: 0.7))
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .accessibilityElement(children: .combine)
     }
-    private func pill(_ text: String) -> some View {
-        Text(text).font(Sketch.text(11, "Bold", relativeTo: .caption2)).foregroundStyle(Sketch.ink)
-            .padding(.horizontal, 8).padding(.vertical, 4).background(Sketch.paperDeep, in: Capsule())
+}
+
+/// The top video, larger: a wide poster with the title over it, then what it covers.
+private struct CommunityFeatureCard: View {
+    let video: CommunityVideoSummary
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            CommunityPoster(video: video, large: true)
+                .frame(height: 188)
+                .overlay(alignment: .bottomLeading) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("FEATURED").font(Sketch.text(10, "ExtraBold", relativeTo: .caption2)).tracking(1.2).foregroundStyle(.white.opacity(0.8))
+                        Text(video.title).font(Sketch.text(19, "ExtraBold", relativeTo: .title3)).foregroundStyle(.white)
+                            .multilineTextAlignment(.leading).lineLimit(2).shadow(color: .black.opacity(0.3), radius: 4, y: 1)
+                    }
+                    .padding(16)
+                }
+            VStack(alignment: .leading, spacing: 8) {
+                Text(communityByline(video)).font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
+                if !video.topPlaces.isEmpty {
+                    Text(video.topPlaces.prefix(4).joined(separator: " · ")).font(Sketch.text(14, relativeTo: .subheadline))
+                        .foregroundStyle(Sketch.ink.opacity(0.85)).lineLimit(2).multilineTextAlignment(.leading)
+                }
+                communityMetaRow(video)
+            }
+            .padding(14)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Sketch.card)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(Sketch.rule.opacity(0.7), lineWidth: 0.7))
+        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -594,7 +1051,11 @@ struct CommunityVideoDetailView: View {
     @State private var stanceFilter: String?
     @State private var expanded: Set<String> = []
     @State private var failed = false
+    @State private var confirmRemove = false
+    @State private var removing = false
+    @ObservedObject private var account = AccountSession.shared
     @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VerticalPage {
@@ -624,6 +1085,31 @@ struct CommunityVideoDetailView: View {
         }
         .background(Sketch.paper.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // Developers can take a video out of the community; the next share of it is read from the start.
+            if account.isAdmin, key.hasPrefix("tiktok:") || key.hasPrefix("url:") {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Remove from Community", systemImage: "trash", role: .destructive) { confirmRemove = true }
+                    } label: {
+                        if removing { ProgressView() } else { Image(systemName: "ellipsis.circle") }
+                    }
+                    .accessibilityLabel("Developer actions")
+                }
+            }
+        }
+        .confirmationDialog("Remove this video from Community?", isPresented: $confirmRemove, titleVisibility: .visible) {
+            Button("Remove", role: .destructive) {
+                removing = true
+                Task {
+                    let done = await SocialExtractionClient.forgetInCommunity(key: key, baseURL: baseURL, token: token)
+                    removing = false
+                    if done { TrippyHaptics.success(); dismiss() }
+                }
+            }
+        } message: {
+            Text("It disappears for everyone. If someone shares it again, it is read from the start.")
+        }
         .task(id: key) {
             if let preview, preview.key == key { video = preview; return }
             do { video = try await CommunityVideosClient.video(key, baseURL: baseURL, token: token) } catch { failed = true }
@@ -648,9 +1134,9 @@ struct CommunityVideoDetailView: View {
             if let link = URL(string: video.url) {
                 Button { openURL(link) } label: {
                     Label(video.platform == "youtube" ? "Watch on YouTube" : "Open on TikTok", systemImage: "play.fill")
-                        .font(Sketch.text(15, "Bold", relativeTo: .body)).foregroundStyle(.white)
+                        .font(Sketch.text(15, "Bold", relativeTo: .body)).foregroundStyle(CommunityStyle.platformText(video.platform))
                         .frame(maxWidth: .infinity, minHeight: 48)
-                        .background(video.platform == "youtube" ? CommunityStyle.youtubeRed : CommunityStyle.tiktokBlack, in: Capsule())
+                        .background(CommunityStyle.platformFill(video.platform), in: Capsule())
                 }.buttonStyle(BubblePressStyle())
             }
             if let actions {

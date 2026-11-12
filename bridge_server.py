@@ -661,6 +661,17 @@ class RequestHandler(BaseHTTPRequestHandler):
             except (ValueError,TypeError,json.JSONDecodeError) as error: self.send_json(422,{'error':'invalid_controls','field':str(error)[:40]})
             except Exception: self.send_json(503,{'error':'controls_unavailable'})
             return
+        if target.path=='/api/admin/community/delete' and method=='POST':
+            # A developer deleted this video: it leaves the community, and the next share reads it from the start.
+            try:
+                body=self.read_json(4000)
+                key=str(body.get('key') or '') or video_key(str(body.get('url') or ''),str(body.get('video_id') or ''))
+            except (ValueError,TypeError,AttributeError,json.JSONDecodeError): key=''
+            if not key or not (key.startswith('tiktok:') or key.startswith('url:')):
+                self.send_json(422,{'error':'invalid_video'}); return
+            removed=social_queue().forget(key)
+            usage.hit('admin:community_delete',self.client_id)
+            self.send_json(200,{'key':key,'removed':removed}); return
         if target.path=='/api/admin/planner-estimate':
             from trippy.planner.planner_config import estimate as estimate_plan
             query=parse_qs(target.query)
@@ -1083,6 +1094,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                       'evidence': evidence, 'images': images, 'video': video, 'audio': audio, 'frame_times': frame_times,
                       'expects_video': body.get('expects_video') is True, 'media_note': str(body.get('media_note') or '')[:120],
                       'sound': body.get('sound') if body.get('sound') in ('speech','mixed','music','silent') else None}
+            trip = body.get('trip') if isinstance(body.get('trip'), dict) else {}
+            trip = {k: str(trip.get(k) or '').strip()[:80] for k in ('city', 'country')}
+            if any(trip.values()): source['trip'] = trip
             from trippy.social.extract import richer
             stored = social_queue().cached(key)
             if stored is not None and not richer(source, stored):

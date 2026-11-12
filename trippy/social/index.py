@@ -97,6 +97,14 @@ class VideoIndex(_Store):
         """Changes whenever a post is added, re-read or saved again (for the community cache)."""
         return tuple(self._run("SELECT COUNT(*), COALESCE(MAX(indexed_at),0), COALESCE(SUM(readers),0) FROM videos")[0])
 
+    def remove(self, key):
+        """Forget a post entirely (a developer deleted it): the next share reads it from the start."""
+        if not key:
+            return False
+        existed = bool(self._run("SELECT 1 FROM videos WHERE key=?", (key,)))
+        self._run("DELETE FROM videos WHERE key=?", (key,))
+        return existed
+
     def count_reader(self, key):
         self._run("UPDATE videos SET readers=readers+1 WHERE key=?", (key,))
 
@@ -144,6 +152,10 @@ class PlaceTakes(_Store):
             self._run("""INSERT INTO video_places(place_id,video_key,tips) VALUES(?,?,?)
                          ON CONFLICT(place_id,video_key) DO UPDATE SET tips=excluded.tips""",
                       (place_id, video_key_, json.dumps(tips, ensure_ascii=False)))
+
+    def remove_video(self, video_key_):
+        """Drop the places and tips a deleted post contributed. People's own takes stay."""
+        self._run("DELETE FROM video_places WHERE video_key=?", (video_key_,))
 
     def summary(self, place_ids, voter=None):
         out = {}
