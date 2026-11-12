@@ -43,6 +43,9 @@ struct TrippyApp: App {
     }
 }
 
+/// Set once the banner has gone, for views that start listening after it did.
+@MainActor enum TrippyLaunchBanner { static var done = false }
+
 // Paint the launch banner before resolving the full app's view metadata.
 // The banner continues the system launch screen (same colour, same mark) and
 // animates on the render server, so it keeps moving while the app builds below.
@@ -69,11 +72,15 @@ private struct TrippyStartupHost: View {
             TrippyPerformance.mark("app.mount")
             mountApp = true
             // Long enough to read as an intro rather than a flash on warm launches.
-            try? await Task.sleep(for: .seconds(0.7))
+            try? await Task.sleep(for: .seconds(1.0))
             shownLongEnough = true
             finishIfReady()
+            #if DEBUG
+            // `-TrippySplashHold`: keep the banner up, for screenshots.
+            if UserDefaults.standard.bool(forKey: "TrippySplashHold") { return }
+            #endif
             // Never hold a usable app behind the banner.
-            try? await Task.sleep(for: .seconds(1.8))
+            try? await Task.sleep(for: .seconds(1.6))
             guard !Task.isCancelled else { return }
             dismiss()
         }
@@ -82,11 +89,18 @@ private struct TrippyStartupHost: View {
             finishIfReady()
         }
     }
-    private func finishIfReady() { if appReady && shownLongEnough { dismiss() } }
+    private func finishIfReady() {
+        #if DEBUG
+        if UserDefaults.standard.bool(forKey: "TrippySplashHold") { return }
+        #endif
+        if appReady && shownLongEnough { dismiss() }
+    }
     private func dismiss() {
         guard !ready else { return }
         TrippyPerformance.mark("splash.dismiss")
         withAnimation(.easeOut(duration: 0.32)) { ready = true }
+        TrippyLaunchBanner.done = true
+        NotificationCenter.default.post(name: .trippyLaunchBannerDone, object: nil)
     }
 }
 
@@ -1540,6 +1554,7 @@ private struct TripFlowStoredState: @unchecked Sendable {
 
 private extension Notification.Name {
     static let trippyAppReady = Notification.Name("trippy.app-ready")
+    static let trippyLaunchBannerDone = Notification.Name("trippy.launch-banner-done")
     static let trippyInitialGeneralMapDidRender = Notification.Name("trippy.initial-general-map-did-render")
 }
 
@@ -1563,6 +1578,8 @@ private struct TripFlowView: View {
     @State private var initialMapDidRender = false
     @State private var bridgeToken = ""
     @State private var showOnboarding = OnboardingStore.shouldShow
+    // A full-screen cover sits above the launch banner, so the tour waits for it.
+    @State private var launchBannerDone = false
     @State private var showAccountHub = false
     @State private var showWelcome = false
     @Namespace private var libraryTabSpace
@@ -1765,7 +1782,10 @@ private struct TripFlowView: View {
         ZStack {
             if didBootstrap {
                 appContent
-                    .fullScreenCover(isPresented: $showOnboarding) { OnboardingFlow { showOnboarding = false } }
+                    .fullScreenCover(isPresented: Binding(get: { showOnboarding && (launchBannerDone || TrippyLaunchBanner.done) }, set: { showOnboarding = $0 })) {
+                        OnboardingFlow { showOnboarding = false }
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: .trippyLaunchBannerDone)) { _ in launchBannerDone = true }
                     .background {
                         Color.clear.fullScreenCover(isPresented: $showWelcome) { WelcomeAfterSignIn { showWelcome = false } }
                     }
@@ -2206,11 +2226,8 @@ private struct TripFlowView: View {
 
     private var topBar: some View {
         HStack {
-            Image("BrandMark")
-                .resizable()
-                .scaledToFit()
+            TrippyLogo(size: 38)
                 .frame(width: 34, height: 38)
-                .accessibilityLabel("trippy")
             Spacer()
             Button {
                 withAnimation(.easeInOut(duration: 0.22)) { darkMode.toggle() }
@@ -12209,6 +12226,10 @@ struct PlanningLive: Equatable {
     var stops: Int? = nil
     var days: [DayPreview] = []
     var finished = false
+    /// Places streamed as they are found, best first within each batch.
+    var found: [PlanningFoundPlace] = []
+    /// Weighing close candidates against each other.
+    var comparing = false
 
     var placesFound: Int { searches.compactMap(\.count).reduce(0, +) }
 
@@ -12227,6 +12248,11 @@ struct PlanningLive: Equatable {
                 if !searches.contains(where: { $0.category == category }) { searches.append(Search(category: category)) }
             case "task_completed" where task.hasPrefix("places-"):
                 if let index = searches.firstIndex(where: { $0.category == String(task.dropFirst(7)) }) { searches[index].count = event["place_count"] as? Int ?? 0 }
+            case "fallback_completed" where task.hasPrefix("places-"):
+                if let index = searches.firstIndex(where: { $0.category == String(task.dropFirst(7)) }) {
+                    searches[index].count = (searches[index].count ?? 0) + (event["place_count"] as? Int ?? 0); searches[index].failed = false
+                }
+            case "judging_candidates": comparing = true
             case "task_failed" where task.hasPrefix("places-"):
                 if let index = searches.firstIndex(where: { $0.category == String(task.dropFirst(7)) }) { searches[index].failed = true }
             case "guide_started": composing = true; guideStarted = true
@@ -12235,6 +12261,11 @@ struct PlanningLive: Equatable {
             case "notes_completed":
                 notesStatus = event["status"] as? String; notesModel = event["model"] as? String; notesWritten = event["stops_written"] as? Int
             default: break
+            }
+        }
+        for event in diagnostics["events"] as? [[String: Any]] ?? [] {
+            for row in event["preview"] as? [[String: Any]] ?? [] {
+                if let place = PlanningFoundPlace(row), !found.contains(where: { $0.id == place.id }) { found.append(place) }
             }
         }
         if (json["step"] as? String) == "composing" { composing = true }
@@ -12277,6 +12308,14 @@ struct PlanningLive: Equatable {
         guard let stage = UserDefaults.standard.string(forKey: "TrippyPlanningDemo") else { return nil }
         var live = PlanningLive(connected: true, startedAt: .now.addingTimeInterval(-38), libraryItems: 4, tripDays: 3, travelers: 2, plannedSearches: 3)
         live.searches = [Search(category: "attraction", count: 12), Search(category: "food", count: stage == "search" ? nil : 10)]
+        live.found = [
+            ("Colosseum", "attraction", "Celio", 41.8902, 12.4922, 4.7, 412_000), ("Pantheon", "attraction", "Pigna", 41.8986, 12.4769, 4.8, 268_000),
+            ("Trevi Fountain", "attraction", "Trevi", 41.9009, 12.4833, 4.7, 455_000), ("Roscioli Salumeria", "food", "Regola", 41.8937, 12.4740, 4.5, 9_800),
+            ("Pizzarium", "food", "Prati", 41.9068, 12.4466, 4.6, 7_200), ("Sant'Eustachio Il Caffè", "coffee", "Sant'Eustachio", 41.8983, 12.4755, 4.4, 14_100),
+            ("Tazza d'Oro", "coffee", "Pigna", 41.8994, 12.4772, 4.5, 11_300), ("Trattoria Da Enzo al 29", "food", "Trastevere", 41.8885, 12.4769, 4.6, 12_900),
+            ("Villa Borghese", "nature", "Pinciano", 41.9142, 12.4921, 4.7, 98_000), ("Borghese Gallery", "museum", "Pinciano", 41.9142, 12.4922, 4.8, 41_000),
+        ].enumerated().map { PlanningFoundPlace(id: "demo-\($0.offset)", name: $0.element.0, category: $0.element.1, area: $0.element.2,
+                                                 latitude: $0.element.3, longitude: $0.element.4, rating: $0.element.5, reviews: $0.element.6) }
         if stage == "search" { return live }
         live.searches.append(Search(category: "coffee", count: 6))
         live.composing = true; live.guideStarted = true; live.guideListings = 99; live.guideMatched = 4; live.notesStarted = true
@@ -12299,8 +12338,8 @@ private enum PlanningStage: Int, CaseIterable, Identifiable {
     var id: Int { rawValue }
     var title: String {
         switch self {
-        case .connect: "Connect"; case .library: "Your saved places"; case .search: "Google Maps"
-        case .guide: "Local guide"; case .compose: "Build the days"; case .notes: "Write the notes"; case .save: "Save to your trip"
+        case .connect: "Connect"; case .library: "Your saved places"; case .search: "Find places"
+        case .guide: "Local tips"; case .compose: "Build the days"; case .notes: "Write the notes"; case .save: "Save to your trip"
         }
     }
     var symbol: String {
@@ -12370,30 +12409,38 @@ private struct ResearchProgressScreen: View {
         return .connect
     }
 
+    /// What is happening, in the traveller's terms: no service or model names.
     private func detail(_ stage: PlanningStage) -> String {
         switch stage {
-        case .connect: return live.connected || currentStep >= 2 ? "Planning service is on it" : "Reaching the planning service…"
-        case .library: return live.libraryItems > 0 ? "\(live.libraryItems) saved \(live.libraryItems == 1 ? "place goes" : "places go") in first" : "Starting fresh: no saved places for here yet"
+        case .connect: return live.connected || currentStep >= 2 ? "Your brief is in" : "Sending your brief…"
+        case .library:
+            if live.libraryItems > 0 { return "Starting with the \(live.libraryItems) \(live.libraryItems == 1 ? "place" : "places") you saved here" }
+            return "Nothing saved here yet, so we start fresh"
         case .search:
+            if let active = live.searches.last(where: { $0.count == nil && !$0.failed }) {
+                let kind = PlanningLive.categoryTitle(active.category).lowercased()
+                return live.placesFound > 0 ? "Finding the best \(kind) for you. \(live.placesFound) places so far." : "Finding the best \(kind) for you…"
+            }
+            if live.comparing { return "Weighing close calls against each other" }
             if live.placesFound > 0 { return "\(live.placesFound) places to choose from" }
             return "Looking for what fits your interests…"
         case .guide:
             if let listings = live.guideListings {
-                if listings == 0 { return "No Wikivoyage article for this place" }
-                return "\(listings) Wikivoyage tips · \(live.guideMatched ?? 0) about your stops"
+                if listings == 0 { return "No local tips for this place yet" }
+                return (live.guideMatched ?? 0) > 0 ? "\(live.guideMatched ?? 0) local tips about your stops" : "Local tips read, none about your stops"
             }
-            return state(.guide) == .skipped ? "Not used for this plan" : "Reading Wikivoyage for local knowledge…"
+            return state(.guide) == .skipped ? "Not needed for this plan" : "Reading local tips for the areas you'll be in…"
         case .compose:
             if let stops = live.stops, !live.days.isEmpty { return "\(stops) stops over \(live.days.count) \(live.days.count == 1 ? "day" : "days")" }
-            return "Grouping nearby places, meals at meal times"
+            return "Grouping nearby places into days, meals at meal times"
         case .notes:
             switch live.notesStatus {
-            case "written": return "Day titles and a reason for each stop" + (live.notesModel.map { " · \(modelName($0))" } ?? "")
-            case "failed": return "Free Gemini quota is busy; saved without notes"
+            case "written": return "Every day has a title and a reason for each stop"
+            case "failed": return "Saved without notes this time"
             case .some: return "Skipped for this plan"
-            case nil: return live.finished ? "Notes are off on this service" : "Gemini writes every day in one go…"
+            case nil: return live.finished ? "No notes for this plan" : "Writing why each stop is worth it…"
             }
-        case .save: return saved ? (partial ? "Saved · a few things to check" : "Saved to your trip") : "Keeping your edits and the new plan"
+        case .save: return saved ? (partial ? "Saved, with a few things to check" : "Saved to your trip") : "Keeping your edits and the new plan"
         }
     }
     private func modelName(_ id: String) -> String {
@@ -12414,23 +12461,16 @@ private struct ResearchProgressScreen: View {
         case .save: return "Almost there"
         }
     }
-    private var eyebrow: String {
-        var parts = ["PLANNING"]
-        if live.tripDays > 0 { parts.append("\(live.tripDays) \(live.tripDays == 1 ? "DAY" : "DAYS")") }
-        if live.travelers > 0 { parts.append("\(live.travelers) \(live.travelers == 1 ? "TRAVELLER" : "TRAVELLERS")") }
-        return parts.joined(separator: " · ")
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 topBar
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(eyebrow).font(Sketch.eyebrow).tracking(1.2).foregroundStyle(Sketch.inkSoft)
-                    Text(city).font(Sketch.display(.largeTitle, weight: .bold)).fixedSize(horizontal: false, vertical: true)
-                }.accessibilityElement(children: .combine)
                 ticket
                 if !live.days.isEmpty && (saved || live.finished) { daysPreview }
+                if !live.found.isEmpty && !saved {
+                    PlanningFoundFeed(found: live.found, running: running && error == nil)
+                    PlanningHeadToHead(found: live.found)
+                }
                 timeline
                 if let error { errorCard(error) }
                 if saved, let diagnostic {
@@ -12455,8 +12495,8 @@ private struct ResearchProgressScreen: View {
 
     private var topBar: some View {
         HStack(spacing: 10) {
-            TrippyIconView(icon: .suitcase, size: 20, weight: 2, animated: running).foregroundStyle(Sketch.clay)
-            Text("trippy").font(Sketch.display(.headline, weight: .bold))
+            TrippyLogo(size: 30, idle: running && error == nil)
+            TrippyWordmarkText(size: 21)
             Spacer()
             Button(action: onClose) {
                 Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Sketch.ink)
@@ -12469,38 +12509,39 @@ private struct ResearchProgressScreen: View {
     // MARK: ticket — the live card
     private var ticket: some View {
         VStack(spacing: 0) {
-            (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(alignment: .center, spacing: 14))) {
+            (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(alignment: .top, spacing: 14))) {
+                // The journey animation lives here while the plan is made.
                 ZStack {
-                    Circle().fill(Sketch.coral.opacity(0.14))
-                    if running && error == nil && !reduceMotion {
-                        TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
-                            let angle = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 6) / 6 * 360
-                            Circle().trim(from: 0, to: 0.22).stroke(Sketch.coral, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                                .rotationEffect(.degrees(angle)).padding(2)
-                        }
-                    }
-                    DoodleView(doodle: doodle, tint: Sketch.coral, lineWidth: 2).padding(14)
+                    RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Sketch.paperDeep)
+                    TrippyJourneyAnimation(animate: running && error == nil && !saved).padding(4)
                     if saved {
                         Image(systemName: "checkmark").font(.system(size: 12, weight: .heavy)).foregroundStyle(Sketch.paper)
-                            .frame(width: 24, height: 24).background(Circle().fill(Sketch.sage))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                            .frame(width: 26, height: 26).background(Circle().fill(Sketch.sage))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(6)
                             .transition(.scale.combined(with: .opacity))
                     }
                 }
-                .frame(width: 72, height: 72).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 5) {
-                    if typeSize.isAccessibilitySize { clock }
+                .frame(width: 104, height: 104)
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
                     Text(headline).font(Sketch.display(.title2, weight: .bold)).fixedSize(horizontal: false, vertical: true)
                         .contentTransition(.opacity)
-                        .padding(.trailing, typeSize.isAccessibilitySize ? 0 : 40)
                     Text(detail(currentStage)).lineLimit(3)
-                        .font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                        .font(Sketch.text(14, relativeTo: .subheadline)).foregroundStyle(Sketch.inkSoft)
                         .fixedSize(horizontal: false, vertical: true)
+                        .contentTransition(.opacity)
+                    Spacer(minLength: 4)
+                    HStack(spacing: 8) {
+                        if live.travelers > 0 { tripBox(symbol: "person.2.fill", value: "\(live.travelers)", label: live.travelers == 1 ? "traveller" : "travellers") }
+                        if live.tripDays > 0 { tripBox(symbol: nil, value: "\(live.tripDays)", label: live.tripDays == 1 ? "day" : "days") }
+                        Spacer(minLength: 0)
+                        clock
+                    }
                 }
-                Spacer(minLength: 0)
+                .frame(minHeight: typeSize.isAccessibilitySize ? nil : 104)
             }
             .padding(16)
-            .overlay(alignment: .topTrailing) { if !typeSize.isAccessibilitySize { clock.padding(12) } }
             perforation
             let stats = Group {
                 StudioStat(value: live.placesFound > 0 ? "\(live.places ?? live.placesFound)" : "–", label: "places found")
@@ -12520,6 +12561,17 @@ private struct ResearchProgressScreen: View {
     private var perforation: some View {
         TearLine().stroke(Sketch.rule, style: StrokeStyle(lineWidth: 1.4, lineCap: .round, dash: [1, 6]))
             .frame(height: 2).padding(.horizontal, 16).accessibilityHidden(true)
+    }
+    /// A small, quiet box for one trip fact: travellers or days.
+    private func tripBox(symbol: String?, value: String, label: String) -> some View {
+        HStack(spacing: 5) {
+            if let symbol { Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(Sketch.inkSoft) }
+            Text(value).font(Sketch.text(14, "Bold", relativeTo: .footnote)).monospacedDigit()
+            if symbol == nil { Text(label).font(Sketch.text(12, "Medium", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft) }
+        }
+        .padding(.horizontal, 9).frame(height: 28)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Sketch.paperDeep))
+        .accessibilityElement(children: .ignore).accessibilityLabel("\(value) \(label)")
     }
     /// Running time, top-right of the ticket.
     @ViewBuilder private var clock: some View {

@@ -253,6 +253,7 @@ struct OnboardingFlow: View {
 struct OnboardingBackdrop: View {
     let step: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var scheme
     private var tints: [Color] {
         switch step {
         case 1: [Sketch.coral, Sketch.plum]
@@ -268,9 +269,11 @@ struct OnboardingBackdrop: View {
             let t = reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate
             ZStack {
                 Sketch.paper
-                Circle().fill(tints[0].opacity(0.22)).frame(width: 420).blur(radius: 70)
+                // Warm pigments over near-black read as brown smudges, so dark mode
+                // keeps them faint and lets the cooler second glow lead.
+                Circle().fill(tints[0].opacity(scheme == .dark ? 0.10 : 0.22)).frame(width: 420).blur(radius: 70)
                     .offset(x: -120 + 30 * sin(t / 5), y: -260 + 20 * cos(t / 6))
-                Circle().fill(tints[1].opacity(0.18)).frame(width: 380).blur(radius: 80)
+                Circle().fill(tints[1].opacity(scheme == .dark ? 0.12 : 0.18)).frame(width: 380).blur(radius: 80)
                     .offset(x: 140 + 25 * cos(t / 7), y: 300 + 30 * sin(t / 5))
             }
             .animation(.easeInOut(duration: 0.8), value: step)
@@ -301,6 +304,8 @@ private struct WelcomeStep: View {
                                 dark: scheme == .dark, reduceMotion: reduceMotion)
                     .frame(width: globe, height: globe)
                     .shadow(color: Sketch.sky.opacity(0.25), radius: 30, y: 16)
+                    // Without its texture the sphere renders plain white; fade in once it's painted.
+                    .opacity(texture == nil ? 0 : 1).animation(.easeOut(duration: 0.4), value: texture == nil)
                     .accessibilityHidden(true)
                 // Hand-drawn flight arcs looping round the globe.
                 FlightArcs().trim(from: 0, to: drawn)
@@ -318,8 +323,7 @@ private struct WelcomeStep: View {
             .frame(height: globe * 1.22)
             Spacer(minLength: 8)
             VStack(spacing: 10) {
-                Image("BrandWordmark").resizable().scaledToFit().frame(height: 34).accessibilityLabel("Trippy")
-                    .colorMultiply(Sketch.ink)
+                Image(scheme == .dark ? "BrandWordmarkDark" : "BrandWordmark").resizable().scaledToFit().frame(height: 34).accessibilityLabel("Trippy")
                 Text("Everything you save, every trip you plan, every place you’ve been. On one map.")
                     .font(Sketch.display(.title3, weight: .semibold)).multilineTextAlignment(.center)
                     .foregroundStyle(Sketch.ink).fixedSize(horizontal: false, vertical: true)
@@ -396,7 +400,7 @@ struct BriefCardStep: View {
     @State private var appear = false
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 28) {
             GeometryReader { proxy in
                 let aspect: CGFloat = 2.05
                 let width = min(proxy.size.width - 96, (proxy.size.height - 8) / aspect)
@@ -404,10 +408,12 @@ struct BriefCardStep: View {
                     .scaleEffect(appear ? 1 : 0.94).offset(y: appear ? 0 : 20)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            VStack(spacing: 10) {
+            VStack(spacing: 0) {
                 Text(card.eyebrow).font(Sketch.eyebrow).tracking(1.6).foregroundStyle(card.tint)
+                    .padding(.bottom, 12)
                 Text(card.title).font(Sketch.display(.largeTitle, weight: .bold)).multilineTextAlignment(.center).foregroundStyle(Sketch.ink)
-                    .lineSpacing(-2).fixedSize(horizontal: false, vertical: true)
+                    .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 14)
                 Text(card.body).font(Sketch.text(17, "Medium", relativeTo: .body)).multilineTextAlignment(.center).foregroundStyle(Sketch.inkSoft)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -415,7 +421,7 @@ struct BriefCardStep: View {
             .dynamicTypeSize(...DynamicTypeSize.accessibility1)
             .opacity(appear ? 1 : 0)
         }
-        .padding(.bottom, 8)
+        .padding(.bottom, 28)
         .accessibilityElement(children: .combine)
         .onAppear {
             withAnimation(reduceMotion ? nil : .spring(response: 0.7, dampingFraction: 0.82)) { appear = true }
@@ -429,14 +435,27 @@ struct BriefCardStep: View {
             switch card.demo {
             case .share: ShareStage(tint: card.tint, width: width, height: height)
             case .plan: PlanDayDemo(tint: card.tint).clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous).strokeBorder(Sketch.ink, lineWidth: 4))
+                    .overlay(PhoneBezel(corner: corner))
             case .world: WorldDemo(tint: card.tint).clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous).strokeBorder(Sketch.ink, lineWidth: 4))
+                    .overlay(PhoneBezel(corner: corner))
             }
         }
         .frame(width: width, height: height)
         .shadow(color: .black.opacity(card.demo == .share ? 0 : 0.18), radius: 22, y: 14)
         .accessibilityHidden(true)
+    }
+}
+
+/// A device frame that reads as hardware in both appearances: near-black
+/// in light mode, and a dark frame with a faint edge in dark mode, instead of
+/// an ivory outline that glares against the dark backdrop.
+private struct PhoneBezel: View {
+    let corner: CGFloat
+    @Environment(\.colorScheme) private var scheme
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: corner, style: .continuous)
+        shape.strokeBorder(Color(white: scheme == .dark ? 0.16 : 0.12), lineWidth: 4)
+            .overlay(shape.strokeBorder(.white.opacity(scheme == .dark ? 0.14 : 0), lineWidth: 0.75))
     }
 }
 
@@ -1129,8 +1148,8 @@ struct AccessStep: View {
             }
             .foregroundStyle(dark ? Sketch.paper : Sketch.ink)
             .frame(maxWidth: .infinity, minHeight: 50)
-            .background(Capsule().fill(dark ? Sketch.ink : Sketch.paper))
-            .overlay(Capsule().strokeBorder(dark ? .clear : Sketch.rule, lineWidth: 1))
+            .background(Capsule().fill(dark ? Sketch.ink : Sketch.card))
+            .overlay(Capsule().strokeBorder(dark ? .clear : Sketch.ink.opacity(0.2), lineWidth: 1))
         }
         .buttonStyle(SketchPressStyle())
     }

@@ -71,6 +71,9 @@
 		C7000000000000000000F004 /* DirectionsMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F004 /* DirectionsMode.swift */; };
 		C7000000000000000000F005 /* ZoomAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F005 /* ZoomAdd.swift */; };
 		C70000000000000000005A1C /* LaunchSplash.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000005A1C /* LaunchSplash.swift */; };
+		C70000000000000000005A1F /* PlanningLiveFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000005A1F /* PlanningLiveFeed.swift */; };
+		C70000000000000000005A1E /* LaunchConcepts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000005A1E /* LaunchConcepts.swift */; };
+		C70000000000000000005A1D /* BrandLogo.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000005A1D /* BrandLogo.swift */; };
 		C7000000000000000000F001 /* PlaceTakes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8000000000000000000F001 /* PlaceTakes.swift */; };
 		C700000000000000000000C5 /* CostCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000C5 /* CostCalculator.swift */; };
 		C700000000000000000000C6 /* cost-model.json in Resources */ = {isa = PBXBuildFile; fileRef = C800000000000000000000C6 /* cost-model.json */; };
@@ -166,6 +169,9 @@
 		C8000000000000000000F004 /* DirectionsMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectionsMode.swift; sourceTree = "<group>"; };
 		C8000000000000000000F005 /* ZoomAdd.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomAdd.swift; sourceTree = "<group>"; };
 		C80000000000000000005A1C /* LaunchSplash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchSplash.swift; sourceTree = "<group>"; };
+		C80000000000000000005A1F /* PlanningLiveFeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanningLiveFeed.swift; sourceTree = "<group>"; };
+		C80000000000000000005A1E /* LaunchConcepts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchConcepts.swift; sourceTree = "<group>"; };
+		C80000000000000000005A1D /* BrandLogo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandLogo.swift; sourceTree = "<group>"; };
 		C8000000000000000000F001 /* PlaceTakes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceTakes.swift; sourceTree = "<group>"; };
 		C800000000000000000000C5 /* CostCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CostCalculator.swift; sourceTree = "<group>"; };
 		C800000000000000000000B9 /* AccountData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountData.swift; sourceTree = "<group>"; };
@@ -278,6 +284,9 @@
 				C8000000000000000000F001 /* PlaceTakes.swift */,
 				C8000000000000000000F005 /* ZoomAdd.swift */,
 				C80000000000000000005A1C /* LaunchSplash.swift */,
+				C80000000000000000005A1F /* PlanningLiveFeed.swift */,
+				C80000000000000000005A1E /* LaunchConcepts.swift */,
+				C80000000000000000005A1D /* BrandLogo.swift */,
 				C8000000000000000000F004 /* DirectionsMode.swift */,
 				C8000000000000000000F003 /* LibraryWheel.swift */,
 				C8000000000000000000F0F1 /* VideoReading.swift */,
@@ -485,6 +494,9 @@
 				C7000000000000000000F001 /* PlaceTakes.swift in Sources */,
 				C7000000000000000000F005 /* ZoomAdd.swift in Sources */,
 				C70000000000000000005A1C /* LaunchSplash.swift in Sources */,
+				C70000000000000000005A1F /* PlanningLiveFeed.swift in Sources */,
+				C70000000000000000005A1E /* LaunchConcepts.swift in Sources */,
+				C70000000000000000005A1D /* BrandLogo.swift in Sources */,
 				C7000000000000000000F004 /* DirectionsMode.swift in Sources */,
 				C7000000000000000000F003 /* LibraryWheel.swift in Sources */,
 				C7000000000000000000F0F1 /* VideoReading.swift in Sources */,

@@ -348,6 +348,7 @@ def progress(job_id, step, detail):
         job=state.jobs[job_id]
         diagnostics=job.setdefault('diagnostics',{'events':[]})
         if step in {'pipeline_started','task_started','task_completed','task_failed','phase_skipped',
+                    'fallback_completed','famous_added','judging_candidates',
                     'guide_started','guide_completed','notes_started','notes_completed'}:
             event={**detail,'event':step,'elapsed_seconds':round(time.time()-job.get('started_at',time.time()),1)}
             diagnostics['events']=(diagnostics.get('events',[])+[event])[-100:]

@@ -491,7 +491,9 @@ struct WorldDemo: View {
     private var continentRows: [(String, Int, Int)] {
         let codes = Set(visits.compactMap { $0.countryCode?.uppercased() })
         let byContinent = Dictionary(grouping: codes, by: { WorldContinentCatalog.name(for: $0) })
-        return byContinent.keys.filter { $0 != "Other" }.sorted { byContinent[$0]!.count > byContinent[$1]!.count }.prefix(3)
+        // Ties break by name so the rows never swap places between renders.
+        return byContinent.keys.filter { $0 != "Other" }
+            .sorted { (byContinent[$0]!.count, $1) > (byContinent[$1]!.count, $0) }.prefix(3)
             .map { ($0, byContinent[$0]!.count, WorldContinentCatalog.count($0)) }
     }
 

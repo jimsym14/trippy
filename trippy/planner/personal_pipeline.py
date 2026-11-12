@@ -17,6 +17,30 @@ from .search_intent import (
 VERSION = 'personal-places-v1'
 
 
+
+def place_preview(places, limit=8):
+    """A light sketch of newly found places for the app's live planning screen.
+
+    Only what the app shows while it waits: identity, category, a short area,
+    the rating and the venue's own website (the app looks up a free photo from it).
+    The best-rated come first so the first cards are worth looking at.
+    """
+    def score(p):
+        rating = p.get('rating') or {}
+        return (rating.get('value') or 0) * min(1, ((rating.get('review_count') or 0) / 200) ** 0.5)
+    out = []
+    for p in sorted(places, key=score, reverse=True)[:limit]:
+        coords = p.get('coordinates') or {}
+        rating = p.get('rating') or {}
+        address = (p.get('address') or '').split(',')
+        out.append({'id': p.get('id'), 'name': p.get('name'), 'category': p.get('category'),
+                    # The first address part without numbers is usually the neighbourhood.
+                    'area': next((a.strip() for a in address[1:-2] if a.strip() and not any(ch.isdigit() for ch in a)), None),
+                    'latitude': coords.get('latitude'), 'longitude': coords.get('longitude'),
+                    'rating': rating.get('value'), 'reviews': rating.get('review_count'),
+                    'website': p.get('official_url'), 'image_url': p.get('image_url')})
+    return out
+
 def missing_tasks(brief, graph, intent=None):
     """Return discovery tasks, expanded by any inferred categories from intent.
 
@@ -179,7 +203,8 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
                 batches.append(store.run(task['id'], {'task':task,'brief':brief},
                     lambda:validate_batch(place_provider.discover(task, brief))))
                 completed.append(task['id'])
-                progress('task_completed', {'task':task['id'], 'stage':'place_retrieval', 'place_count':len(batches[-1]['places'])})
+                progress('task_completed', {'task':task['id'], 'stage':'place_retrieval', 'place_count':len(batches[-1]['places']),
+                                            'preview':place_preview(batches[-1]['places'])})
                 continue
             except Exception as exc:
                 failure = failure_details(exc, task=task['id'], stage='place_retrieval')
@@ -192,7 +217,8 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
             batches.append(store.run(task['id'] + '-fallback', {'task':task,'brief':brief,'provider':fallback_provider.name},
                 lambda:validate_batch(fallback_provider.discover(task, brief))))
             completed.append(task['id'] + '-fallback')
-            progress('fallback_completed', {'task':task['id'], 'provider':fallback_provider.name, 'place_count':len(batches[-1]['places'])})
+            progress('fallback_completed', {'task':task['id'], 'provider':fallback_provider.name, 'place_count':len(batches[-1]['places']),
+                                            'preview':place_preview(batches[-1]['places'])})
         except Exception as exc:
             failure = failure_details(exc, task=task['id'] + '-fallback', stage='place_fallback')
             failures.append(failure); progress('task_failed', failure)
@@ -215,7 +241,8 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
             if items:
                 extra = validate_batch(famous.enrich(batches, items, wanted))
                 if extra['places']: batches.append(extra)
-                progress('famous_added', {'places': len(extra['places']), 'known': len(items)})
+                progress('famous_added', {'places': len(extra['places']), 'known': len(items),
+                                          'preview': place_preview(extra['places'])})
     planning_brief = brief
     if intent and intent.area_hint:
         from .plan_engine import key

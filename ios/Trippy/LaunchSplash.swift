@@ -24,27 +24,51 @@ final class TrippySplashView: UIView {
     private struct Palette {
         let background, sun, glow, cloud, trail, plane, far, mid, front, word: UIColor
         let cloudAlpha: Float
+        /// Night look for dark mode. Charcoal matches the app's dark paper. DEBUG `-TrippySplashTheme dusk|forest` previews the alternatives.
+        static var nightTheme: String {
+            #if DEBUG
+            if let theme = UserDefaults.standard.string(forKey: "TrippySplashTheme") { return theme }
+            #endif
+            return "charcoal"
+        }
         static func make(dark: Bool) -> Palette {
-            dark ? Palette(
-                background: UIColor(hex: 0x121F1A), sun: UIColor(hex: 0xFCBA3D), glow: UIColor(hex: 0xFCBA3D, alpha: 0.22),
-                cloud: .white, trail: UIColor(hex: 0xFFCDBD, alpha: 0.55), plane: UIColor(hex: 0xFFCDBD),
-                far: UIColor(hex: 0x1A2C25), mid: UIColor(hex: 0x213A30), front: UIColor(hex: 0x2B4A3D),
-                word: UIColor(hex: 0xF8F3EC), cloudAlpha: 0.07)
-            : Palette(
-                background: UIColor(hex: 0xF8F4EC), sun: UIColor(hex: 0xFFBE55), glow: UIColor(hex: 0xFFBE55, alpha: 0.30),
-                cloud: UIColor(hex: 0xFDD3C6), trail: UIColor(hex: 0xFB644F, alpha: 0.45), plane: UIColor(hex: 0xFB644F),
-                far: UIColor(hex: 0xFBD9CF), mid: UIColor(hex: 0xFCBA3D), front: UIColor(hex: 0xFB644F),
-                word: UIColor(hex: 0x102A22), cloudAlpha: 0.85)
+            guard dark else {
+                return Palette(
+                    background: UIColor(hex: 0xF8F4EC), sun: UIColor(hex: 0xFFBE55), glow: UIColor(hex: 0xFFBE55, alpha: 0.30),
+                    cloud: UIColor(hex: 0xFDD3C6), trail: UIColor(hex: 0xFB644F, alpha: 0.45), plane: UIColor(hex: 0xFB644F),
+                    far: UIColor(hex: 0xFBD9CF), mid: UIColor(hex: 0xFCBA3D), front: UIColor(hex: 0xFB644F),
+                    word: UIColor(hex: 0x102A22), cloudAlpha: 0.85)
+            }
+            switch nightTheme {
+            case "charcoal": // the app's own dark paper, with ember hills
+                return Palette(
+                    background: UIColor(hex: 0x161513), sun: UIColor(hex: 0xFCBA3D), glow: UIColor(hex: 0xFB8A4F, alpha: 0.20),
+                    cloud: .white, trail: UIColor(hex: 0xFFCDBD, alpha: 0.55), plane: UIColor(hex: 0xFFCDBD),
+                    far: UIColor(hex: 0x231F1B), mid: UIColor(hex: 0x352620), front: UIColor(hex: 0x5A2F26),
+                    word: UIColor(hex: 0xF1ECE2), cloudAlpha: 0.06)
+            case "dusk": // deep blue night, warm sun
+                return Palette(
+                    background: UIColor(hex: 0x131A2C), sun: UIColor(hex: 0xFCBA3D), glow: UIColor(hex: 0xFB8A4F, alpha: 0.24),
+                    cloud: .white, trail: UIColor(hex: 0xFFCDBD, alpha: 0.6), plane: UIColor(hex: 0xFFCDBD),
+                    far: UIColor(hex: 0x1C2540), mid: UIColor(hex: 0x27304F), front: UIColor(hex: 0x3A3456),
+                    word: UIColor(hex: 0xF8F3EC), cloudAlpha: 0.07)
+            default: // forest
+                return Palette(
+                    background: UIColor(hex: 0x121F1A), sun: UIColor(hex: 0xFCBA3D), glow: UIColor(hex: 0xFCBA3D, alpha: 0.22),
+                    cloud: .white, trail: UIColor(hex: 0xFFCDBD, alpha: 0.55), plane: UIColor(hex: 0xFFCDBD),
+                    far: UIColor(hex: 0x1A2C25), mid: UIColor(hex: 0x213A30), front: UIColor(hex: 0x2B4A3D),
+                    word: UIColor(hex: 0xF8F3EC), cloudAlpha: 0.07)
+            }
         }
     }
 
-    private var dark: Bool
+    var dark: Bool
     private var builtSize: CGSize = .zero
     private var didIntro = false
-    private let scene = CALayer()
-    private let markView = UIImageView(image: UIImage(named: "SplashMark"))
-    private let wordmark = UILabel()
-    private var reduceMotion: Bool { UIAccessibility.isReduceMotionEnabled }
+    let scene = CALayer()
+    let markView = UIImageView(image: UIImage(named: "SplashMark"))
+    let wordmark = UILabel()
+    var reduceMotion: Bool { UIAccessibility.isReduceMotionEnabled }
 
     init(dark: Bool) {
         self.dark = dark
@@ -108,6 +132,13 @@ final class TrippySplashView: UIView {
         scene.frame = bounds
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+
+        if let concept = Self.concept {
+            buildConcept(concept, size: size, intro: intro)
+            CATransaction.commit()
+            floatMark()
+            return
+        }
 
         if dark { addStars(W: W, H: horizon, intro: intro) }
 
@@ -232,7 +263,7 @@ final class TrippySplashView: UIView {
     }
 
     /// Gentle bob and sway; starts from the storyboard's resting position.
-    private func floatMark() {
+    func floatMark() {
         markView.layer.removeAnimation(forKey: "bob")
         markView.layer.removeAnimation(forKey: "sway")
         guard !reduceMotion else { return }
@@ -276,7 +307,7 @@ final class TrippySplashView: UIView {
         trail.add(trailGroup, forKey: "trail")
     }
 
-    private func addStars(W: CGFloat, H: CGFloat, intro: Bool) {
+    func addStars(W: CGFloat, H: CGFloat, intro: Bool) {
         // Fixed pseudo-random field so the sky looks the same every launch.
         var seed: UInt64 = 0x7121_9FA3
         func next() -> CGFloat {
@@ -318,7 +349,7 @@ final class TrippySplashView: UIView {
         return path
     }
 
-    private static func cloudPath(width w: CGFloat) -> UIBezierPath {
+    static func cloudPath(width w: CGFloat) -> UIBezierPath {
         let h = w * 0.42
         let path = UIBezierPath(roundedRect: CGRect(x: 0, y: h * 0.55, width: w, height: h * 0.45), cornerRadius: h * 0.225)
         path.append(UIBezierPath(ovalIn: CGRect(x: w * 0.14, y: h * 0.25, width: w * 0.34, height: w * 0.34)))
@@ -329,7 +360,7 @@ final class TrippySplashView: UIView {
     }
 
     /// Paper plane pointing along +x, centred on the origin.
-    private static func planePath() -> UIBezierPath {
+    static func planePath() -> UIBezierPath {
         let path = UIBezierPath()
         path.move(to: CGPoint(x: 12, y: 0))
         path.addLine(to: CGPoint(x: -11, y: -9))
@@ -340,7 +371,7 @@ final class TrippySplashView: UIView {
     }
 }
 
-private extension UIColor {
+extension UIColor {
     convenience init(hex: UInt32, alpha: CGFloat = 1) {
         self.init(red: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
                   blue: CGFloat(hex & 0xFF) / 255, alpha: alpha)
