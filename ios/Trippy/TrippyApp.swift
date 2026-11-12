@@ -12493,36 +12493,54 @@ private struct ResearchProgressScreen: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: saved)
     }
 
+    /// The brand banner: logo and wordmark, with the full journey animation
+    /// playing while the plan is made.
     private var topBar: some View {
-        HStack(spacing: 10) {
-            TrippyLogo(size: 30, idle: running && error == nil)
-            TrippyWordmarkText(size: 21)
-            Spacer()
-            Button(action: onClose) {
-                Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Sketch.ink)
-                    .frame(width: 44, height: 44).raisedCircle()
+        ZStack(alignment: .top) {
+            RoundedRectangle(cornerRadius: 28, style: .continuous).fill(Sketch.paperDeep)
+            TrippyJourneyAnimation(animate: running && error == nil && !saved)
+                .frame(height: typeSize.isAccessibilitySize ? 110 : 150)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 26)
+            HStack(spacing: 8) {
+                TrippyLogo(size: 28, idle: running && error == nil)
+                TrippyWordmarkText(size: 20)
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Sketch.ink)
+                        .frame(width: 44, height: 44).raisedCircle()
+                }
+                .buttonStyle(QuietPressStyle()).accessibilityLabel("Close")
             }
-            .buttonStyle(QuietPressStyle()).accessibilityLabel("Close")
+            .padding(.horizontal, 12).padding(.top, 10)
         }
+        .frame(height: typeSize.isAccessibilitySize ? 150 : 190)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
     }
 
     // MARK: ticket — the live card
     private var ticket: some View {
         VStack(spacing: 0) {
             (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(alignment: .top, spacing: 14))) {
-                // The journey animation lives here while the plan is made.
+                // The trip's own icon, with a slow ring while the plan is made.
                 ZStack {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Sketch.paperDeep)
-                    TrippyJourneyAnimation(animate: running && error == nil && !saved).padding(4)
+                    Circle().fill(Sketch.coral.opacity(0.14))
+                    if running && error == nil && !reduceMotion {
+                        TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                            let angle = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 6) / 6 * 360
+                            Circle().trim(from: 0, to: 0.22).stroke(Sketch.coral, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                                .rotationEffect(.degrees(angle)).padding(2)
+                        }
+                    }
+                    DoodleView(doodle: doodle, tint: Sketch.coral, lineWidth: 2).padding(16)
                     if saved {
                         Image(systemName: "checkmark").font(.system(size: 12, weight: .heavy)).foregroundStyle(Sketch.paper)
                             .frame(width: 26, height: 26).background(Circle().fill(Sketch.sage))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(6)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                             .transition(.scale.combined(with: .opacity))
                     }
                 }
-                .frame(width: 104, height: 104)
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .frame(width: 84, height: 84)
                 .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 6) {
                     Text(headline).font(Sketch.display(.title2, weight: .bold)).fixedSize(horizontal: false, vertical: true)
@@ -12539,7 +12557,7 @@ private struct ResearchProgressScreen: View {
                         clock
                     }
                 }
-                .frame(minHeight: typeSize.isAccessibilitySize ? nil : 104)
+                .frame(minHeight: typeSize.isAccessibilitySize ? nil : 96)
             }
             .padding(16)
             perforation
