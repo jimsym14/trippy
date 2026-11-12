@@ -348,9 +348,12 @@ private struct Postcard: View {
         let color = shelfTint(trip, look)
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 10) {
+            // The next-trip card mirrored: the doodle leads on the left, when and what follow it, below the card's buttons.
+            HStack(alignment: .top, spacing: 14) {
+                DoodleView(doodle: look.doodle ?? .balloon, tint: color, lineWidth: 2.2)
+                    .frame(width: 62, height: 62)
                 VStack(alignment: .leading, spacing: 6) {
-                    // The row's heading already says "Upcoming": the card says how soon (or that it's a draft).
+                    // The row's heading says "Upcoming": the card says how soon (or that it's a draft).
                     Group {
                         if !trip.hasPlan { SketchTag(text: "Draft", tint: Sketch.ochre) }
                         else if let countdown = ShelfDates.countdown(trip) { SketchTag(text: countdown, tint: color) }
@@ -361,9 +364,8 @@ private struct Postcard: View {
                     Text(trip.hasPlan ? ShelfDates.range(trip) : "No plan yet").font(Sketch.text(14, relativeTo: .subheadline))
                         .foregroundStyle(trip.hasPlan ? Sketch.inkSoft : Sketch.ochre).lineLimit(1)
                 }
+                .padding(.top, 26)   // clear of the delete and more buttons in the corner
                 Spacer(minLength: 0)
-                DoodleView(doodle: look.doodle ?? .balloon, tint: color, lineWidth: 2.2)
-                    .frame(width: 62, height: 62).padding(.top, 34)
             }
             .padding(16)
             .frame(maxHeight: .infinity, alignment: .top)
@@ -376,7 +378,7 @@ private struct Postcard: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
         }
-        .frame(width: 300, height: 196)
+        .frame(width: 300, height: 212)
         .background(shape.fill(Sketch.card))
         .clipShape(shape)
         .overlay(shape.strokeBorder(Sketch.ink.opacity(0.08), lineWidth: 1))
