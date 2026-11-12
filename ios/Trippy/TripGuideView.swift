@@ -28,10 +28,27 @@ struct TripGuideView: View {
         return .plan
     }()
     @State private var scrollAnchor: UnitPoint = .top
+    /// The mode picker has scrolled away: the chapters bar takes its place at the top.
+    @State private var showChapters = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var ctx: GuideContext { GuideContext(model: model, edits: edits, input: input, holidays: holidays) }
     private var tint: Color { Sketch.pigment(edits.pigment) }
+
+    /// What changed in "Flights and stay" since the plan was made (the plan used the brief and its base).
+    private var planInputsChanged: [String]? {
+        guard loaded else { return nil }
+        func same(_ a: String, _ b: String) -> Bool {
+            a.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).trimmingCharacters(in: .whitespaces)
+                == b.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).trimmingCharacters(in: .whitespaces)
+        }
+        var out: [String] = []
+        let usedStay = input.plannedStay.nilIfEmpty ?? model.base?.name ?? ""
+        if !edits.flight.stayName.isEmpty, !same(edits.flight.stayName, usedStay) { out.append("stay: \(edits.flight.stayName)") }
+        if !edits.flight.arrivalTime.isEmpty, !same(edits.flight.arrivalTime, input.plannedArrival) { out.append("arrival \(edits.flight.arrivalTime)") }
+        if !edits.flight.departureTime.isEmpty, !same(edits.flight.departureTime, input.plannedDeparture) { out.append("leaving \(edits.flight.departureTime)") }
+        return out.isEmpty ? nil : out
+    }
 
     enum Block: Hashable { case section(GuideSection), daysHeading, day(String) }
 
@@ -41,8 +58,14 @@ struct TripGuideView: View {
                 let ctx = self.ctx
                 VStack(alignment: .leading, spacing: 36) {
                     GuideHeader(ctx: ctx, tint: tint, flight: $edits.flight, showFacts: $showFacts)
+                    if let changed = planInputsChanged, let onEditBrief {
+                        PlanOutdatedBanner(changes: changed, tint: tint, onUpdate: onEditBrief)
+                    }
                     GuideModePicker(mode: $mode, tint: tint,
                                     mustSeeLeft: MustSeeView.items(ctx).filter { !edits.checklistDone.contains("seen|" + $0.id) }.count)
+                        .onGeometryChange(for: Bool.self) { $0.frame(in: .named("guidePage")).maxY < 0 } action: { gone in
+                            if gone != showChapters { withAnimation(reduceMotion ? nil : .snappy) { showChapters = gone } }
+                        }
                     switch mode {
                     case .map: GuideMapMode(ctx: ctx).transition(.opacity)
                     case .mustSee:
@@ -61,6 +84,8 @@ struct TripGuideView: View {
                                     Text("Reorder, retime or swap stops. Your edits stay when the plan refreshes.")
                                         .font(Sketch.hand(.footnote)).foregroundStyle(Sketch.inkSoft)
                                 }
+                                CommunityTipsBlock(tips: ctx.model.tripWideTips, tint: tint)
+                                DidntFitSection(items: ctx.didntFit, notes: ctx.model.videoNotes) { placeID, date in append(placeID, to: date, ctx: ctx) }
                             }
                         case .day(let date):
                             if let day = ctx.days.first(where: { $0.date == date }) {
@@ -84,6 +109,16 @@ struct TripGuideView: View {
                 .containerRelativeFrame(.horizontal)
                 .clipped()
             }
+            .coordinateSpace(name: "guidePage")
+            .overlay(alignment: .top) {
+                if showChapters && mode == .plan {
+                    ChaptersBar(chapters: chapters(ctx), current: currentChapter, tint: tint) { block in
+                        scrollAnchor = .top
+                        withAnimation(reduceMotion ? nil : .smooth) { scrolledID = block }
+                    }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
             .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .scrollPosition(id: $scrolledID, anchor: scrollAnchor)
             .scrollDismissesKeyboard(.interactively)
@@ -102,7 +137,7 @@ struct TripGuideView: View {
             .task {
                 // `-TrippyGuideDay 1 [-TrippyGuideEdit YES]` scrolls to a day for screenshots.
                 if let name = UserDefaults.standard.string(forKey: "TrippyGuideSection"), let section = GuideSection(rawValue: name) {
-                    try? await Task.sleep(for: .seconds(1.5)); scrolledID = .section(section); return
+                    try? await Task.sleep(for: .seconds(1.5)); scrolledID = section == .days ? .daysHeading : .section(section); return
                 }
                 let n = UserDefaults.standard.integer(forKey: "TrippyGuideDay")
                 guard n > 0 else { return }
@@ -120,6 +155,20 @@ struct TripGuideView: View {
             loaded = true
             model = GuideModel(json: input.research)
             edits = GuideEditsStore.load(input.tripID, travelers: input.travelers)
+            // Trips made before the composer saved them: show what the plan was made with.
+            if edits.flight.arrivalTime.isEmpty { edits.flight.arrivalTime = input.plannedArrival }
+            if edits.flight.departureTime.isEmpty { edits.flight.departureTime = input.plannedDeparture }
+            if edits.flight.stayName.isEmpty, let base = model.base {
+                edits.flight.stayName = input.plannedStay.nilIfEmpty ?? base.name
+                edits.flight.stayLatitude = base.latitude; edits.flight.stayLongitude = base.longitude
+            }
+            #if DEBUG
+            // `-TrippyGuideDemoBook "<date>|<placeID>|HH:MM"`: book a stop at that time (day re-flow checks; use a demo trip).
+            if let book = UserDefaults.standard.string(forKey: "TrippyGuideDemoBook")?.split(separator: "|").map(String.init), book.count == 3 {
+                edits.booked.insert(book[1]); edits.times["\(book[0])|\(book[1])"] = book[2]
+            }
+            if let leave = UserDefaults.standard.string(forKey: "TrippyGuideDemoLeave") { edits.flight.departureTime = leave }
+            #endif
             if let found = await GuideHolidayService.load(destination: input.destination, dates: model.days.map(\.date)) {
                 holidays = found
                 holidayState = found.isEmpty ? "No public holidays on these dates." : ""
@@ -185,6 +234,22 @@ struct TripGuideView: View {
                 if let onOpenDetails { Button("Sources and details", systemImage: "doc.text.magnifyingglass") { onOpenDetails() } }
             } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("More")
         }
+    }
+
+    /// The page's chapters for the bar: each day by its date, each section by its short name.
+    private func chapters(_ ctx: GuideContext) -> [ChaptersBar.Chapter] {
+        blocks(ctx).compactMap { block in
+            switch block {
+            case .daysHeading: return nil
+            case .day(let date): return .init(block: block, title: GuideDates.format(date, "EEE d"), isDay: true)
+            case .section(let section): return .init(block: block, title: section.title, isDay: false)
+            }
+        }
+    }
+    /// The chapter being read: the block at the top, or the first day while on the days heading.
+    private var currentChapter: Block? {
+        if scrolledID == .daysHeading, let first = model.days.first { return .day(first.date) }
+        return scrolledID
     }
 
     private func blocks(_ ctx: GuideContext) -> [Block] {
@@ -595,10 +660,22 @@ private struct DayView: View {
             } else if !day.stops.contains(where: { $0.slot == nil && !$0.place.isFood }) {
                 // Free day: easy ideas to pick from, nothing forced.
                 SuggestionStrip(suggestions: ctx.freeDayIdeas(for: day), tint: color, apply: apply)
+            } else if let route = ctx.shorterRoute(for: day) {
+                // A day that zig-zags: one tap puts the sights in walking order.
+                SuggestionStrip(suggestions: [route], tint: color, apply: apply)
             }
             VStack(alignment: .leading, spacing: 0) {
                 if day.stops.isEmpty {
-                    Text("No stops yet.").font(Sketch.hand(.callout)).foregroundStyle(Sketch.inkSoft).padding(.vertical, 8)
+                    // A free day says so, and what the ideas above are for.
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("A free day", systemImage: "sun.max").font(Sketch.text(15, "Bold", relativeTo: .subheadline))
+                        Text(editing ? "Add a stop or a meal below."
+                             : ctx.base != nil ? "Nothing planned yet. The ideas above are close to \(ctx.base!.name); tap one to add it."
+                             : "Nothing planned yet. Tap an idea above to add it, or keep the day open.")
+                            .font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.vertical, 8)
                 }
                 if let base = ctx.base, !day.stops.isEmpty {
                     BaseStartRow(base: base, minutes: day.stops.first?.fromBaseMinutes, tint: color)
@@ -617,24 +694,45 @@ private struct DayView: View {
                         Label(warning, systemImage: "exclamationmark.triangle").font(Sketch.text(12, "SemiBold", relativeTo: .caption))
                             .foregroundStyle(Sketch.coral).padding(.leading, 70).padding(.top, 6)
                     }
+                    if stop.slot != nil, let flow = stop.flowNote {
+                        // Meal and drink blocks say why they moved, or that they no longer fit, like stops do.
+                        Label(flow, systemImage: stop.fits ? "arrow.turn.down.right" : "exclamationmark.triangle")
+                            .font(Sketch.text(12, "SemiBold", relativeTo: .caption))
+                            .foregroundStyle(stop.fits ? Sketch.inkSoft : Sketch.coral)
+                            .fixedSize(horizontal: false, vertical: true).padding(.leading, 70).padding(.top, 6)
+                    }
                     if let slot = stop.slot {
                         SlotRow(stop: stop, slot: slot, color: color, editing: editing, planPlaces: Array(ctx.model.places.values),
-                                time: Binding(get: { edits.times[stop.key] ?? stop.time }, set: { edits.times[stop.key] = $0 }),
+                                time: fixedTime(stop),
                                 onPick: { pick(stop, $0) }, onMove: { move(stop, by: $0) }, onRemove: { remove(stop) },
                                 neighbors: [day.stops[safe: index - 1], day.stops[safe: index + 1]].compactMap { $0?.place }
                                     .filter { !$0.isSlotPlaceholder },
-                                base: ctx.base)
+                                base: ctx.base, videoNotes: slot.pickedID.flatMap { ctx.model.videoNotes[$0] } ?? [])
                     } else {
                         StopRow(stop: stop, color: color, editing: editing, booked: edits.booked.contains(stop.place.id),
                                 note: Binding(get: { edits.notes[stop.key] ?? "" }, set: { edits.notes[stop.key] = $0.nilIfEmpty }),
-                                time: Binding(get: { edits.times[stop.key] ?? stop.time }, set: { edits.times[stop.key] = $0 }),
-                                onMove: { move(stop, by: $0) }, onRemove: { remove(stop) }, onSwap: { swap(stop, with: $0) })
+                                time: fixedTime(stop),
+                                onMove: { move(stop, by: $0) }, onRemove: { remove(stop) }, onSwap: { swap(stop, with: $0) },
+                                communityTips: ctx.model.communityTips(for: stop.place.id),
+                                videoNotes: ctx.model.videoNotes[stop.place.id] ?? [],
+                                onRelease: stop.fixedTime ? { release(stop) } : nil)
                             .atlasRise(index)
                     }
                 }
             }
+            if let leave = ctx.leaveBy(for: day) { LeaveByRow(title: leave.title, detail: leave.detail, late: leave.late) }
             if editing { addMenu }
         }
+    }
+
+    /// A time typed here is the traveller's: it stays put and the rest of the day flows around it.
+    private func fixedTime(_ stop: ResolvedStop) -> Binding<String> {
+        Binding(get: { edits.times[stop.key] ?? stop.time },
+                set: { edits.times[stop.key] = $0; edits.fixedTimes.insert(stop.key) })
+    }
+    /// Back to the planner's time: the stop flows with the day again.
+    private func release(_ stop: ResolvedStop) {
+        edits.fixedTimes.remove(stop.key); edits.times[stop.key] = nil
     }
 
     /// Minutes with nothing in them before a stop: after the last one ended and the walk over.
@@ -649,10 +747,21 @@ private struct DayView: View {
             switch suggestion.action {
             case .addBlock(let kind): addBlock(kind)
             case .addPlace(let id), .restore(let id): if !ids.contains(id) { setOrder(ids + [id]) }
+            case .reorder(let order): reorder(order)
             }
         }
     }
     private func setOrder(_ new: [String]) { edits.order[day.date] = new }
+    /// A shorter walk: the same clock times, handed out in the new order (fixed stops keep their place and time).
+    private func reorder(_ order: [String]) {
+        let times = day.stops.map(\.time)
+        let byID = Dictionary(day.stops.map { ($0.itemID, $0) }, uniquingKeysWith: { a, _ in a })
+        for (id, time) in zip(order, times) {
+            guard let stop = byID[id], stop.time != time, !stop.fixedTime else { continue }
+            edits.times[stop.key] = time
+        }
+        setOrder(order)
+    }
     private func move(_ stop: ResolvedStop, by delta: Int) {
         var list = ids
         guard let i = list.firstIndex(of: stop.itemID), list.indices.contains(i + delta) else { return }
@@ -716,6 +825,12 @@ private struct StopRow: View {
     let onMove: (Int) -> Void
     let onRemove: () -> Void
     let onSwap: (GuidePlace) -> Void
+    /// Traveller tips about this stop (its name, its area or what it is), from the plan's community matches.
+    var communityTips: [GuideCommunityTip] = []
+    /// What the videos behind this stop say about it.
+    var videoNotes: [GuideVideoNote] = []
+    /// Lets a typed time go, so the stop flows with the day again.
+    var onRelease: (() -> Void)? = nil
     @State private var expanded = false
 
     var body: some View {
@@ -730,6 +845,10 @@ private struct StopRow: View {
                     Text(stop.time).font(Sketch.text(15, "Bold", relativeTo: .body)).monospacedDigit()
                 }
                 Text("\(stop.durationMinutes) min").font(Sketch.text(11, relativeTo: .caption2)).foregroundStyle(Sketch.inkFaint)
+                if stop.fixedTime || stop.booked {
+                    Image(systemName: "pin.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(color)
+                        .accessibilityLabel(stop.booked ? "Booked time" : "Time you set")
+                }
             }
             .frame(width: 58)
             VStack(alignment: .leading, spacing: 5) {
@@ -750,6 +869,13 @@ private struct StopRow: View {
                 .buttonStyle(.plain)
                 .accessibilityHint(expanded ? "Show less" : "Show more")
                 Text(meta).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+                if let flow = stop.flowNote {
+                    // Why the day moved this stop, or why it no longer fits.
+                    Label(flow, systemImage: stop.fits ? "arrow.turn.down.right" : "exclamationmark.triangle")
+                        .font(Sketch.text(12, "SemiBold", relativeTo: .caption))
+                        .foregroundStyle(stop.fits ? Sketch.inkSoft : Sketch.coral)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 StopSources(place: stop.place)
                 if !stop.includes.isEmpty {
                     Label("With " + ListFormatter.localizedString(byJoining: stop.includes), systemImage: "square.stack.3d.up")
@@ -770,6 +896,12 @@ private struct StopRow: View {
                 if !stop.tip.isEmpty {
                     Label(stop.tip, systemImage: "lightbulb").font(Sketch.text(13, "Medium", relativeTo: .footnote))
                         .foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
+                }
+                if !editing && !videoNotes.isEmpty {
+                    VideoSaysBlock(notes: videoNotes, expandedByDefault: expanded).padding(.top, 2)
+                }
+                if !editing {
+                    ForEach(communityTips) { CommunityTipCard(tip: $0).padding(.top, 4) }
                 }
                 if expanded || editing { details }
                 if editing { editControls }
@@ -814,6 +946,7 @@ private struct StopRow: View {
         HStack(spacing: 4) {
             iconButton("arrow.up", "Move up") { onMove(-1) }
             iconButton("arrow.down", "Move down") { onMove(1) }
+            if let onRelease { iconButton("pin.slash", "Let this time move", action: onRelease) }
             if !stop.alternatives.isEmpty {
                 Menu {
                     ForEach(stop.alternatives) { alt in Button(alt.name) { onSwap(alt) } }
@@ -827,6 +960,74 @@ private struct StopRow: View {
 
     private func iconButton(_ symbol: String, _ label: String, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {
         Button(role: role, action: action) { Image(systemName: symbol).frame(width: 44, height: 44) }.accessibilityLabel(label)
+    }
+}
+
+/// Chapters while scrolling a long plan: the days and sections in a row that follows you, the current one filled.
+private struct ChaptersBar: View {
+    struct Chapter: Identifiable, Hashable {
+        var id: TripGuideView.Block { block }
+        let block: TripGuideView.Block
+        let title: String
+        let isDay: Bool
+    }
+    let chapters: [Chapter]
+    let current: TripGuideView.Block?
+    let tint: Color
+    let go: (TripGuideView.Block) -> Void
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(chapters) { chapter in
+                        let on = chapter.block == current
+                        Button { go(chapter.block) } label: {
+                            Text(chapter.title).font(Sketch.text(13, on ? "Bold" : "SemiBold", relativeTo: .footnote))
+                                .foregroundStyle(on ? Color.white : chapter.isDay ? Sketch.ink : Sketch.inkSoft)
+                                .padding(.horizontal, 12).frame(minHeight: 36)
+                                .background(Capsule().fill(on ? tint : Color.clear))
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .id(chapter.block)
+                        .accessibilityAddTraits(on ? .isSelected : [])
+                    }
+                }
+                .padding(.horizontal, 6).padding(.vertical, 4)
+            }
+            .onChange(of: current) { _, now in
+                guard let now else { return }
+                withAnimation(.snappy) { proxy.scrollTo(now, anchor: .center) }
+            }
+        }
+        .background(Capsule().fill(Sketch.paper).shadow(color: .black.opacity(0.12), radius: 8, y: 3))
+        .overlay(Capsule().strokeBorder(Sketch.ink.opacity(0.08)))
+        .padding(.horizontal, 16).padding(.top, 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Chapters")
+    }
+}
+
+/// The last stop of the trip: when to leave for the flight, and what still runs into it.
+private struct LeaveByRow: View {
+    let title: String
+    let detail: String
+    let late: Bool
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "airplane.departure").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                .frame(width: 30, height: 30).background(Circle().fill(late ? Sketch.coral : Sketch.ink))
+                .frame(width: 58)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(Sketch.text(14, "Bold", relativeTo: .subheadline))
+                Text(detail).font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(late ? Sketch.coral : Sketch.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -1261,13 +1462,17 @@ private struct GuideFactsSheet: View {
                     link(TripLinks.travelTitle(mode: input.travelMode, city: city),
                          symbol: input.travelMode == "train" ? "tram.fill" : input.travelMode == "car" ? "car.fill" : "airplane",
                          url: TripLinks.travel(mode: input.travelMode, city: city, start: input.startDate, end: input.endDate))
-                    Button {
-                        if let url = MailSearch.gmailURL(MailSearch.bookingQuery(city: city, mode: input.travelMode)) { openURL(url) }
-                    } label: { Label("Find my booking in Gmail", systemImage: "envelope.open") }
+                    Menu {
+                        ForEach(MailSearch.Kind.allCases) { kind in
+                            Button(kind.title(mode: input.travelMode), systemImage: kind.symbol) {
+                                MailSearch.open(MailSearch.query(kind, city: city, mode: input.travelMode))
+                            }
+                        }
+                    } label: { Label("Find my bookings in Gmail", systemImage: "envelope.open") }
                     Button { showStayMap = true } label: { Label("Where to stay", systemImage: "safari") }
                     link("Stays on Booking.com", symbol: "bed.double", url: stayURL(airbnb: false))
                     link("Homes on Airbnb", symbol: "house", url: stayURL(airbnb: true))
-                } header: { Text("Find") } footer: { Text("Opens with your city, dates and travelers filled in. The Gmail search looks for booking emails about \(city.isEmpty ? "your trip" : city).") }
+                } header: { Text("Find") } footer: { Text("Opens with your city, dates and travelers filled in. Gmail opens (the app if you have it) with a search for booking confirmations about \(city.isEmpty ? "your trip" : city); the search is also copied for any other mail app.") }
                 Section("Arrival") {
                     TextField("Flight, e.g. ATH 16:40 → BCN 18:45", text: $edits.flight.outbound, axis: .vertical)
                     TextField("Landing time, e.g. 18:45", text: $edits.flight.arrivalTime).keyboardType(.numbersAndPunctuation)
@@ -1309,5 +1514,30 @@ private struct GuideFactsSheet: View {
             }
         }
         .disabled(city.isEmpty || url == nil)
+    }
+}
+
+
+/// The traveller changed their stay or flight times after the plan was made: the days still assume the old ones.
+private struct PlanOutdatedBanner: View {
+    let changes: [String]
+    let tint: Color
+    let onUpdate: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(tint).font(.title3)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("The plan still uses your old details").font(Sketch.text(14, "Bold", relativeTo: .subheadline))
+                Text("New " + ListFormatter.localizedString(byJoining: changes) + ".")
+                    .font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button("Update plan", action: onUpdate).font(Sketch.text(14, "SemiBold", relativeTo: .subheadline))
+                .buttonStyle(.borderedProminent).tint(tint).frame(minHeight: 44)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(tint.opacity(0.1)))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(tint.opacity(0.3)))
     }
 }

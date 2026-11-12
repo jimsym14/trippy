@@ -8,6 +8,8 @@ struct TripComposerView: View {
     var onCancel: () -> Void
     var onSubmit: (ComposerResult) -> Void
     var onDetailed: (() -> Void)? = nil
+    /// The traveller's saves for a destination, with what their videos say (offered next to the recommendations).
+    var savesFor: ((String) -> [PickInfo])? = nil
 
     @State private var start = Calendar.current.date(byAdding: .day, value: 30, to: .now) ?? .now
     @State private var end = Calendar.current.date(byAdding: .day, value: 33, to: .now) ?? .now
@@ -18,7 +20,16 @@ struct TripComposerView: View {
     @State private var famous: [ComposerPlace] = []
     @State private var localPicks: [String: [ComposerPlace]] = [:]   // "food", "bars": from Apple Maps
     @State private var pickCategory = "sights"
-    @State private var showAllPicks = false
+    @State private var pickSource: PickInfo.Source = .recommended
+    @State private var openPick: PickInfo?
+    @State private var pickList: PickList?
+    @State private var seededNames: Set<String> = []
+    @State private var seededCity: String?
+    @State private var loadedSaves: (city: String, items: [PickInfo]) = ("", [])
+    enum PickList: Identifiable, Hashable {
+        case saves, recommended(String)
+        var id: String { switch self { case .saves: "saves"; case .recommended(let c): "rec-" + c } }
+    }
     @State private var stayResults: [MKMapItem] = []
     @State private var showLook = false
     @State private var showStayMap = false
@@ -48,7 +59,7 @@ struct TripComposerView: View {
 
     private var parsed: ComposerResult {
         var r = ComposerParser.parse(result.message, into: result)
-        r.group = result.group; r.travelers = result.travelers; r.name = result.name; r.mustSee = result.mustSee
+        r.group = result.group; r.travelers = result.travelers; r.name = result.name; r.mustSee = result.mustSee; r.savesSeeded = result.savesSeeded
         r.tags = result.tags; r.budgetBasis = result.budgetBasis; r.travelMode = result.travelMode
         if let pace = result.pace { r.pace = pace }
         r.interests.formUnion(result.interests)
@@ -105,6 +116,17 @@ struct TripComposerView: View {
                 // Screenshot checks: `-TrippyComposerCity Barcelona -TrippyComposerScroll Pace`.
                 if let c = UserDefaults.standard.string(forKey: "TrippyComposerCity") { result.destination = c; focus = nil; cities.chosen = c }
                 if UserDefaults.standard.bool(forKey: "TrippyComposerLook") { showLook = true }
+                // `-TrippyComposerDemoSaves 34`: that many sample saves in the city (cap, ranking, See all).
+                let demo = UserDefaults.standard.integer(forKey: "TrippyComposerDemoSaves")
+                if demo > 0 {
+                    ComposerSaves.provider = { city in PickInfo.demoSaves(demo, city: city) }
+                    loadedSaves = ("", []); seedSaves()
+                    if UserDefaults.standard.string(forKey: "TrippyComposerPickSource") == "recommended" { pickSource = .recommended }
+                    if let open = UserDefaults.standard.string(forKey: "TrippyComposerOpenPick") {
+                        try? await Task.sleep(for: .seconds(1.2))
+                        if open == "all" { pickList = .saves } else { openPick = citySaves.first }
+                    }
+                }
                 if UserDefaults.standard.bool(forKey: "TrippyComposerStayMap") { try? await Task.sleep(for: .seconds(1)); showStayMap = true }
                 if let t = UserDefaults.standard.string(forKey: "TrippyComposerScroll") {
                     result.interests = ["food", "nightlife"]; result.tags = ["tapas"]
@@ -201,8 +223,9 @@ struct TripComposerView: View {
             VStack(alignment: symbol == nil ? .center : .leading, spacing: 3) {
                 if let symbol { Image(systemName: symbol).font(.system(size: 15, weight: .semibold)).symbolEffect(.bounce, value: selected) }
                 Text(title).font(Sketch.text(14, "Bold", relativeTo: .subheadline))
+                // Tiles in a grid are one size: a two-line detail ("Every highlight, no lingering") reserves the same room as one.
                 Text(detail).font(Sketch.text(11, relativeTo: .caption2)).foregroundStyle(selected ? Sketch.paper.opacity(0.78) : Sketch.inkSoft)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(symbol == nil ? 1 : 2, reservesSpace: symbol != nil).multilineTextAlignment(symbol == nil ? .center : .leading)
             }
             .frame(maxWidth: .infinity, minHeight: 54, alignment: symbol == nil ? .center : .leading)
             .padding(.horizontal, symbol == nil ? 0 : 12).padding(.vertical, symbol == nil ? 0 : 10)
@@ -498,23 +521,8 @@ struct TripComposerView: View {
     // MARK: Must-see
 
     private var mustSee: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if !result.mustSee.isEmpty {
-                FlowLayout(spacing: 8) {
-                    ForEach(result.mustSee, id: \.self) { place in
-                        HStack(spacing: 6) {
-                            Image(systemName: "star.fill").imageScale(.small).foregroundStyle(Sketch.ochre)
-                            Text(place.name).lineLimit(1)
-                            Button { withAnimation(.snappy) { result.mustSee.removeAll { $0.name == place.name } } } label: { Image(systemName: "xmark").font(.caption2.weight(.bold)) }
-                                .frame(minWidth: 28, minHeight: 28).accessibilityLabel("Remove \(place.name)")
-                        }
-                        .font(Sketch.text(13, "SemiBold", relativeTo: .footnote))
-                        .padding(.leading, 12).padding(.trailing, 4).frame(minHeight: 36)
-                        .background(Capsule().fill(Sketch.ochre.opacity(0.14)))
-                        .transition(.scale.combined(with: .opacity))
-                    }
-                }
-            }
+        VStack(alignment: .leading, spacing: 14) {
+            if !result.mustSee.isEmpty { pickedStrip }
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(Sketch.inkFaint)
                 TextField(city.isEmpty ? "Search places" : "Search places in \(city)", text: $placeQuery)
@@ -525,10 +533,125 @@ struct TripComposerView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(placeResults.prefix(6).enumerated()), id: \.offset) { _, item in placeRow(item) }
                 }
-            } else if Self.pickCategories.contains(where: { !picks($0.id).isEmpty }) {
-                pickBrowser
+            } else {
+                if !citySaves.isEmpty {
+                    Picker("Show", selection: $pickSource) {
+                        Text("Your saves · \(citySaves.count)").tag(PickInfo.Source.save)
+                        Text("Recommended").tag(PickInfo.Source.recommended)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                if pickSource == .save && !citySaves.isEmpty { savesPanel }
+                else if Self.pickCategories.contains(where: { !picks($0.id).isEmpty }) { pickBrowser }
             }
         }
+        .sheet(item: $openPick) { info in
+            NavigationStack {
+                PickDetailView(info: info, picked: isPicked(info.place)) { toggle(info.place) }
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { openPick = nil } } }
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+        }
+        .sheet(item: $pickList) { list in
+            switch list {
+            case .saves:
+                PickListSheet(title: "Your saves in \(city)", items: citySaves, picked: $result.mustSee, bestCount: savesTarget)
+            case .recommended(let category):
+                PickListSheet(title: Self.pickCategories.first { $0.id == category }?.title ?? "Recommended",
+                              items: recommendedPicks(category), picked: $result.mustSee)
+            }
+        }
+        .onAppear(perform: seedSaves)
+        .onChange(of: city) { _, _ in seedSaves() }
+    }
+
+    // MARK: Picked
+
+    /// What is picked, on one line that scrolls sideways: the section never grows as more are added.
+    private var pickedStrip: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(result.mustSee.count) PICKED · PLANNED FIRST").font(Sketch.eyebrow).tracking(1).foregroundStyle(Sketch.ochre)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(result.mustSee, id: \.self) { place in
+                        HStack(spacing: 6) {
+                            Image(systemName: savedNames.contains(place.name) ? "heart.fill" : "star.fill").imageScale(.small)
+                                .foregroundStyle(savedNames.contains(place.name) ? Sketch.coral : Sketch.ochre)
+                            Text(place.name).lineLimit(1)
+                            Button { toggle(place) } label: { Image(systemName: "xmark").font(.caption2.weight(.bold)) }
+                                .frame(minWidth: 32, minHeight: 32).accessibilityLabel("Remove \(place.name)")
+                        }
+                        .font(Sketch.text(13, "SemiBold", relativeTo: .footnote))
+                        .padding(.leading, 12).padding(.trailing, 4).frame(minHeight: 36)
+                        .background(Capsule().fill(Sketch.ochre.opacity(0.14)))
+                        .transition(.scale.combined(with: .opacity))
+                    }
+                }
+            }
+            .cardEdgeRow()
+        }
+    }
+
+    // MARK: Saves
+
+    /// The traveller's saves for this city, the ones with the most to go on first.
+    /// Built once per destination, not on every redraw (a traveller can have hundreds of saves).
+    private var citySaves: [PickInfo] { loadedSaves.city == city ? loadedSaves.items : [] }
+    private func refreshSaves() {
+        guard loadedSaves.city != city else { return }
+        loadedSaves = (city, PickInfo.rankSaves((savesFor ?? ComposerSaves.provider)?(city) ?? []))
+    }
+    private var savedNames: Set<String> { Set(citySaves.map(\.place.name)) }
+    private var savesTarget: Int { PickInfo.defaultCount(days: parsed.duration) }
+
+    private var savesPanel: some View {
+        let saves = citySaves
+        let picked = saves.filter { isPicked($0.place) }.count
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(picked == 0 ? "None picked. They stay ideas you can add on the plan."
+                     : picked == saves.count ? "All \(saves.count) picked. Picked places are planned first."
+                     : "\(picked) of \(saves.count) picked for \(parsed.duration) days, the ones your videos say most about. The rest stay ideas.")
+                    .font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Menu {
+                    Button("Pick the best \(min(savesTarget, saves.count))", systemImage: "star") { pickBestSaves(savesTarget) }
+                    Button("Pick all \(saves.count)", systemImage: "checkmark.circle") { pickBestSaves(saves.count) }
+                    Button("Pick none", systemImage: "circle.slash", role: .destructive) { pickBestSaves(0) }
+                } label: {
+                    Text("Pick").font(Sketch.text(14, "SemiBold", relativeTo: .subheadline)).frame(minWidth: 44, minHeight: 44)
+                }
+            }
+            row(Array(saves.prefix(12)), total: saves.count, tint: Sketch.coral) { pickList = .saves }
+        }
+    }
+
+    private func pickBestSaves(_ n: Int) {
+        withAnimation(.snappy) {
+            let saves = citySaves
+            let names = Set(saves.map(\.place.name))
+            result.mustSee.removeAll { names.contains($0.name) }
+            result.mustSee.append(contentsOf: saves.prefix(n).map(\.place))
+        }
+    }
+
+    /// Saves are ticked by default, once, up to about two a day; a city change swaps the old city's for the new one's.
+    private func seedSaves() {
+        refreshSaves()
+        let saves = citySaves
+        guard !saves.isEmpty else { return }
+        if seededCity != nil && seededCity != city {
+            result.mustSee.removeAll { seededNames.contains($0.name) }
+        } else if result.savesSeeded {
+            return
+        }
+        let chosen = saves.prefix(savesTarget).map(\.place).filter { place in !result.mustSee.contains { $0.name == place.name } }
+        result.mustSee.append(contentsOf: chosen)
+        seededNames = Set(chosen.map(\.name)); seededCity = city
+        result.savesSeeded = true
+        pickSource = .save
     }
 
     // MARK: Picks by category
@@ -539,12 +662,21 @@ struct TripComposerView: View {
     ]
     /// Famous places (Wikidata, ranked by fame) split by kind; food and bars come from Apple Maps.
     private func picks(_ category: String) -> [ComposerPlace] {
+        let saved = Set(savedNames.map(ComposerParser.fold))
+        let all: [ComposerPlace]
         switch category {
-        case "museums": famous.filter { $0.category == "museum" }
-        case "nature": famous.filter { $0.category == "nature" }
+        case "museums": all = famous.filter { $0.category == "museum" }
+        case "nature": all = famous.filter { $0.category == "nature" }
         case "sights":
-            famous.filter { $0.category == "attraction" } + (famous.isEmpty ? suggestions.compactMap(Self.composerPlace) : [])
-        default: localPicks[category] ?? []
+            all = famous.filter { $0.category == "attraction" } + (famous.isEmpty ? suggestions.compactMap(Self.composerPlace) : [])
+        default: all = localPicks[category] ?? []
+        }
+        // A saved place is shown once, with the saves, not again among the recommendations.
+        return all.filter { !saved.contains(ComposerParser.fold($0.name)) }
+    }
+    private func recommendedPicks(_ category: String) -> [PickInfo] {
+        picks(category).map { place in
+            PickInfo(place: place, source: .recommended, summary: place.summary ?? "", fame: place.fame ?? 0, wikiTitle: place.wikiTitle)
         }
     }
     private static func composerPlace(_ item: MKMapItem) -> ComposerPlace? {
@@ -557,15 +689,14 @@ struct TripComposerView: View {
     private var pickBrowser: some View {
         let available = Self.pickCategories.filter { !picks($0.id).isEmpty }
         let current = available.contains { $0.id == pickCategory } ? pickCategory : (available.first?.id ?? "sights")
-        let items = picks(current)
-        let shown = showAllPicks ? items : Array(items.prefix(6))
+        let items = recommendedPicks(current)
         return VStack(alignment: .leading, spacing: 12) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(available, id: \.id) { category in
                         let on = category.id == current
                         Button {
-                            withAnimation(.snappy) { pickCategory = category.id; showAllPicks = false }
+                            withAnimation(.snappy) { pickCategory = category.id }
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: category.symbol).font(.system(size: 12, weight: .semibold))
@@ -581,50 +712,33 @@ struct TripComposerView: View {
                     }
                 }
             }
-            .scrollClipDisabled()
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], alignment: .leading, spacing: 14) {
-                ForEach(shown, id: \.self) { pickCard($0, category: current) }
-            }
-            if items.count > 6 {
-                Button(showAllPicks ? "Show fewer" : "Show all \(items.count)") { withAnimation(.snappy) { showAllPicks.toggle() } }
-                    .font(Sketch.text(14, "SemiBold", relativeTo: .subheadline)).frame(minHeight: 44)
-            }
-            Text(current == "food" || current == "bars" ? "From Apple Maps, near the centre of \(city)." : "Ranked by how widely they're known, from Wikipedia and Wikidata.")
+            .cardEdgeRow()
+            row(Array(items.prefix(12)), total: items.count, tint: Sketch.ochre) { pickList = .recommended(current) }
+            Text(current == "food" || current == "bars" ? "From Apple Maps, near the centre of \(city). Tap a card for more."
+                 : "Ranked by how widely they're known, from Wikipedia and Wikidata. Tap a card for more.")
                 .font(Sketch.text(11, relativeTo: .caption2)).foregroundStyle(Sketch.inkFaint)
         }
     }
 
-    private func pickCard(_ place: ComposerPlace, category: String) -> some View {
-        let added = result.mustSee.contains { $0.name == place.name }
-        let symbol = Self.pickCategories.first { $0.id == category }?.symbol ?? "star"
-        return Button {
-            withAnimation(.snappy) {
-                if added { result.mustSee.removeAll { $0.name == place.name } } else { result.mustSee.append(place) }
+    /// One row of fixed-size cards that scrolls sideways, then "See all" for the rest in a sheet.
+    private func row(_ items: [PickInfo], total: Int, tint: Color, seeAll: @escaping () -> Void) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: 12) {
+                ForEach(items) { info in
+                    SavePickCard(info: info, picked: isPicked(info.place), tint: tint,
+                             toggle: { toggle(info.place) }, open: { openPick = info })
+                }
+                if total > 3 { SeeAllCard(count: total, action: seeAll) }
             }
-        } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                PlacePhoto(name: place.name, latitude: place.latitude, longitude: place.longitude,
-                           sight: !["food", "bars"].contains(category), symbol: symbol, tint: Sketch.ochre,
-                           imageURL: place.imageURL.flatMap(URL.init(string:)))
-                    .frame(height: 108).frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(added ? Sketch.sage : .clear, lineWidth: 2.5))
-                    .overlay(alignment: .topTrailing) {
-                        Image(systemName: added ? "checkmark.circle.fill" : "plus.circle.fill")
-                            .font(.system(size: 24, weight: .semibold))
-                            .symbolRenderingMode(.palette)
-                            .foregroundStyle(.white, added ? Sketch.sage : Color.black.opacity(0.45))
-                            .contentTransition(.symbolEffect(.replace))
-                            .padding(6)
-                    }
-                Text(place.name).font(Sketch.text(13, "Bold", relativeTo: .footnote)).foregroundStyle(Sketch.ink)
-                    .lineLimit(2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-            }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(SketchPressStyle())
-        .accessibilityLabel(added ? "Remove \(place.name)" : "Add \(place.name)")
-        .accessibilityAddTraits(added ? .isSelected : [])
+        .cardEdgeRow()
+    }
+
+    private func isPicked(_ place: ComposerPlace) -> Bool { result.mustSee.contains { $0.name == place.name } }
+    private func toggle(_ place: ComposerPlace) {
+        withAnimation(.snappy) {
+            if isPicked(place) { result.mustSee.removeAll { $0.name == place.name } } else { result.mustSee.append(place) }
+        }
     }
 
     private func famousRow(_ place: ComposerPlace) -> some View {

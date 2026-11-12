@@ -184,9 +184,12 @@ def tiktok_videos(index_path, takes=None):
                 "seconds": moments[0]["seconds"] if moments else None, "neighborhood": place.get("neighborhood"),
                 "google_place_id": google.get("placeID"), "latitude": google.get("latitude"), "longitude": google.get("longitude"),
                 "address": google.get("address"), "must_try": place.get("must_try") or [], "tips": (place.get("pro_tips") or [])[:4],
-                "good_to_know": (place.get("good_to_know") or [])[:4], "price": place.get("price_hint"), "vibe": place.get("vibe_tags") or []})
+                "good_to_know": (place.get("good_to_know") or [])[:4], "price": place.get("price_hint"), "vibe": place.get("vibe_tags") or [],
+                "when": place.get("when")})
         tips = [{"title": t.get("title", ""), "detail": t.get("detail", ""), "at": t.get("at", ""), "seconds": _seconds(t.get("at")),
-                 "category": "budget_practical"} for t in result.get("tips") or []]
+                 "category": "budget_practical", "where": t.get("where") or "", "topics": t.get("topics") or [],
+                 "when": t.get("when"), "audience": t.get("audience") or [], "cost": t.get("cost") or []}
+                for t in result.get("tips") or []]
         video = _finish({"key": key, "platform": "tiktok", "url": url, "title": result.get("post_title") or "TikTok",
                          "author": author or None, "published_at": None, "language": None, "city": result.get("city") or "",
                          "country_code": result.get("country_code"), "summary": result.get("post_summary"),
@@ -221,6 +224,8 @@ def _seconds(at):
 
 
 def _finish(video):
+    from .tip_index import annotate
+    annotate(video)   # also sets video["when"] and each place's when   # topics, scope and stance on every tip (no model; see tip_index.py)
     counts = Counter(p["category"] for p in video["places"])
     counts.update(t["category"] for t in video["tips"])
     video["categories"] = [{"id": c, "title": CATEGORY_TITLES.get(c, c.title()), "count": n} for c, n in counts.most_common()]
@@ -446,6 +451,10 @@ def plan_nodes(brief, *, videos, takes=None, plan_categories=(), limit=40):
     use, picked = community_choice(brief)
     if use == "off":
         return []
+    from research_pipeline import trip_dates
+    from .tags import when_matches
+    try: dates = trip_dates(brief)
+    except ValueError: dates = []
     nodes = []
     for video in videos:
         if video["city"].casefold() != city or (use == "picked" and video["key"] not in picked):
@@ -455,6 +464,9 @@ def plan_nodes(brief, *, videos, takes=None, plan_categories=(), limit=40):
         chosen = []
         for p in video["places"]:
             if p.get("latitude") is None or p["stance"] not in ("recommended", "mixed"):
+                continue
+            # The time half of the scope: a Christmas market is not a stop on a July trip.
+            if when_matches(p.get("when") or video.get("when"), dates) is False:
                 continue
             # Only real venues can be a stop: a neighbourhood, a dish or a walking route is context, not a place to go.
             if p.get("kind") not in (None, "venue"):

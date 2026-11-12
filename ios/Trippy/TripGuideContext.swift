@@ -13,6 +13,29 @@ struct GuideInput {
     /// The server, for looking up the lines between two stops and ticket prices.
     var bridgeURL = ""
     var bridgeToken = ""
+    /// What the plan was made with (the brief), to fill "Flights and stay" when it is empty and to notice later edits.
+    var plannedArrival = ""
+    var plannedDeparture = ""
+    var plannedStay = ""
+}
+
+/// Reading a trip's brief back into the composer.
+enum ComposerSeed {
+    /// Sentences the composer appends to the notes on every submit; dropped so a re-plan doesn't repeat them.
+    private static let generated = ["Must include:", "Staying in ", "Road trip: we have a car", "Arriving by train", "Speedrun:"]
+
+    static func ownNotes(_ notes: String) -> String {
+        sentences(notes).filter { s in !generated.contains { s.hasPrefix($0) } }.joined(separator: ". ")
+    }
+
+    static func stay(in notes: String) -> String? {
+        sentences(notes).last { $0.hasPrefix("Staying in ") }.map { String($0.dropFirst("Staying in ".count)) }?.nilIfEmpty
+    }
+
+    private static func sentences(_ text: String) -> [String] {
+        text.components(separatedBy: ". ").map { $0.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "."))) }
+            .filter { !$0.isEmpty }
+    }
 }
 
 struct ResolvedStop: Identifiable, Hashable {
@@ -20,9 +43,9 @@ struct ResolvedStop: Identifiable, Hashable {
     let key: String            // "date|itemID"
     let itemID: String         // what the day's order stores: a place id or a "slot:kind:…" id
     let place: GuidePlace
-    let time: String
+    var time: String
     let durationMinutes: Int
-    let travelMinutes: Int?
+    var travelMinutes: Int?
     let alternatives: [GuidePlace]
     let note: String
     let added: Bool
@@ -33,11 +56,17 @@ struct ResolvedStop: Identifiable, Hashable {
     var fromBaseMinutes: Int? = nil
     /// Names of the sights seen in the same visit.
     var includes: [String] = []
+    /// The traveller typed this time, or booked it: the rest of the day flows around it.
+    var fixedTime = false
+    var booked = false
+    /// Why the day moved this stop ("Moved from 13:00, after your Sagrada Família booking at 14:00"), or why it no longer fits.
+    var flowNote: String? = nil
+    var fits = true
 }
 
 /// One tap that improves a day; the traveller can always ignore it.
 struct GuideSuggestion: Identifiable, Hashable {
-    enum Action: Hashable { case addBlock(SlotKind), addPlace(String), restore(String) }
+    enum Action: Hashable { case addBlock(SlotKind), addPlace(String), restore(String), reorder([String]) }
     let id: String
     let text: String
     let detail: String
@@ -89,7 +118,10 @@ struct GuideContext {
             base = GuideBase(name: edits.flight.stayName, latitude: lat, longitude: lon)
         } else { base = model.base }
         let base = self.base
-        days = model.days.map { GuideContext.resolve($0, model: model, edits: edits, holidays: holidays, base: base) }
+        let count = model.days.count
+        days = model.days.enumerated().map { i, day in
+            GuideContext.resolve(day, model: model, edits: edits, holidays: holidays, base: base, first: i == 0, last: i == count - 1)
+        }
     }
 
     /// A rough door-to-door time: walking under 2.5 km, a ride beyond (as the planner estimates).
@@ -99,6 +131,15 @@ struct GuideContext {
     }
 
     func areas(of day: ResolvedDay) -> [GuideArea] { day.areaIDs.compactMap { id in model.areas.first { $0.id == id } } }
+
+    /// Picked saves the planner had no room for and the traveller hasn't added since, with the day that suits each.
+    var didntFit: [(date: String, place: GuidePlace)] {
+        let planned = Set(days.flatMap(\.stops).map(\.place.id))
+        return model.unscheduledSaved.compactMap { row in
+            guard !planned.contains(row.placeID), let place = model.places[row.placeID] else { return nil }
+            return (days.contains { $0.date == row.date } ? row.date : (days.first?.date ?? row.date), place)
+        }
+    }
 
     /// Planner stops the traveller removed and didn't move to another day.
     var leftOut: [(date: String, place: GuidePlace)] {
@@ -141,7 +182,7 @@ struct GuideContext {
 
     /// At most three gentle suggestions for a day, most useful first.
     func suggestions(for day: ResolvedDay) -> [GuideSuggestion] {
-        var out: [GuideSuggestion] = []
+        var out: [GuideSuggestion] = shorterRoute(for: day).map { [$0] } ?? []
         for (date, place) in leftOut where date == day.date {
             out.append(.init(id: "restore|\(place.id)", text: "Put back \(place.name)", detail: "You removed it", symbol: "arrow.uturn.backward", action: .restore(place.id)))
         }
@@ -180,7 +221,8 @@ struct GuideContext {
         model.places[id] ?? edits.extraPlaces[id]?.guidePlace
     }
 
-    static func resolve(_ day: GuideDay, model: GuideModel, edits: GuideEdits, holidays: [GuideHoliday], base: GuideBase? = nil) -> ResolvedDay {
+    static func resolve(_ day: GuideDay, model: GuideModel, edits: GuideEdits, holidays: [GuideHoliday], base: GuideBase? = nil,
+                        first: Bool = false, last: Bool = false) -> ResolvedDay {
         let original = Dictionary(day.stops.map { ($0.placeID, $0) }, uniquingKeysWith: { a, _ in a })
         let ids = edits.order[day.date] ?? baseOrder(day, model: model)
         // Coordinates of real stops, for placing open blocks between their neighbours.
@@ -238,6 +280,7 @@ struct GuideContext {
                                       includes: shown.id == planned.id ? (base?.includes ?? []).compactMap { model.places[$0]?.name } : []))
         }
         stops.sort { (GuideDates.minutes($0.time) ?? 0) < (GuideDates.minutes($1.time) ?? 0) }
+        stops = flow(stops, day: day, edits: edits, first: first, last: last)
         // The day starts at the base: the planner's own estimate, else one from the distance.
         if let base, !stops.isEmpty, let first = stops.first?.place.coordinate {
             let planned = original[stops[0].itemID].flatMap { $0.fromBase ? $0.travelMinutes : nil }
@@ -261,6 +304,71 @@ struct GuideContext {
             ?? ((themed != nil && !sights.isEmpty ? named : meals) + (yours > 0 ? " · \(yours) you saved" : ""))
         return ResolvedDay(index: day.index, date: day.date, title: title, subtitle: subtitle, stops: stops,
                            holiday: holidays.first { $0.date == day.date }, areaIDs: day.areaIDs)
+    }
+
+    /// The day as it really runs: booked stops and typed times stay, the rest flows around them (see DayFlow).
+    static func flow(_ stops: [ResolvedStop], day: GuideDay, edits: GuideEdits, first: Bool, last: Bool) -> [ResolvedStop] {
+        guard !stops.isEmpty else { return stops }
+        // The planner's own order, so its measured legs stay while the stop before is still the planner's.
+        var plannedPrevious: [String: String] = [:]
+        for (a, b) in zip(day.stops, day.stops.dropFirst()) { plannedPrevious["\(day.date)|\(b.placeID)"] = "\(day.date)|\(a.placeID)" }
+        let items = stops.map { stop -> DayFlow.Item in
+            let booked = stop.slot == nil && edits.booked.contains(stop.place.id)
+            let name = stop.slot.map { $0.pickedID == nil ? $0.kind.title : stop.place.name } ?? stop.place.name
+            return DayFlow.Item(id: stop.key, name: name, start: GuideDates.minutes(stop.time) ?? 600, duration: stop.durationMinutes,
+                                fixed: edits.fixedTimes.contains(stop.key), booked: booked,
+                                latitude: stop.place.coordinate?.latitude, longitude: stop.place.coordinate?.longitude,
+                                plannedPrevious: plannedPrevious[stop.key], plannedTravel: stop.travelMinutes,
+                                reorderable: stop.slot == nil && !stop.place.isFood)
+        }
+        let landing = first ? GuideDates.minutes(edits.flight.arrivalTime) : nil
+        let takeoff = last ? GuideDates.minutes(edits.flight.departureTime) : nil
+        let earliest = landing.map { DayFlow.Limit(minutes: $0 + 90, because: "after you reach your stay (landing \(GuideDates.clock($0)))") }
+        let latest = takeoff.map { DayFlow.Limit(minutes: $0 - DayFlow.airportMinutes,
+                                                 because: "before you leave for the airport at \(GuideDates.clock($0 - DayFlow.airportMinutes))") }
+        let placed = Dictionary(DayFlow.reflow(items, earliest: earliest, latest: latest).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let byKey = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var out = stops.map { stop -> ResolvedStop in
+            var stop = stop
+            let item = byKey[stop.key]
+            stop.fixedTime = item?.fixed ?? false
+            stop.booked = item?.booked ?? false
+            if let p = placed[stop.key] {
+                stop.time = GuideDates.clock(p.start); stop.flowNote = p.reason; stop.fits = p.fits
+            }
+            return stop
+        }
+        out.sort { (GuideDates.minutes($0.time) ?? 0, $0.key) < (GuideDates.minutes($1.time) ?? 0, $1.key) }
+        // A leg into a stop whose neighbour changed is re-estimated; the planner's stays where it still applies.
+        for i in out.indices.dropFirst() {
+            if let a = byKey[out[i - 1].key], let b = byKey[out[i].key], b.plannedPrevious != a.id {
+                out[i].travelMinutes = DayFlow.travel(a, b)
+            }
+        }
+        return out
+    }
+
+    /// A shorter walking order for the day's sights, between its meals and fixed stops; nil when the day is already tidy.
+    func shorterRoute(for day: ResolvedDay) -> GuideSuggestion? {
+        let items = day.stops.map { stop in
+            DayFlow.Item(id: stop.itemID, name: stop.place.name, start: GuideDates.minutes(stop.time) ?? 600, duration: stop.durationMinutes,
+                         fixed: stop.fixedTime, booked: stop.booked,
+                         latitude: stop.place.coordinate?.latitude, longitude: stop.place.coordinate?.longitude,
+                         reorderable: stop.slot == nil && !stop.place.isFood)
+        }
+        let home = base.map { DayFlow.Item(id: "base", name: $0.name, start: 0, duration: 0, latitude: $0.latitude, longitude: $0.longitude) }
+        guard let better = DayFlow.shorterRoute(items, start: home) else { return nil }
+        return GuideSuggestion(id: "route|\(day.date)", text: "\(better.first.0) before \(better.first.1)",
+                               detail: "Saves about \(better.saved) min of walking", symbol: "point.topleft.down.to.point.bottomright.curvepath",
+                               action: .reorder(better.order))
+    }
+
+    /// The last day's "Leave by 14:00 for your 17:00 flight", from the departure time on the plan screen.
+    func leaveBy(for day: ResolvedDay) -> (title: String, detail: String, late: Bool)? {
+        guard day.index == days.count - 1, let takeoff = GuideDates.minutes(edits.flight.departureTime) else { return nil }
+        let lastStop = day.stops.last { $0.slot?.pickedID != nil || $0.slot == nil }
+        let end = lastStop.flatMap { GuideDates.minutes($0.time) }.map { $0 + (lastStop?.durationMinutes ?? 0) }
+        return DayFlow.leaveBy(departure: takeoff, lastEnd: end, lastName: lastStop?.place.name)
     }
 
     /// A plain title for a day: its part of town, and what most of it is. "Museums in Belém", "Gràcia and Eixample".
@@ -319,7 +427,7 @@ struct GuideContext {
 
     /// Stops that collide with the flight times the traveler entered.
     func timingWarning(_ stop: ResolvedStop, day: ResolvedDay) -> String? {
-        guard let start = GuideDates.minutes(stop.time) else { return nil }
+        guard stop.flowNote == nil, let start = GuideDates.minutes(stop.time) else { return nil }
         if day.index == 0, let landing = GuideDates.minutes(edits.flight.arrivalTime), start < landing + 90 {
             return "Before you reach your stay (landing \(edits.flight.arrivalTime))"
         }

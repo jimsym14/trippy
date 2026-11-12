@@ -37,8 +37,9 @@ def test_lines_are_fetched_once_and_then_come_from_the_cache():
         calls.append(query)
         return [_relation('1', 'subway', [_way([(38.0, 23.7), (38.02, 23.7)])])]
     cache = PlaceCache(':memory:')
-    first = transit.lines(37.98, 23.73, fetch=fetch, cache=cache)
-    again = transit.lines(37.97, 23.74, fetch=fetch, cache=cache)      # same city, another hotel
+    none = ROOT / 'tests/fixtures/no-transit-seeds'                     # no ready-made files: go to Overpass
+    first = transit.lines(37.98, 23.73, fetch=fetch, cache=cache, seeds=none)
+    again = transit.lines(37.97, 23.74, fetch=fetch, cache=cache, seeds=none)      # same city, another hotel
     assert len(calls) == 1 and again == first and 'subway|light_rail|tram' in calls[0]
 
 
@@ -107,3 +108,45 @@ def test_reduced_fares_apply_only_where_the_operator_lists_one():
     assert next(o for o in reduced['options'] if '24-hour' in o['label'])['per_person'] == 8.20
     # A city with no reduced fares checked stays on full fare whatever is asked.
     assert transit.advise(transit.tickets(ROOT, 'Rome'), days=2, rides_per_day=3, fare='reduced')['fare'] == 'full'
+
+
+def _seed_dir(tmp_path, fetched):
+    import json
+    line = {'id': 'subway:L3', 'mode': 'subway', 'mode_title': 'Metro', 'ref': 'L3', 'name': 'L3', 'color': '33A02C',
+            'operator': 'TMB', 'metres': 18000, 'km': 18.0, 'paths': [[[41.37, 2.15], [41.40, 2.17]]], 'stops': [[41.38, 2.16]]}
+    (tmp_path / 'barcelona.json').write_text(json.dumps({'city': 'barcelona', 'latitude': 41.3874, 'longitude': 2.1686,
+                                                          'fetched': fetched, 'attribution': '© OpenStreetMap contributors', 'lines': [line]}))
+    return tmp_path
+
+
+def test_big_cities_answer_from_a_ready_made_file_without_overpass(tmp_path):
+    from datetime import date
+    seeds = _seed_dir(tmp_path, date.today().isoformat())
+    def fetch(query): raise AssertionError('Overpass should not be called')
+    found = transit.lines(41.39, 2.17, fetch=fetch, seeds=seeds)
+    assert [l['ref'] for l in found['lines']] == ['L3']
+    assert transit.lines(37.98, 23.73, fetch=lambda q: [], seeds=seeds)['lines'] == []   # Athens isn't within 15 km
+
+
+def test_an_old_ready_made_file_still_beats_a_busy_overpass(tmp_path):
+    seeds = _seed_dir(tmp_path, '2020-01-01')
+    def busy(query): raise RuntimeError('overpass_busy: runtime error: timeout')
+    assert [l['ref'] for l in transit.lines(41.39, 2.17, fetch=busy, seeds=seeds)['lines']] == ['L3']
+
+
+def test_a_failed_lookup_is_unavailable_not_a_city_without_metro():
+    def busy(query): raise RuntimeError('overpass_busy')
+    reply = transit.answer(ROOT, 'Nowhere', 10.0, 10.0, fetch=busy)
+    assert reply['lines'] == [] and reply['status'] == 'unavailable'
+
+
+def test_overpass_busy_remark_is_a_failure(monkeypatch):
+    import io, json, urllib.request
+    from trippy.planner import osm_places
+    class Reply(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(urllib.request, 'urlopen', lambda *a, **k: Reply(json.dumps({'elements': [], 'remark': 'runtime error: Query timed out'}).encode()))
+    import pytest
+    with pytest.raises(RuntimeError):
+        osm_places.overpass('[out:json];')

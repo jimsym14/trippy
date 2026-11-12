@@ -105,14 +105,41 @@ def query(latitude, longitude, radius=RADIUS):
     return f'[out:json][timeout:90];relation["type"="route"]["route"~"^({kinds})$"](around:{radius},{latitude},{longitude});out geom;'
 
 
-def lines(latitude, longitude, *, fetch, cache=None):
-    """The lines around a point, from the cache when a recent answer exists. `fetch(query)` returns Overpass elements."""
+SEEDS = Path(__file__).resolve().parents[1] / 'data/transit/lines'
+SEED_METRES = 15000
+
+
+def seed(latitude, longitude, root=SEEDS):
+    """A ready-made line file for a city within 15 km (scripts/transit_seed_lines.py), or None."""
+    best = None
+    for path in sorted(Path(root).glob('*.json')) if Path(root).is_dir() else []:
+        try: value = json.loads(path.read_text())
+        except (OSError, ValueError): continue
+        metres = _metres((latitude, longitude), (value.get('latitude', 0), value.get('longitude', 0)))
+        if metres <= SEED_METRES and value.get('lines') and (best is None or metres < best[0]): best = (metres, value)
+    if best is None: return None
+    value = best[1]
+    return {'lines': value['lines'], 'attribution': value.get('attribution') or '© OpenStreetMap contributors', 'fetched': value.get('fetched')}
+
+
+def lines(latitude, longitude, *, fetch, cache=None, seeds=SEEDS):
+    """The lines around a point: the month cache, else a ready-made file for the big cities, else Overpass.
+    `fetch(query)` returns Overpass elements; when it fails, an older ready-made file is still better than nothing,
+    and with none the error goes up so the app can say "try again" instead of "this city has no metro"."""
     key = cache.key(round(latitude, 1), round(longitude, 1)) if cache else None
     if cache:
         found, value = cache.get('transit', key, LINES_DAYS)
         if found: return value
-    value = {'lines': lines_from(fetch(query(latitude, longitude))), 'attribution': '© OpenStreetMap contributors',
-             'fetched': date.today().isoformat()}
+    ready = seed(latitude, longitude, seeds)
+    if ready and ready.get('fetched') and (date.today() - date.fromisoformat(ready['fetched'])).days <= STALE_DAYS:
+        return ready
+    try:
+        value = {'lines': lines_from(fetch(query(latitude, longitude))), 'attribution': '© OpenStreetMap contributors',
+                 'fetched': date.today().isoformat()}
+    except Exception:
+        if ready: return ready
+        raise
+    if not value['lines'] and ready: return ready
     if cache and value['lines']: cache.put('transit', key, value)
     return value
 
@@ -240,7 +267,8 @@ def answer(root, city, latitude, longitude, *, fetch, cache=None, days=3, rides_
     started = clock()
     try: network = lines(latitude, longitude, fetch=fetch, cache=cache)
     except Exception as error:  # noqa: BLE001 - tickets are still worth showing when the map source is down
-        network = {'lines': [], 'attribution': '', 'error': type(error).__name__}
+        # "unavailable", not an empty network: the app offers to try again rather than saying the city has no metro.
+        network = {'lines': [], 'attribution': '', 'error': type(error).__name__, 'status': 'unavailable'}
     table = tickets(root, city)
     by_mode = {}
     for line in network['lines']: by_mode.setdefault(line['mode_title'], []).append(line['ref'])

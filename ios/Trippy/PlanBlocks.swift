@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 import MapKit
 import CoreLocation
 import CryptoKit
@@ -148,32 +149,73 @@ enum TimeShorthand {
 
 /// Most people don't remember their flight times; their mailbox does.
 enum MailSearch {
-    static func bookingQuery(city: String, mode: String) -> String {
-        let words = mode == "train" ? "(train OR ticket OR booking OR reservation)"
-            : mode == "car" ? "(rental OR booking OR reservation)"
-            : "(flight OR boarding OR e-ticket OR itinerary OR booking)"
-        return city.isEmpty ? "\(words) newer_than:1y" : "\(words) \"\(city)\" newer_than:1y"
+    enum Kind: String, CaseIterable, Identifiable {
+        case travel, stay, tickets
+        var id: String { rawValue }
+        func title(mode: String) -> String {
+            switch self {
+            case .travel: mode == "train" ? "Train tickets" : mode == "car" ? "Car rental" : "Flights"
+            case .stay: "Where I'm staying"
+            case .tickets: "Tickets and tours"
+            }
+        }
+        var symbol: String { switch self { case .travel: "airplane"; case .stay: "bed.double"; case .tickets: "ticket" } }
     }
+
+    /// Booking emails say "confirmation" more reliably than anything else, in English or Greek; the city narrows it to this trip.
+    static func query(_ kind: Kind, city: String, mode: String) -> String {
+        let confirmations = "(\"booking confirmation\" OR \"reservation confirmation\" OR confirmation OR confirmed OR itinerary OR κράτηση OR επιβεβαίωση)"
+        let what: String
+        switch kind {
+        case .travel:
+            what = mode == "train" ? "(train OR rail OR ticket OR εισιτήριο)"
+                : mode == "car" ? "(\"car rental\" OR \"rental car\" OR \"pick-up\" OR ενοικίαση)"
+                : "(flight OR \"boarding pass\" OR e-ticket OR PNR OR πτήση OR εισιτήριο)"
+        case .stay: what = "(hotel OR apartment OR airbnb OR booking.com OR \"check-in\" OR διαμονή)"
+        case .tickets: what = "(ticket OR tickets OR tour OR admission OR \"entry time\" OR εισιτήρια)"
+        }
+        return ([what, confirmations] + (city.isEmpty ? [] : ["\"\(city)\""]) + ["newer_than:1y"]).joined(separator: " ")
+    }
+    static func bookingQuery(city: String, mode: String) -> String { query(.travel, city: city, mode: mode) }
+
     static func gmailURL(_ query: String) -> URL? {
         let allowed = CharacterSet.urlFragmentAllowed.subtracting(CharacterSet(charactersIn: "#"))
         return URL(string: "https://mail.google.com/mail/u/0/#search/" + (query.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""))
     }
+    /// The Gmail app's own search link, when the app is installed.
+    static func gmailAppURL(_ query: String) -> URL? {
+        URL(string: "googlegmail:///search?q=" + (query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&+="))) ?? ""))
+    }
+
+    /// Copies the search (so it can be pasted if Gmail doesn't fill it in), then opens the Gmail app, else Gmail on the web.
+    @MainActor static func open(_ query: String) {
+        UIPasteboard.general.string = query.replacingOccurrences(of: " newer_than:1y", with: "")
+        if let app = gmailAppURL(query), let probe = URL(string: "googlegmail://"), UIApplication.shared.canOpenURL(probe) {
+            UIApplication.shared.open(app) { opened in
+                if !opened, let web = gmailURL(query) { UIApplication.shared.open(web) }
+            }
+        } else if let web = gmailURL(query) {
+            UIApplication.shared.open(web)
+        }
+    }
 }
 
-/// "Find it in Gmail" plus a copy of the same search for any other mail app.
+/// "Find it in mail": flights (or trains, or the car), the stay, tickets and tours. Each opens Gmail (the app when
+/// installed) with the search filled in, and copies it for any other mail app.
 struct FindBookingMenu: View {
     let city: String
     let mode: String
-    @Environment(\.openURL) private var openURL
     @State private var copied = false
     var body: some View {
-        let query = MailSearch.bookingQuery(city: city, mode: mode)
         Menu {
-            Button("Search Gmail", systemImage: "envelope.badge") { if let url = MailSearch.gmailURL(query) { openURL(url) } }
-            Button("Copy search for Mail", systemImage: "doc.on.doc") {
-                UIPasteboard.general.string = query.replacingOccurrences(of: " newer_than:1y", with: "")
-                copied = true
-                Task { try? await Task.sleep(for: .seconds(2)); copied = false }
+            Section("Search Gmail · also copied for any mail app") {
+                ForEach(MailSearch.Kind.allCases) { kind in
+                    Button(kind.title(mode: mode), systemImage: kind.symbol) { MailSearch.open(MailSearch.query(kind, city: city, mode: mode)); flash() }
+                }
+            }
+            Button("Copy the search only", systemImage: "doc.on.doc") {
+                UIPasteboard.general.string = MailSearch.query(.travel, city: city, mode: mode).replacingOccurrences(of: " newer_than:1y", with: "")
+                flash()
             }
         } label: {
             HStack(spacing: 6) {
@@ -183,7 +225,11 @@ struct FindBookingMenu: View {
             .font(Sketch.text(13, "SemiBold", relativeTo: .footnote))
             .padding(.horizontal, 14).frame(minHeight: 40).raisedCapsule()
         }
-        .accessibilityHint("Opens a mail search for your \(mode == "train" ? "train" : "flight") booking")
+        .accessibilityHint("Searches your mail for booking confirmations for this trip")
+    }
+    private func flash() {
+        copied = true
+        Task { try? await Task.sleep(for: .seconds(2)); copied = false }
     }
 }
 
@@ -193,7 +239,14 @@ struct FindBookingMenu: View {
 /// cached on disk, at most three lookups at a time.
 actor PlaceImageStore {
     static let shared = PlaceImageStore()
-    private var memory: [String: UIImage] = [:]
+    /// Decoded photos, capped by bytes (and emptied by iOS under memory pressure). An unbounded dictionary of
+    /// full-size website photos took the app past iOS's memory limit during planning, when the live feed shows
+    /// a photo for every place found.
+    private let memory: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 48 * 1024 * 1024
+        return cache
+    }()
     private var misses: Set<String> = []
     private var running = 0
     private var waiting: [CheckedContinuation<Void, Never>] = []
@@ -208,18 +261,33 @@ actor PlaceImageStore {
         return SHA256.hash(data: Data(raw.utf8)).map { String(format: "%02x", $0) }.joined().prefix(24).description
     }
 
-    func cached(_ key: String) -> UIImage? { memory[key] }
+    func cached(_ key: String) -> UIImage? { memory.object(forKey: key as NSString) }
+
+    private func remember(_ image: UIImage, _ key: String) {
+        let pixels = image.size.width * image.size.height * image.scale * image.scale
+        memory.setObject(image, forKey: key as NSString, cost: Int(pixels * 4))
+    }
+
+    /// Decodes straight to a small bitmap (never the full picture): a 4000×3000 photo is ~48 MB decoded, 900 px ~3 MB.
+    static func downsampled(_ data: Data, maxPixel: CGFloat = 900) -> UIImage? {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, options) else { return nil }
+        let thumb = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+                     kCGImageSourceShouldCacheImmediately: true, kCGImageSourceThumbnailMaxPixelSize: maxPixel] as CFDictionary
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumb) else { return nil }
+        return UIImage(cgImage: image)
+    }
 
     func image(name: String, latitude: Double?, longitude: Double?, sight: Bool, url: URL? = nil, website: URL? = nil) async -> UIImage? {
         let key = Self.key(name: name, latitude: latitude, longitude: longitude)
-        if let hit = memory[key] { return hit }
+        if let hit = cached(key) { return hit }
         if misses.contains(key) { return nil }
         let file = directory.appendingPathComponent(key + ".jpg")
-        if let data = try? Data(contentsOf: file), let image = UIImage(data: data) { memory[key] = image; return image }
+        if let data = try? Data(contentsOf: file), let image = Self.downsampled(data) { remember(image, key); return image }
         await acquire()
         defer { release() }
         var found: UIImage?
-        if let url, let (data, _) = try? await URLSession.shared.data(for: Self.request(url)) { found = UIImage(data: data) }
+        if let url, let (data, _) = try? await URLSession.shared.data(for: Self.request(url)) { found = Self.downsampled(data) }
         if found == nil, let latitude, let longitude {
             let c = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
             // Real photos first: Wikipedia for sights, the venue's own website photo for
@@ -230,7 +298,7 @@ actor PlaceImageStore {
             if found == nil { found = await Self.mapSnapshot(c) }
         }
         guard let found else { misses.insert(key); return nil }
-        memory[key] = found
+        remember(found, key)
         if let data = found.jpegData(compressionQuality: 0.78) { try? data.write(to: file) }
         return found
     }
@@ -274,7 +342,7 @@ actor PlaceImageStore {
         }
         guard let source = (match?["thumbnail"] as? [String: Any])?["source"] as? String, let imageURL = URL(string: source),
               let (imageData, _) = try? await URLSession.shared.data(from: imageURL) else { return nil }
-        return UIImage(data: imageData)
+        return downsampled(imageData)
     }
     /// The picture a venue publishes for link previews (`og:image` / `twitter:image`) on its own website.
     private static func websitePhoto(_ site: URL) async -> UIImage? {
@@ -288,7 +356,7 @@ actor PlaceImageStore {
         let raw = content.dropFirst(9).dropLast().replacingOccurrences(of: "&amp;", with: "&")
         guard let imageURL = URL(string: raw, relativeTo: site)?.absoluteURL, imageURL.scheme == "https",
               let (bytes, imageResponse) = try? await URLSession.shared.data(for: request(imageURL)),
-              (imageResponse.mimeType ?? "").hasPrefix("image/"), let image = UIImage(data: bytes),
+              (imageResponse.mimeType ?? "").hasPrefix("image/"), let image = downsampled(bytes),
               // Logos and icons are not photos of the place.
               image.size.width >= 300, image.size.height >= 160 else { return nil }
         return image
@@ -508,6 +576,8 @@ struct SlotRow: View {
     /// The stops before and after this block, and the stay: context on the options map.
     var neighbors: [GuidePlace] = []
     var base: GuideBase? = nil
+    /// What videos say about the picked place.
+    var videoNotes: [GuideVideoNote] = []
     @StateObject private var pool = SlotOptionsModel()
     @State private var showAll = false
     /// How many recommendations are showing; "Show more" adds three.
@@ -554,6 +624,7 @@ struct SlotRow: View {
                 Button { showAll = true } label: { pickCard }
                     .buttonStyle(SketchPressStyle())
                     .accessibilityHint("Shows all nearby options")
+                if picked && !editing && !videoNotes.isEmpty { VideoSaysBlock(notes: videoNotes) }
 
                 if !others.isEmpty { recommendations }
                 if editing {
@@ -946,4 +1017,221 @@ private struct OptionCard: View {
 extension Array {
     /// nil instead of a crash for an index outside the array.
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
+// MARK: - Community tips in the plan
+
+/// A tip from a traveller's video, shown next to the stop it is about (or at the top of the days when it
+/// fits the whole trip): what it says, where it applies, and the video it came from, opened at its moment.
+struct CommunityTipCard: View {
+    let tip: GuideCommunityTip
+    /// Trip-wide tips say why they are in this plan ("You picked beaches"); a stop's tip sits under its stop.
+    var showWhy = false
+    private var accent: Color { tip.warning ? Sketch.coral : Sketch.sage }
+    private var scopeSymbol: String {
+        switch tip.scopeLevel {
+        case "place", "neighbourhood": "mappin.and.ellipse"
+        case "city": "building.2"
+        default: "globe.europe.africa"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 6) {
+                Image(systemName: tip.warning ? "exclamationmark.triangle.fill" : "lightbulb.fill").imageScale(.small)
+                Text(tip.warning ? "HEADS UP" : "TRAVELLER TIP").font(Sketch.eyebrow).tracking(0.6)
+                Spacer(minLength: 6)
+                if !tip.scope.isEmpty { chip(tip.scope, scopeSymbol).accessibilityLabel("Applies to \(tip.scope)") }
+            }
+            .foregroundStyle(accent)
+            if !tip.when.isEmpty {
+                // The time half of the scope: a Christmas tip on a Christmas trip says so.
+                chip(tip.inSeason ? "\(tip.when) · your dates" : tip.when, "calendar", tint: tip.inSeason ? Sketch.plum : nil)
+                    .accessibilityLabel(tip.inSeason ? "For \(tip.when), which matches your dates" : "For \(tip.when)")
+            }
+            Text(tip.title).font(Sketch.text(15, "Bold", relativeTo: .subheadline)).foregroundStyle(Sketch.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            if !tip.detail.isEmpty {
+                Text(tip.detail).font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.ink.opacity(0.82))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if showWhy, !tip.why.isEmpty {
+                Label(tip.why, systemImage: "arrow.turn.down.right").font(Sketch.text(12, "Medium", relativeTo: .caption))
+                    .foregroundStyle(Sketch.inkFaint).fixedSize(horizontal: false, vertical: true)
+            }
+            source
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Sketch.card))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(accent.opacity(0.35), lineWidth: 1))
+        .overlay(alignment: .leading) {
+            UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 14, style: .continuous).fill(accent).frame(width: 4)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func chip(_ text: String, _ symbol: String, tint: Color? = nil) -> some View {
+        Label(text, systemImage: symbol).font(Sketch.text(11, "SemiBold", relativeTo: .caption2))
+            .foregroundStyle(tint ?? Sketch.inkSoft).lineLimit(1)
+            .padding(.horizontal, 8).padding(.vertical, 3).background(Capsule().fill((tint ?? Sketch.inkFaint).opacity(tint == nil ? 0 : 0.14)))
+            .background(Capsule().fill(Sketch.paperDeep))
+    }
+
+    @ViewBuilder private var source: some View {
+        let label = HStack(spacing: 5) {
+            Image(systemName: tip.platform == "youtube" ? "play.rectangle.fill" : "play.circle.fill")
+            Text(tip.sourceLine).lineLimit(1)
+            if tip.link != nil { Image(systemName: "arrow.up.right").imageScale(.small) }
+        }
+        .font(Sketch.text(12, "SemiBold", relativeTo: .caption))
+        if let link = tip.link {
+            Link(destination: link) { label.foregroundStyle(accent).frame(minHeight: 30) }
+                .accessibilityLabel("Watch \(tip.videoTitle)" + (tip.at.isEmpty ? "" : " at \(tip.at)"))
+        } else {
+            label.foregroundStyle(Sketch.inkSoft)
+        }
+    }
+}
+
+/// Tips for the whole trip, above the days: the first two open, the rest one tap away.
+struct CommunityTipsBlock: View {
+    let tips: [GuideCommunityTip]
+    var tint: Color = Sketch.clay
+    @State private var showAll = false
+
+    var body: some View {
+        if !tips.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "person.2.wave.2").foregroundStyle(tint)
+                    Text("From travellers’ videos").font(Sketch.text(14, "Bold", relativeTo: .subheadline))
+                    Spacer()
+                    Text("\(tips.count)").font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(Sketch.inkFaint)
+                }
+                ForEach(showAll ? tips : Array(tips.prefix(2))) { CommunityTipCard(tip: $0, showWhy: true) }
+                if tips.count > 2 {
+                    Button { withAnimation(.snappy) { showAll.toggle() } } label: {
+                        Label(showAll ? "Show fewer" : "Show \(tips.count - 2) more", systemImage: showAll ? "chevron.up" : "chevron.down")
+                            .font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(tint)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - What the videos say about a stop
+
+/// The creators' own lines about a stop, quoted from the videos the plan used: the first one shown,
+/// the rest a tap away, each with its video. Plum like the "From a video" badge; works in dark mode.
+struct VideoSaysBlock: View {
+    let notes: [GuideVideoNote]
+    var expandedByDefault = false
+    @State private var open = false
+
+    var body: some View {
+        if let first = notes.first {
+            VStack(alignment: .leading, spacing: 8) {
+                note(first, full: open || expandedByDefault)
+                if open || expandedByDefault {
+                    ForEach(notes.dropFirst()) { note($0, full: true) }
+                }
+                if notes.count > 1 && !expandedByDefault {
+                    Button { withAnimation(.snappy) { open.toggle() } } label: {
+                        Label(open ? "Show less" : "\(notes.count - 1) more from videos", systemImage: open ? "chevron.up" : "chevron.down")
+                            .font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(Sketch.plum)
+                            .frame(minHeight: 32)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Sketch.plum.opacity(0.08)))
+            .overlay(alignment: .leading) {
+                UnevenRoundedRectangle(topLeadingRadius: 12, bottomLeadingRadius: 12).fill(Sketch.plum.opacity(0.7)).frame(width: 3)
+            }
+        }
+    }
+
+    private func note(_ note: GuideVideoNote, full: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(note.personal ? "YOUR VIDEO SAYS" : "VIDEOS SAY", systemImage: "play.fill")
+                .font(Sketch.eyebrow).tracking(1).foregroundStyle(Sketch.plum)
+            Text(note.note).font(Sketch.text(14, relativeTo: .subheadline)).foregroundStyle(Sketch.ink.opacity(0.85))
+                .lineLimit(full ? nil : 3).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Text(note.title).lineLimit(1)
+                if !note.platformName.isEmpty { Text("· \(note.platformName)") }
+                Spacer(minLength: 4)
+                if let url = note.url { Link("Watch", destination: url).font(Sketch.text(12, "SemiBold", relativeTo: .caption)) }
+            }
+            .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Saved places that didn't fit
+
+/// Picked saves the days had no room for: never dropped silently. Each shows the day that suits it (its part of
+/// town) and adds there in one tap; the day re-flows round it. Three show at first, so the section stays small.
+struct DidntFitSection: View {
+    let items: [(date: String, place: GuidePlace)]
+    var notes: [String: [GuideVideoNote]] = [:]
+    let onAdd: (String, String) -> Void
+    @State private var showAll = false
+
+    var body: some View {
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "heart.text.square").foregroundStyle(Sketch.coral)
+                    Text("Saved, didn't fit").font(Sketch.display(.title3))
+                    Text("\(items.count)").font(Sketch.text(12, "Bold", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+                        .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(Sketch.paperDeep))
+                }
+                Text("You picked these, but the days were full. Each has the day it suits best; adding one moves later stops along.")
+                    .font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(Array((showAll ? items : Array(items.prefix(3))).enumerated()), id: \.element.place.id) { _, item in
+                    row(item)
+                }
+                if items.count > 3 {
+                    Button(showAll ? "Show fewer" : "Show \(items.count - 3) more") { withAnimation(.snappy) { showAll.toggle() } }
+                        .font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).frame(minHeight: 44)
+                }
+            }
+            .padding(16)
+            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Sketch.coral.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+        }
+    }
+
+    private func row(_ item: (date: String, place: GuidePlace)) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            PlacePhoto(place: item.place, tint: Sketch.coral).frame(width: 52, height: 52)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.place.name).font(Sketch.text(15, "SemiBold", relativeTo: .body)).lineLimit(2)
+                Text("\(item.place.categoryLabel) · best on \(GuideDates.short(item.date))")
+                    .font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+                if let said = notes[item.place.id]?.first?.note {
+                    Label(said, systemImage: "play.fill").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.plum)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 4)
+            Button { onAdd(item.place.id, item.date) } label: {
+                Text("Add to \(GuideDates.format(item.date, "EEE"))").font(Sketch.text(13, "Bold", relativeTo: .footnote))
+                    .lineLimit(1).fixedSize()
+                    .padding(.horizontal, 12).frame(minHeight: 36).background(Capsule().fill(Sketch.coral.opacity(0.14)))
+                    .foregroundStyle(Sketch.coral)
+            }
+            .buttonStyle(.plain).frame(minHeight: 44)
+            .accessibilityLabel("Add \(item.place.name) to \(GuideDates.long(item.date))")
+        }
+    }
 }

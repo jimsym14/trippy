@@ -24,6 +24,8 @@ struct ComposerResult: Equatable {
     /// "plane", "train" or "car".
     var travelMode = "plane"
     var look: ShelfLook?
+    /// The traveller's saves were offered once (ticked by default); later edits keep their choices.
+    var savesSeeded = false
 }
 
 /// A place the traveler insists on, with coordinates so the planner can schedule it.
@@ -35,6 +37,10 @@ struct ComposerPlace: Codable, Hashable {
     var category = "attraction"
     /// A photo for the picker (Wikimedia Commons for famous places), when known.
     var imageURL: String? = nil
+    /// Wikidata's one-line description ("Roman amphitheatre"), Wikipedia editions and the English article, when known.
+    var summary: String? = nil
+    var fame: Int? = nil
+    var wikiTitle: String? = nil
 }
 
 /// Reads plain Greek or English. It only picks up what is clearly written and

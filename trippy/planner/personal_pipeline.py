@@ -81,32 +81,14 @@ def missing_tasks(brief, graph, intent=None):
 def one_sight_once(doc):
     """A sight a video calls "Sagrada Familia" and the city lookup calls "Basilica of the Holy Family" is one sight.
 
-    Two places of the same kind within 60 m are merged when their names match, or when one of them is known only
-    from community videos (whose names are whatever the creator said). The better-identified one stays and keeps
-    the other's sources, so the videos still count for it. Places the traveller saved are never dropped."""
-    import difflib
-    from .plan_engine import distance, key
+    The rules (same Wikidata item, same name across accents, scripts and articles, a name plus only generic words,
+    neighbouring sights sharing a word) live in place_identity.py. The better-identified record stays, keeps the
+    others' sources and library links, so videos and pins still count for it, and takes their highest priority."""
     from .areas import strength
+    from .place_identity import merge_same_places
     def community_only(p): return 'source:community' in p.get('tags', [])
-    kept = []
-    for place in sorted(doc['places'], key=lambda p: (community_only(p), -strength(p), p['id'])):
-        if place['coordinates'].get('latitude') is None or place['category'] not in {'attraction', 'museum', 'nature'}:
-            kept.append(place); continue
-        twin = next((other for other in kept if other['category'] == place['category'] and other['coordinates'].get('latitude') is not None
-                     and distance(other, place) <= 60
-                     and (community_only(place) or community_only(other)
-                          or difflib.SequenceMatcher(None, key(other['name']), key(place['name'])).ratio() >= 0.75)), None)
-        if twin is None or (place.get('personal_priority', 0) > 10 and twin.get('personal_priority', 0) > 10):
-            kept.append(place); continue
-        twin['source_ids'] = sorted(set(twin['source_ids']) | set(place['source_ids']))
-        twin['library_node_ids'] = sorted(set(twin.get('library_node_ids', [])) | set(place.get('library_node_ids', [])))
-        twin['personal_priority'] = max(twin.get('personal_priority', 0), place.get('personal_priority', 0))
-        # Several creators using one name is the name people know it by ("Sagrada Familia", not "Basilica of the Holy Family").
-        if len(place.get('library_node_ids', [])) >= 2:
-            twin['name'] = place['name']
-        if place.get('library_node_ids') and not twin.get('description'): twin['description'] = place.get('description', '')
-    doc['places'] = sorted(kept, key=lambda p: p['id'])
-    return doc
+    city = (doc.get('trip_context') or {}).get('destination', '')
+    return merge_same_places(doc, city, rank=lambda p: (community_only(p), -strength(p), p['id']))
 
 
 def run(brief, *, directory, root, place_provider=None, intelligence=None, route_provider=None,
@@ -243,6 +225,15 @@ def run(brief, *, directory, root, place_provider=None, intelligence=None, route
                 if extra['places']: batches.append(extra)
                 progress('famous_added', {'places': len(extra['places']), 'known': len(items),
                                           'preview': place_preview(extra['places'])})
+    elif brief.get('base') or batches:
+        # The local catalog carries its own fame, but the traveller's pins don't: tag them from the cached Wikidata
+        # list (no network), so a saved "Colosseum" ranks as the Colosseum when days are short. Adds no places.
+        from . import famous
+        points = sorted((p['coordinates']['latitude'], p['coordinates']['longitude']) for b in batches for p in b['places']
+                        if p['coordinates'].get('latitude') is not None)
+        if points:
+            items = famous.famous_items(root, brief['destination'], *points[len(points) // 2], cached_only=True)
+            if items: famous.enrich(batches, items, set())
     planning_brief = brief
     if intent and intent.area_hint:
         from .plan_engine import key

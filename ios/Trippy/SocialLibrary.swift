@@ -102,7 +102,10 @@ enum SocialExtractionClient {
         return updated
     }
 
-    static func submit(_ source: ImportedSocialSource, baseURL: String, token: String) async throws -> SocialExtractionJob {
+    /// Sends the post. `step` reports each phase as it happens; the returned report says what the read used
+    /// (nil when the server already had a read of this post and nothing was prepared here).
+    static func submit(_ source: ImportedSocialSource, baseURL: String, token: String,
+                       step: @MainActor @escaping (String) -> Void = { _ in }) async throws -> (SocialExtractionJob, SocialReadReport?) {
         guard !token.isEmpty, let url = URL(string: baseURL + "/api/social/extract") else { throw Failure.notConnected }
         let post = source.envelope.tiktok
         var evidence: [[String: String]] = post?.evidenceText.map { ["origin": $0.origin, "text": $0.text] } ?? []
@@ -118,19 +121,34 @@ enum SocialExtractionClient {
             body["trip"] = ["city": city, "country": source.country ?? ""]
         }
         // Every post is read once for everyone: ask first, so an indexed post costs no upload and no credit.
+        await step("Checking if someone already shared it…")
         if let probe = try? await send(jsonRequest(url, body: body.merging(["probe": true]) { $1 }, token: token, timeout: 20)),
-           probe.status != "unindexed" { return probe }
+           probe.status != "unindexed" { return (probe, nil) }
+        var report = SocialReadReport()
+        if let transcript = post?.transcript, !transcript.isEmpty { report.captions = "used"; report.captionLanguage = post?.transcriptLanguage }
+        if !(post.map { !$0.isSlideshow && ($0.durationSeconds ?? 0) > 0 } ?? false) { await step("Preparing the slides…") }
         body["images"] = await Task.detached(priority: .utility) { slideImages(source) }.value
+        report.slides = (body["images"] as? [Any])?.count ?? 0
         // Videos are read on the phone first (VideoReading): only the frames where text appears go, with what
         // the phone read on them, and the sound check decides whether the transcript and the audio are worth sending.
         if let post, isVideo {
-            let upload = await videoUpload(for: post)
+            report.slides = 0
+            let upload = await videoUpload(for: post, step: step)
             body["media_note"] = upload.note
+            report.problem = upload.problem
             if let sound = upload.sound {
                 body["sound"] = sound.kind.rawValue
+                report.sound = sound.kind.rawValue
                 // A song's auto-captions are lyrics: they would only mislead the read.
-                if !sound.hasVoice { evidence.removeAll { $0["origin"] == "auto_caption" } }
+                if !sound.hasVoice {
+                    evidence.removeAll { $0["origin"] == "auto_caption" }
+                    if report.captions != nil { report.captions = "skipped" }
+                }
             }
+            report.frames = upload.video == nil ? upload.frames.count : 0
+            report.frameTextLines = upload.frames.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+            report.videoCopy = upload.video != nil
+            report.voiceSent = upload.audio != nil
             if !upload.frameText.isEmpty { evidence.append(["origin": "frame_text", "text": upload.frameText]) }
             body["evidence"] = evidence
             if let video = upload.video { body["video"] = ["mime": "video/mp4", "data": video.base64EncodedString()] }
@@ -147,7 +165,8 @@ enum SocialExtractionClient {
         if let session = AccountSession.header { request.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        return try await send(request)
+        await step(report.frames > 0 ? "Sending \(report.frames) frames to be read…" : report.videoCopy ? "Sending a small copy of the video…" : "Sending it to be read…")
+        return (try await send(request), report)
     }
 
     private static func jsonRequest(_ url: URL, body: [String: Any], token: String, timeout: TimeInterval) throws -> URLRequest {
@@ -222,19 +241,30 @@ enum SocialExtractionClient {
         var frameText = ""
         var sound: SoundVerdict? = nil
         var note = ""
+        /// Why nothing could be looked at, in plain words.
+        var problem: String? = nil
     }
 
     /// Fresh read (signed URLs expire), download the video with that session's cookies, then decide on the phone
     /// what is worth sending: the frames where text appears (VideoReading.keyframes), and the audio only when
     /// someone speaks and TikTok has no captions of it. A video with no text on it at all goes as a small copy
     /// instead, so its pictures still reach the read. Up to five minutes.
-    private static func videoUpload(for post: TikTokPostSnapshot) async -> VideoUpload {
+    private static func videoUpload(for post: TikTokPostSnapshot, step: @MainActor @escaping (String) -> Void) async -> VideoUpload {
         var upload = VideoUpload()
-        guard (post.durationSeconds ?? 0) <= 300, let link = URL(string: post.canonicalURL) else { upload.note = "too long"; return upload }
+        guard (post.durationSeconds ?? 0) <= 300, let link = URL(string: post.canonicalURL) else {
+            upload.note = "too long"; upload.problem = "Longer than 5 minutes, so only the text was read"; return upload
+        }
+        await step("Opening the video…")
         let reader = TikTokPageReader()
-        guard (try? await reader.read(link, into: nil)) != nil else { upload.note = "page not readable"; return upload }
+        guard (try? await reader.read(link, into: nil)) != nil else {
+            upload.note = "page not readable"; upload.problem = "TikTok didn't open the video, so only the text was read"; return upload
+        }
+        await step("Downloading the video…")
         let video: URL
-        do { video = try await reader.downloadVideo() } catch { upload.note = "download failed: \(error)"; return upload }
+        do { video = try await reader.downloadVideo() } catch {
+            upload.note = "download failed: \(error)"; upload.problem = "The video didn't download, so only the text was read"; return upload
+        }
+        await step("Listening to the sound and finding text on the frames…")
         defer { try? FileManager.default.removeItem(at: video) }
         let ignore = Set((post.authorHandle ?? "").lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
         async let sound = VideoReading.sound(of: video)

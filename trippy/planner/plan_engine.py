@@ -187,6 +187,29 @@ def asked_for(p):
     return any(t.startswith('theme:') for t in p.get('tags', []))
 
 
+# Unpicked saves ("ideas") in one day's sightseeing at most: a personal touch, not a day of random saves.
+IDEAS_PER_DAY = 2
+
+
+def is_idea(p):
+    """A save the traveller didn't pick: personal, but not chosen for this trip."""
+    return 0 < (p.get('personal_priority') or 0) <= 50 and 'source:community' not in p.get('tags', [])
+
+
+def idea_bonus(p):
+    """Quality points for what backs an unpicked save: each extra video, and something written about it (a summary
+    or tips). Capped at 24 (three kilometres of walking at DISTANCE_PENALTY_PER_KM), and half again for food and
+    drink, where a place the traveller saved and has notes on is the tested choice. Nothing for community-only;
+    a bare save takes some back (below)."""
+    if not is_idea(p): return 0
+    # A bare save (nothing written, one source) gives back half of what its priority adds to strength (areas.strength
+    # counts 120 × priority / 100): saving it alone doesn't make it better than a well-rated neighbour.
+    if not (p.get('description') or '').strip() and len(p.get('library_node_ids', [])) <= 1:
+        return -0.6 * (p.get('personal_priority') or 0)
+    evidence = min(2, max(0, len(p.get('library_node_ids', [])) - 1)) * 6 + (12 if (p.get('description') or '').strip() else 0)
+    return min(24, evidence) * (1.5 if p.get('category') in {'food', 'coffee', 'bar'} else 1)
+
+
 def slot_rank(p, previous, brief, centers=(), trip_centers=(), elsewhere=False, home=None):
     """Deterministic order for one slot.
 
@@ -201,14 +224,17 @@ def slot_rank(p, previous, brief, centers=(), trip_centers=(), elsewhere=False, 
     # A saved place leads only on its own area's day when another day goes there;
     # a saved place outside every planned area keeps its priority on any day.
     personal = p.get('personal_priority', 0) if inside or not in_day_area(p, trip_centers) else 0
+    # Only what the traveller chose (picked, pinned, saved, noted: over 50) leads outright. An unpicked save or a
+    # community video competes on strength (which counts its priority) plus a small, capped evidence bonus.
+    lead = personal if personal > 50 else 0
     # Leaving the day's areas costs like extra walking, so the day stays in them
     # without forcing a long leg to a far corner of a big area.
     # Evenings drift towards the base, so the walk home stays short.
     homeward = 0.6 * distance(home, p) if home else 0
     # A place in an area planned for another day waits for that day.
-    return (elsewhere, -personal, -len(set(p['tags']) & set(brief['preference_tags'])),
+    return (elsewhere, -lead, -len(set(p['tags']) & set(brief['preference_tags'])),
             -p.get('judge_score', 0.0), meters > MAX_PREFERRED_LEG_METERS,
-            -(quality(p) + strength(p) + 20 * sum(t.startswith('theme:') for t in p.get('tags', [])) - DISTANCE_PENALTY_PER_KM * (meters + (0 if asked_for(p) else outside_metres(p, centers)) + homeward) / 1000), p['id'])
+            -(quality(p) + strength(p) + idea_bonus(p) + 20 * sum(t.startswith('theme:') for t in p.get('tags', [])) - DISTANCE_PENALTY_PER_KM * (meters + (0 if asked_for(p) else outside_metres(p, centers)) + homeward) / 1000), p['id'])
 
 
 def visit_minutes(p):
@@ -219,6 +245,69 @@ def visit_minutes(p):
 
 # Visits per day by pace; a quick stop (fountain, square) counts half.
 DAY_VISITS = {'relaxed': 3.5, 'balanced': 6, 'speedrun': 9}
+
+
+# Getting from one saved sight to the next, on top of its visit.
+PIN_TRAVEL_MINUTES = 25
+
+
+def assign_pins(places, dates, brief, *, area_plan, area_of, area_by_id, base_place, grouped, pace, visits, members_of=None,
+                sight_hours=(570, 1140)):
+    """date for each saved sight (personal priority over 50), before the days are filled.
+
+    Its own area's day when that day has room, else the day whose planned areas (or pins) are nearest; the
+    strongest sights choose first. A day's room is its sightseeing hours less lunch and a coffee, each pin
+    costing its visit (the whole group's for a group lead) and the way there; an arrival afternoon has less,
+    a departure morning takes only what is near the stay. A saved sight inside a group (the Sistine Chapel in
+    the Vatican Museums) brings its group's lead. Pins with no room anywhere are left to the normal fill."""
+    from .areas import fame
+    from .visits import group_minutes, quick, closes_by
+    if not dates: return {}
+    members_of = members_of or {}
+    times = brief.get('date_range') or {}
+    first, last = sight_hours   # the trip's own sightseeing hours (friends out at night stop earlier)
+    def window(i):
+        start = clock_minutes(times['arrival_time']) + 90 if i == 0 and times.get('arrival_time') else first
+        end = min(last, clock_minutes(times['departure_time']) - 180) if i == len(dates) - 1 and times.get('departure_time') else last
+        return max(first, start), end
+    meals = 105   # lunch and a coffee break
+    room = {d: max(0, window(i)[1] - window(i)[0] - meals) for i, d in enumerate(dates)}
+    # The day's visit budget too (a quick stop counts half), in proportion to its hours.
+    visits_left = {d: DAY_VISITS[pace] * max(0, window(i)[1] - window(i)[0]) / max(1, last - first) for i, d in enumerate(dates)}
+    departure_day = dates[-1] if len(dates) > 1 and times.get('departure_time') else None
+    points = {d: [(area_by_id[a]['latitude'], area_by_id[a]['longitude']) for a in area_plan.get(d, [])] for d in dates}
+    area_day = {a: d for d, ids in area_plan.items() for a in ids}
+    lead_of = {m['id']: lead for lead, members in members_of.items() for m in members}
+    by_id = {p['id']: p for p in places}
+    saved = [p for p in places if (p.get('personal_priority') or 0) > 50 and p['category'] in visits and has_coordinates(p)]
+    pins = {}
+    for p in saved:
+        lead = by_id.get(lead_of.get(p['id'], p['id']))
+        if lead is not None and lead['id'] not in grouped: pins[lead['id']] = lead
+    # Most famous first. A pin the city data knows nothing about (no Wikipedia count: "Colosseum" saved from a
+    # list) ranks with the trip's typical pin, not last.
+    known = sorted(fame(p) for p in pins.values() if fame(p))
+    typical = known[len(known) // 2] if known else 0
+    out = {}
+    for p in sorted(pins.values(), key=lambda p: (-(fame(p) or typical), p['id'])):
+        cost = (group_minutes(p, members_of[p['id']]) if p['id'] in members_of else visit_minutes(p)) + PIN_TRAVEL_MINUTES
+        weight = 0.5 if quick(p) and p['id'] not in members_of else 1
+        def fits(d):
+            if room[d] < cost or visits_left[d] < weight: return False
+            # Open long enough after the day starts (ruins close at dusk in winter; an arrival afternoon is short).
+            begin, _ = window(dates.index(d))
+            if begin + 105 + cost > closes_by(p, int(d[5:7])) and begin > 600: return False
+            return d != departure_day or (base_place is not None and distance(base_place, p) < 1800)
+        def far(d):
+            pts = points[d]
+            if not pts: return 9e9
+            return min(distance({'coordinates': {'latitude': a, 'longitude': b}}, p) for a, b in pts)
+        own = area_day.get(area_of.get(p['id']))
+        choice = own if own and fits(own) else min((d for d in dates if fits(d)), key=lambda d: (far(d), d), default=None)
+        if choice is None: continue
+        out[p['id']] = choice; room[choice] -= cost; visits_left[choice] -= weight
+        points[choice].append((p['coordinates']['latitude'], p['coordinates']['longitude']))
+    return out
 
 
 def compose_plan(document, brief, *, route_provider=None):
@@ -292,7 +381,7 @@ def compose_plan(document, brief, *, route_provider=None):
         if pace == 'balanced': slots = [(x[0], x[1], x[2], 1080 if x[3] == 1140 else x[3]) for x in slots]
     speedrun = pace == 'speedrun'
     from .visits import groups as visit_groups, group_minutes, quick, closes_by
-    from .areas import strength as area_strength, in_day_area
+    from .areas import strength as area_strength, in_day_area, fame as area_fame
     # Sights Wikidata links (part of / located in) and that stand together are one visit.
     linked = visit_groups(places, area_strength)
     members_of = {lead: [indexed[i] for i in ids] for lead, ids in linked.items()}
@@ -303,7 +392,11 @@ def compose_plan(document, brief, *, route_provider=None):
     floor = min(15, 0.2 * best_visit)
     covered_themes = set()
     def worth(p):
-        return p.get('personal_priority') or area_strength(p) >= (floor / 2 if asked_for(p) else floor)
+        # What the traveller chose always counts; an unpicked save counts when something is written about it
+        # (a summary or tips from its video), else it needs the same strength as any other filler.
+        if (p.get('personal_priority') or 0) > 50: return True
+        if is_idea(p) and (p.get('description') or '').strip(): return True
+        return area_strength(p) >= (floor / 2 if asked_for(p) else floor)
     # Areas first: each day gets one or two neighbouring areas, starting from the base.
     from .areas import cluster, assign
     base = brief.get('base') if isinstance(brief.get('base'), dict) and brief['base'].get('latitude') is not None else None
@@ -319,6 +412,10 @@ def compose_plan(document, brief, *, route_provider=None):
     area_of = {pid: a['id'] for a in areas for pid in a['place_ids']}
     area_day = {a: d for d, ids in area_plan.items() for a in ids}
     base_place = {'id':'base','name':base.get('name') or 'Base','coordinates':{'latitude':base['latitude'],'longitude':base['longitude']}} if base else None
+    # Saved sights get a day before anything else is chosen, so a pin never loses its place to a filler.
+    pin_day = assign_pins(places, dates, brief, area_plan=area_plan, area_of=area_of, area_by_id=area_by_id,
+                          base_place=base_place, grouped=grouped, pace=pace, visits=visits, members_of=members_of,
+                          sight_hours=(min(x[0] for x in slots if x[3]), max(x[3] for x in slots if x[3])))
     for day_number, local_date in enumerate(dates,1):
         day = {'day':day_number,'date':local_date,'theme':'Η ημέρα σου','stops':[], 'alternative':'',
                'flex_time':'Οι ώρες είναι προτάσεις· κράτησε χρόνο για διαλείμματα.',
@@ -347,7 +444,7 @@ def compose_plan(document, brief, *, route_provider=None):
         if last_day and latest - 540 >= 90:
             # Departure morning: breakfast near the base, then whatever fits close by.
             day_slots = [(540,'morning',{'coffee'},None), (585,'morning',visits,latest)] + [x for x in slots if x[0] >= latest]
-        state = {'budget': DAY_VISITS[pace], 'previous': None, 'coffee': False}
+        state = {'budget': DAY_VISITS[pace], 'previous': None, 'coffee': False, 'ideas': 0}
 
         def last_end(before):
             ends = [clock_minutes(s['time'])+s['duration_minutes'] for s in day['stops'] if clock_minutes(s['time']) <= before]
@@ -364,28 +461,32 @@ def compose_plan(document, brief, *, route_provider=None):
                 if reach > 1600:
                     free_from = max(start, last_end(window_end) or start)
                     if free_from + 75 > window_end: break
+                # A saved sight given to a later day waits for it; one whose day has passed is fair game again.
                 options = [p for p in places if p['id'] not in used and p['id'] not in grouped
-                           and p['category'] in slot_categories and available(p,local_date)]
+                           and p['category'] in slot_categories and available(p,local_date)
+                           and (pin_day.get(p['id']) or '') <= local_date]
+                def mine(p): return pin_day.get(p['id']) == local_date
                 if fill:
-                    options = [p for p in options if worth(p)]
+                    options = [p for p in options if worth(p) and (not is_idea(p) or state['ideas'] < IDEAS_PER_DAY)]
                     # A ride is only for a sight worth riding to: one of the city's stronger ones, never a filler.
                     if reach > 1600:
                         options = [p for p in options if p.get('personal_priority') or area_strength(p) >= 0.25 * best_visit]
                     if last_day and base_place:
                         # Departure morning: anything still unseen close to the base.
-                        options = [p for p in options if distance(base_place, p) < 1800 and visit_minutes(p) <= 60]
+                        options = [p for p in options if mine(p) or (distance(base_place, p) < 1800 and visit_minutes(p) <= 60)]
                     else:
                         # A place in an area planned for another day waits for that day, and the
                         # next sight is a walk away: no cross-town hop for one more stop.
                         # Measured from the last sight: lunch somewhere else doesn't move the day.
                         here = state.get('visit') or previous or area_anchor or base_place
                         # Areas of earlier days are open again: what's left there is fair filler.
-                        options = [p for p in options if (area_day.get(area_of.get(p['id'])) or '') <= local_date
+                        # Today's saved sights go wherever they are: the day was given to them.
+                        options = [p for p in options if mine(p) or (area_day.get(area_of.get(p['id'])) or '') <= local_date
                                    and (not here or distance(here, p) < reach
                                         or (p.get('personal_priority') and centers and in_day_area(p, centers) and distance(here, p) < 2400))]
                 def rank(p):
                     r = slot_rank(p, previous or area_anchor or base_place, brief, centers, trip_centers,
-                                  elsewhere=area_day.get(area_of.get(p['id'])) not in (None, local_date), home=home)
+                                  elsewhere=not mine(p) and area_day.get(area_of.get(p['id'])) not in (None, local_date), home=home)
                     # Mornings start with the long visits (big museums, ruins): fresh legs, open doors.
                     # A theme the traveller asked for (beach, seafood) gets its first stop early.
                     fresh = (any(t.startswith('theme:') and t not in covered_themes for t in p.get('tags', []))
@@ -393,7 +494,9 @@ def compose_plan(document, brief, *, route_provider=None):
                     long_first = 0 if period == 'morning' and fill and (group_minutes(p, members_of[p['id']]) if p['id'] in members_of else visit_minutes(p)) >= 90 else 1
                     # A meal or a drink is a short walk from where the day is.
                     near = 0 if fill or not previous else int(distance(previous, p) > 1200)
-                    return (r[0], min(r[1], -50) if fresh else r[1], near, long_first) + r[2:]
+                    # Today's saved sights first, nearest first among them; then everything else as before.
+                    # Among them: what closes first, then the more famous (St Peter's before its square), then the nearest.
+                    return (not mine(p), closes_by(p, month) if mine(p) else 0, -area_fame(p) if mine(p) else 0, r[0], min(r[1], -50) if fresh else r[1], near, long_first) + r[2:]
                 if not fill and start == 540 and last_day and base_place:
                     # Breakfast before the airport is round the corner from the base.
                     options = [p for p in options if distance(base_place, p) < 1500]
@@ -450,6 +553,7 @@ def compose_plan(document, brief, *, route_provider=None):
                         'alternatives':[q['id'] for q in options if q['id']!=p['id']][:3]})
                     used.add(p['id']); used.update(m['id'] for m in members); state['previous'] = p
                     if fill: state['visit'] = p
+                    if fill and is_idea(p): state['ideas'] += 1
                     if fill: state['budget'] -= 0.5 if quick(p) and not members else 1
                     if p['category'] == 'coffee': state['coffee'] = True
                     covered_themes.update(t for t in p.get('tags', []) if t.startswith('theme:'))
@@ -495,6 +599,17 @@ def compose_plan(document, brief, *, route_provider=None):
             'max':float(sum((a[1] for a in known),Decimal(0))) if known else None,
             'covered_stops':len(known),'total_stops':len(amounts),'scenario':'adult_standard_not_family_quote'}
         days.append(day)
+    # Saved sights that found no room are listed, each with the day that suits it, never silently dropped.
+    on_plan = {i for d in days for s in d['stops'] for i in [s['place_id']] + s.get('includes', [])}
+    def best_day(p):
+        if pin_day.get(p['id']): return pin_day[p['id']]
+        own = area_day.get(area_of.get(p['id']))
+        if own: return own
+        spots = [(d['date'], indexed[s['place_id']]) for d in days for s in d['stops'] if has_coordinates(indexed[s['place_id']])]
+        return min(spots, key=lambda x: distance(x[1], p))[0] if spots else (dates[0] if dates else None)
+    doc['unscheduled_saved'] = [{'place_id': p['id'], 'name': p['name'], 'suggested_date': best_day(p)}
+                                for p in sorted(places, key=lambda p: p['name'])
+                                if (p.get('personal_priority') or 0) > 50 and p['category'] in visits and p['id'] not in on_plan]
     scheduled_categories={indexed[s['place_id']]['category'] for d in days for s in d['stops']}
     for category in categories-scheduled_categories:
         pending.append({'code':'selected_category_unscheduled','category':category})

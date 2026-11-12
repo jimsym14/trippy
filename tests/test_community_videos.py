@@ -34,7 +34,10 @@ def test_youtube_video_is_organised_without_quotes(tmp_path):
     assert video["key"] == "youtube:vid1" and video["title"] == "Barcelona food" and video["author"] == "Creator"
     assert [p["name"] for p in video["places"]] == ["Tourist trap", "Bar Lobo"]  # in timeline order
     assert video["places"][0]["stance"] == "avoid" and video["places"][1]["at"] == "1:15"
-    assert video["tips"][0] == {"title": "T10 ticket", "detail": "Cheaper than singles.", "at": "1:01:40", "seconds": 3700, "category": "transport"}
+    tip = video["tips"][0]
+    assert {k: tip[k] for k in ("title", "detail", "at", "seconds", "category")} == {
+        "title": "T10 ticket", "detail": "Cheaper than singles.", "at": "1:01:40", "seconds": 3700, "category": "transport"}
+    assert tip["scope"]["label"] == "Barcelona" and "transport" in tip["topics"] and tip["stance"] == "tip"
     assert "VERBATIM" not in json.dumps(video)
     assert video["counts"] == {"places": 2, "recommended": 1, "tips": 1, "avoid": 1}
     assert clock(59) == "0:59"

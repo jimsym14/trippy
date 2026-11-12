@@ -7,8 +7,10 @@ from .planning_contract import empty_batch
 from .plan_engine import digest, key
 from research_pipeline import canonical_category
 
-KINDS = {'pin', 'save', 'note', 'video', 'prior_trip'}
-WEIGHTS = {'pin': 100, 'save': 90, 'note': 80, 'video': 60, 'prior_trip': 40, 'community': 10}
+KINDS = {'pin', 'save', 'note', 'video', 'prior_trip', 'idea'}
+# 'idea': a save the traveller didn't pick in the setup. It competes for open slots with a capped boost
+# (plan_engine.idea_bonus), never forced in; picked saves arrive as must-see pins.
+WEIGHTS = {'pin': 100, 'save': 90, 'note': 80, 'video': 60, 'prior_trip': 40, 'idea': 30, 'community': 10}
 
 
 def weight(node):
@@ -100,7 +102,8 @@ def graph_batch(graph):
             # Community places rank by how many videos recommend them, so the sight five creators chose
             # comes before one nobody else mentioned. The traveller's own places need no score: they lead anyway.
             'tags':([f"quality:{min(96, 64 + 6 * len(set(p['node_ids'])))}", 'source:community']
-                    if all(by_node[n]['kind'] == 'community' for n in p['node_ids']) else []), 'price':{'min':None,'max':None,'currency':None,'basis':'unknown'}, 'price_source_ids':[],
+                    if all(by_node[n]['kind'] == 'community' for n in p['node_ids'])
+                    else ['source:idea'] if all(by_node[n]['kind'] in {'idea', 'community'} for n in p['node_ids']) else []), 'price':{'min':None,'max':None,'currency':None,'basis':'unknown'}, 'price_source_ids':[],
             'cuisine':None,'dietary_options':[],'best_for':[],'best_time':None,'reservation_required':None,
             'image_url':None,'image_source_url':None,'image_attribution':None,
             'rating':{'value':None,'scale':None,'platform':None,'review_count':None},

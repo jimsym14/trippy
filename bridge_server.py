@@ -273,6 +273,18 @@ def _community_plan_nodes(brief):
         return []
 
 
+def add_community_tips(result,brief):
+    """Community tips that match this plan's city, picks and stops (tip_index.plan_tips): string matching over the
+    indexed videos, no model or paid call. A failure only leaves the tips out."""
+    try:
+        from trippy.social.tip_index import plan_tips
+        found=plan_tips(result,normalized_brief(brief),community_videos().all())
+        if found['tips']: result['community_tips']=found
+        result.setdefault('pipeline_report',{})['community_tips']=len(found['tips'])
+    except Exception as error:
+        print('community tips skipped:',type(error).__name__,str(error)[:200],flush=True)
+
+
 _place_takes=None
 _place_takes_lock=threading.RLock()   # re-entrant: community_videos() builds video_index() while holding it
 _video_index=None
@@ -496,6 +508,7 @@ def run_pipeline(brief_data, job_id=None, *, provider=None, route_provider=None)
         else:
             result=execute_plan(brief_data,provider=provider,directory=job_directory(job_id),root=root(),
                 route_provider=route_provider,progress=report_progress)
+        if personal: add_community_tips(result,brief_data)
         report=result.setdefault('pipeline_report',{})
         report.update(support_id=state.jobs[job_id]['support_id'],build_commit=os.environ.get('RENDER_GIT_COMMIT','local'))
         if personal:
@@ -982,7 +995,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             if target.path=='/api/community/tips':
                 from trippy.social import guides
                 videos=community_videos().all()
-                self.send_json(200,{**guides.tips_for(videos,city=arg('city'),country=arg('country')),
+                self.send_json(200,{**guides.tips_for(videos,city=arg('city'),country=arg('country'),topic=arg('topic'),
+                                                    dates=[d for d in (query.get('dates',[''])[0] or '').split(',') if len(d)==10][:31]),
                                     'foods':guides.foods_for(videos,city=arg('city'),country=arg('country'))}); return
             if target.path=='/api/community/plan-sources':
                 self.send_json(200,plan_sources(arg('city'),videos=community_videos().all())); return

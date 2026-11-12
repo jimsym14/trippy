@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from .gemini import GeminiPool, GeminiUnavailable, inline
+from .tags import clean_facets, clean_when
 
 CATEGORIES = ["Sights", "Food", "Coffee", "Brunch", "Bars", "Groceries", "Metro", "Other", "Street food",
               "Burger", "Seafood", "Vegan", "Shopping", "Local shops", "Parks", "Clubs"]
@@ -52,7 +53,15 @@ For each place:
 - confidence: 0–1 that this is a real, findable venue.
 Also classify the post: post_kind = "places" (recommends venues), "tips" (general travel advice, no venue is
 the point), or "mixed". For tips, return tips: each {{title, detail, at}} — a short headline, one or two
-sentences of advice, and where it appears ("0:24", "slide 3", "caption").
+sentences of advice, and where it appears ("0:24", "slide 3", "caption"); where = the neighbourhood, beach, venue or area
+the tip is about when it is narrower than the whole post ("Barceloneta"), else ""; topics = what it is about, from
+{tip_topics} (e.g. "skip the city beaches, go to Sitges" -> beach, day_trips); when, audience and cost as below.
+when (on the post's scope, each tip and each place): only when it applies at a particular time — label ("Christmas",
+  "Summer", "Sundays", "Sunset"), months (1–12), start/end as "MM-DD" for a fixed period (Christmas markets "12-01".."01-06"),
+  movable "easter"/"carnival" for those feasts, weekdays (0 = Monday), times (morning, afternoon, evening, night).
+  A Christmas walk is Christmas for the whole post; a tip about crowded summer beaches is Summer. Leave it empty
+  (no label) when the advice holds all year. audience: who it is for, from {audiences}, only when the post says so;
+  cost: {costs}, only when stated.
 
 relevant: true when the post helps someone plan or enjoy a trip or a day out (places, food, routes, tips,
 costs, views). False for anything else (dance, fashion, news, ads unrelated to a place) — then leave every
@@ -84,8 +93,23 @@ Author: {author}
 _LIST = {"type": "ARRAY", "items": {"type": "STRING"}}
 _MOMENTS = {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {"at": {"type": "STRING"}, "text": {"type": "STRING"}},
                                        "required": ["at", "text"]}}
+# What a tip is about (trippy/social/tip_index.TOPICS); named in the same read, so plans can match tips for free.
+TIP_TOPICS = ["beach", "nightlife", "food", "coffee", "transport", "safety", "prices", "queues", "tickets", "season", "sights",
+              "museums", "outdoors", "shopping", "day_trips", "etiquette"]
+# When something applies (the time half of a scope; trippy/social/tags.py): a holiday, season, months, weekdays or
+# time of day. Same shape on the post, each tip and each place; empty when it applies all year.
+_WHEN = {"type": "OBJECT", "properties": {
+    "label": {"type": "STRING"}, "months": {"type": "ARRAY", "items": {"type": "INTEGER"}},
+    "start": {"type": "STRING"}, "end": {"type": "STRING"}, "movable": {"type": "STRING", "enum": ["", "easter", "carnival"]},
+    "weekdays": {"type": "ARRAY", "items": {"type": "INTEGER"}},
+    "times": {"type": "ARRAY", "items": {"type": "STRING", "enum": ["morning", "afternoon", "evening", "night"]}}}}
+AUDIENCES = ["families", "couples", "solo", "friends", "accessible"]
+COSTS = ["free", "budget", "splurge"]
 _TIPS = {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
-    "title": {"type": "STRING"}, "detail": {"type": "STRING"}, "at": {"type": "STRING"}}, "required": ["title", "detail"]}}
+    "title": {"type": "STRING"}, "detail": {"type": "STRING"}, "at": {"type": "STRING"}, "where": {"type": "STRING"},
+    "topics": {"type": "ARRAY", "items": {"type": "STRING", "enum": TIP_TOPICS}}, "when": _WHEN,
+    "audience": {"type": "ARRAY", "items": {"type": "STRING", "enum": AUDIENCES}},
+    "cost": {"type": "ARRAY", "items": {"type": "STRING", "enum": COSTS}}}, "required": ["title", "detail"]}}
 POST_KINDS = ["places", "tips", "mixed"]
 GUIDE_TYPES = ["venue", "area_guide", "city_guide", "themed_list", "route", "hidden_spots", "must_see", "tips", "foods"]
 SCOPE_LEVELS = ["place", "neighbourhood", "city", "region", "country", "multi_country", "continent"]
@@ -105,7 +129,7 @@ SCHEMA = {
         "guide_types": {"type": "ARRAY", "items": {"type": "STRING", "enum": GUIDE_TYPES}},
         "theme": {"type": "STRING"},
         "scope": {"type": "OBJECT", "properties": {"level": {"type": "STRING", "enum": SCOPE_LEVELS}, "name": {"type": "STRING"},
-                                                   "region": {"type": "STRING"}, "countries": _LIST}, "required": ["level", "name"]},
+                                                   "region": {"type": "STRING"}, "countries": _LIST, "when": _WHEN}, "required": ["level", "name"]},
         "foods": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}, "detail": {"type": "STRING"},
                                                                              "where": {"type": "STRING"}}, "required": ["name"]}},
         "route": {"type": "OBJECT", "properties": {
@@ -121,7 +145,7 @@ SCHEMA = {
             "country_code": {"type": "STRING"}, "address_hint": {"type": "STRING"}, "search_query": {"type": "STRING"},
             "vibe_tags": _LIST, "tldr": {"type": "STRING"}, "pro_tips": _LIST, "good_to_know": _LIST,
             "must_try": _LIST, "why_go": _LIST, "price_hint": {"type": "STRING"}, "evidence": _LIST,
-            "moments": _MOMENTS, "confidence": {"type": "NUMBER"}},
+            "moments": _MOMENTS, "confidence": {"type": "NUMBER"}, "when": _WHEN},
             "required": ["name", "category", "search_query", "vibe_tags", "tldr", "pro_tips", "good_to_know",
                          "must_try", "why_go", "evidence", "confidence"]}},
         "unresolved": _LIST,
@@ -162,7 +186,7 @@ def build_parts(source):
                      " drawn on the frames, and transcribe and use what is said]")
     elif source.get("audio"):
         lines.append("\n[Audio track follows — transcribe it and use what is said]")
-    parts = [{"text": PROMPT.format(categories=", ".join(CATEGORIES), guide_types=", ".join(GUIDE_TYPES), url=source.get("url") or "unknown",
+    parts = [{"text": PROMPT.format(categories=", ".join(CATEGORIES), guide_types=", ".join(GUIDE_TYPES), tip_topics=", ".join(TIP_TOPICS), audiences=", ".join(AUDIENCES), costs=", ".join(COSTS), url=source.get("url") or "unknown",
                                     author=source.get("author") or "unknown", evidence="".join(lines) or "(no text)")}]
     def clock(seconds):
         return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
@@ -192,6 +216,7 @@ def clean(result):
         place["vibe_tags"] = place["vibe_tags"][:3]
         place["moments"] = [{"at": str(m.get("at") or "").strip()[:20], "text": str(m.get("text") or "").strip()[:300]}
                             for m in place.get("moments") or [] if isinstance(m, dict) and str(m.get("text") or "").strip()][:12]
+        place["when"] = clean_when(place.get("when"))
         if place.get("category") not in CATEGORIES:
             place["category"] = "Other"
         place["city"] = place.get("city") or result.get("city") or ""
@@ -200,7 +225,9 @@ def clean(result):
         places.append(place)
     result["places"] = places
     result["tips"] = [{"title": str(t.get("title") or "").strip()[:120], "detail": str(t.get("detail") or "").strip()[:500],
-                       "at": str(t.get("at") or "").strip()[:20]}
+                       "at": str(t.get("at") or "").strip()[:20], "where": str(t.get("where") or "").strip()[:80],
+                       "topics": list(dict.fromkeys(x for x in t.get("topics") or [] if x in TIP_TOPICS))[:6],
+                       **clean_facets(t)}
                       for t in result.get("tips") or [] if isinstance(t, dict) and str(t.get("title") or "").strip()][:20]
     kind = result.get("post_kind")
     if kind not in POST_KINDS:
@@ -236,7 +263,7 @@ def clean(result):
     if len(region.split()) > 4 or any(ch in region for ch in ",;:()") or "-level" in region or "scope" in region.lower():
         region = ""
     result["scope"] = {"level": level, "name": str(scope.get("name") or result.get("city") or result.get("country") or "").strip()[:80],
-                       "region": region[:60], "countries": list(dict.fromkeys(countries))[:20]}
+                       "region": region[:60], "countries": list(dict.fromkeys(countries))[:20], "when": clean_when(scope.get("when"))}
     result["foods"] = [{"name": str(f.get("name") or "").strip()[:80], "detail": str(f.get("detail") or "").strip()[:240],
                         "where": str(f.get("where") or "").strip()[:80]}
                        for f in result.get("foods") or [] if isinstance(f, dict) and str(f.get("name") or "").strip()][:20]
@@ -595,7 +622,7 @@ class ExtractionQueue:
             except GeminiUnavailable as error:
                 if error.retry_at and error.retry_at - self._clock() < 6 * 3600:
                     # Every free model is parked: wait for the first to free up, keep the job queued.
-                    job.update(status="queued", waiting_until=error.retry_at, note="Waiting for free Gemini quota")
+                    job.update(status="queued", waiting_until=error.retry_at, note="Waiting for free quota")
                     with self._lock:
                         self._lock.wait(timeout=max(5, error.retry_at - self._clock()))
                     continue

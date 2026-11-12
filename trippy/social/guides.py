@@ -52,6 +52,8 @@ def guide_of(video):
     return {"key": video["key"], "platform": video["platform"], "url": video["url"], "title": video["title"], "author": video.get("author"),
             "summary": video.get("summary") or "", "types": types, "theme": video.get("theme") or "",
             "level": level, "scope_name": scope.get("name") or video.get("city") or "", "region": scope.get("region") or "",
+            # The time half of the scope (tags.py): "Christmas", "Summer", or None when it holds all year.
+            "when": video.get("when") or scope.get("when"),
             "city": video.get("city") or "", "countries": countries, "continents": continents,
             "places": len(video.get("places") or []), "tips": len(video.get("tips") or []), "foods": len(video.get("foods") or []),
             "route_stops": len((video.get("route") or {}).get("stops") or []), "savers": video.get("savers") or 0}
@@ -97,8 +99,12 @@ def browse(videos, *, continent="", country="", region="", city="", kind="", que
             "regions": [{"name": name, "count": n} for name, n in regions.most_common(10)]}
 
 
-def tips_for(videos, *, city="", country="", limit=40):
-    """Every tip that applies to a city: its own first, then its country's, then its continent's. Said once each."""
+def tips_for(videos, *, city="", country="", limit=40, topic="", dates=()):
+    """Every tip that applies to a city: its own first, then its country's, then its continent's. Said once each.
+    Each tip carries its scope (where and when it applies), topics and stance (tip_index.annotate); topic= keeps one
+    topic, dates= (ISO days of a trip) drops tips for another time of year."""
+    from .tags import when_matches
+    from .tip_index import source_link, tip_scope, tip_topics, scope_label, stance_of
     country = country.upper()
     groups, seen = defaultdict(list), set()
     for video in videos:
@@ -111,9 +117,18 @@ def tips_for(videos, *, city="", country="", limit=40):
         for tip in video.get("tips") or []:
             key = fold(tip.get("title"))[:60]
             if not key or key in seen: continue
+            topics = tip.get("topics") or tip_topics(tip)
+            if topic and topic not in topics: continue
+            if when_matches(tip.get("when"), dates) is False: continue
             seen.add(key)
+            scope = tip.get("scope") or {**tip_scope(tip, video)}
+            scope.setdefault("label", scope_label(scope))
             groups[level].append({"title": tip.get("title"), "detail": tip.get("detail"), "at": tip.get("at"),
-                                  "from": {"key": g["key"], "title": g["title"], "author": g["author"], "url": g["url"]}})
+                                  "topics": topics, "scope": scope, "when": tip.get("when"),
+                                  "audience": tip.get("audience") or [], "cost": tip.get("cost") or [],
+                                  "stance": tip.get("stance") or stance_of(f"{tip.get('title')}. {tip.get('detail')}"),
+                                  "from": {"key": g["key"], "title": g["title"], "author": g["author"], "url": g["url"],
+                                           "platform": g["platform"], "link": source_link(video, tip)}})
     titles = {"city": city or "This city", "country": country_name(country) if country else "This country",
               "continent": CONTINENT_OF.get(country, "")}
     return {"groups": [{"level": level, "title": titles[level], "tips": groups[level][:limit]} for level in ("city", "country", "continent") if groups[level]]}

@@ -94,7 +94,13 @@ def overpass(query, *, timeout=100, mirrors=2):
             from trippy import call_log
             with call_log.track('free:overpass'):
                 with urllib.request.urlopen(request, timeout=timeout) as response:
-                    return json.load(response).get('elements', [])
+                    reply = json.load(response)
+            # A busy server answers 200 with no elements and a "runtime error" remark (timeout, out of memory):
+            # that is a failure, not an empty city. Try the mirror.
+            remark = str(reply.get('remark') or '')
+            if not reply.get('elements') and ('error' in remark.casefold() or 'timed out' in remark.casefold()):
+                raise RuntimeError('overpass_busy: ' + remark[:120])
+            return reply.get('elements', [])
         except Exception as exc:  # noqa: BLE001 - try the mirror
             error = exc
     raise error or RuntimeError('overpass_unavailable')

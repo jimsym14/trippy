@@ -148,7 +148,7 @@ class ExtractTests(unittest.TestCase):
                                                                                               {"name": "Vienna", "country_code": "AT"}, {"name": ""}]},
                           "foods": [{"name": "Trdelník", "where": "Prague"}, {"detail": "no name"}]})
         self.assertEqual(route["guide_types"], ["route", "tips"])
-        self.assertEqual(route["scope"], {"level": "multi_country", "name": "Central Europe", "region": "Europe", "countries": ["CZ", "AT"]})
+        self.assertEqual(route["scope"], {"level": "multi_country", "name": "Central Europe", "region": "Europe", "countries": ["CZ", "AT"], "when": None})
         self.assertEqual([s["name"] for s in route["route"]["stops"]], ["Prague", "Vienna"])
         self.assertEqual(route["route"]["stops"][0]["country_code"], "CZ")
         self.assertEqual([f["name"] for f in route["foods"]], ["Trdelník"])

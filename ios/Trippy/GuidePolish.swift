@@ -88,6 +88,34 @@ enum LongDistanceLinks {
 }
 
 /// The dotted line between two stops. Past twenty minutes it opens the lines that make the hop.
+/// Apple's own walking and public-transport times between two stops, asked once per pair and kept for the session.
+/// Requests go one at a time, a little over a second apart: MapKit allows about fifty a minute per app.
+actor LegTimes {
+    static let shared = LegTimes()
+    struct Times: Equatable { var walk: Int?; var transit: Int? }
+    private var known: [String: Times] = [:]
+    private var last = Date.distantPast
+
+    func times(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) async -> Times {
+        let key = String(format: "%.4f,%.4f|%.4f,%.4f", a.latitude, a.longitude, b.latitude, b.longitude)
+        if let hit = known[key] { return hit }
+        var out = Times()
+        for type in [MKDirectionsTransportType.walking, .transit] {
+            let wait = 1.25 - Date().timeIntervalSince(last)
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            last = Date()
+            let request = MKDirections.Request()
+            request.source = MKMapItem(placemark: MKPlacemark(coordinate: a)); request.destination = MKMapItem(placemark: MKPlacemark(coordinate: b))
+            request.transportType = type
+            guard let eta = try? await MKDirections(request: request).calculateETA() else { continue }
+            let minutes = max(1, Int((eta.expectedTravelTime / 60).rounded()))
+            if type == .walking { out.walk = minutes } else { out.transit = minutes }
+        }
+        known[key] = out
+        return out
+    }
+}
+
 struct TravelLegRow: View {
     let minutes: Int
     let color: Color
@@ -95,28 +123,49 @@ struct TravelLegRow: View {
     let to: GuidePlace
     let input: GuideInput
     @State private var open = false
+    /// Apple's times, when they've come back; until then the planner's estimate shows with a "~".
+    @State private var apple: LegTimes.Times?
     var body: some View {
-        let long = minutes >= 20 && from.coordinate != nil && to.coordinate != nil
+        // Long means a ride is worth a look: by Apple's walking time when known, else the estimate.
+        let walk = apple?.walk ?? minutes
+        let long = walk >= 20 && from.coordinate != nil && to.coordinate != nil
         HStack(spacing: 10) {
             DottedTrail().stroke(color.opacity(0.45), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, dash: [1, 5])).frame(width: 58, height: long ? 44 : 26)
             if long {
                 Button { open = true } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "tram.fill").font(.system(size: 11, weight: .bold))
-                        Text("~\(minutes) min · see the lines").font(Sketch.text(12, "Bold", relativeTo: .caption))
+                        Text(longLabel).font(Sketch.text(12, "Bold", relativeTo: .caption))
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
                     }
                     .foregroundStyle(color).padding(.horizontal, 12).frame(minHeight: 44).background(Capsule().fill(color.opacity(0.1)))
                 }
-                .buttonStyle(SketchPressStyle()).accessibilityLabel("About \(minutes) minutes to \(to.name). Show the lines.")
+                .buttonStyle(SketchPressStyle()).accessibilityLabel("\(longLabel) to \(to.name). Show the lines.")
             } else {
-                Text("~\(minutes) min walk").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkFaint)
-                    .accessibilityLabel("About \(minutes) minutes on foot to the next stop")
+                Text(apple?.walk.map { "\($0) min walk" } ?? "~\(minutes) min walk").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkFaint)
+                    .contentTransition(.numericText())
+                    .accessibilityLabel("\(walk) minutes on foot to the next stop")
             }
         }
+        .task(id: "\(from.id)|\(to.id)") {
+            guard let a = from.coordinate, let b = to.coordinate else { return }
+            let found = await LegTimes.shared.times(a, b)
+            withAnimation(.snappy) { apple = found }
+        }
         .sheet(isPresented: $open) {
-            TravelLegSheet(from: from, to: to, minutes: minutes, input: input)
+            TravelLegSheet(from: from, to: to, minutes: apple?.transit ?? walk, input: input)
                 .presentationDetents([.medium, .large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
+        }
+    }
+}
+
+extension TravelLegRow {
+    /// "12 min by transit · 28 walking" from Apple, else the planner's "~25 min".
+    var longLabel: String {
+        switch (apple?.transit, apple?.walk) {
+        case let (t?, w?) where t < w: return "\(t) min by transit · \(w) walking"
+        case let (_, w?): return "\(w) min walk · see the lines"
+        default: return "~\(minutes) min · see the lines"
         }
     }
 }

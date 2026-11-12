@@ -177,6 +177,8 @@ private struct TripBrief: Codable, Equatable {
     /// How the traveler gets there: "plane", "train" or "car".
     var travelMode = "plane"
     var mustSee: [ComposerPlace] = []
+    /// The setup offered the traveller's saves once; what they kept is in mustSee, the rest stays ideas.
+    var savesSeeded = false
 
     var title: String { destination.isEmpty ? "New trip" : destination }
     var libraryDateSummary: String {
@@ -191,7 +193,7 @@ private struct TripBrief: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case destination, startDate, endDate, dateContext, dateIsUnknown, duration, travelers, group, vibes, interests, preferenceTags, budget, budgetBasis, budgetIncludes, notes, dietaryNeeds, mobility, stayStyle, excludedLibraryNodeIDs, communityUse, communityVideos, arrivalTime, departureTime, paceMode, travelMode, mustSee
+        case destination, startDate, endDate, dateContext, dateIsUnknown, duration, travelers, group, vibes, interests, preferenceTags, budget, budgetBasis, budgetIncludes, notes, dietaryNeeds, mobility, stayStyle, excludedLibraryNodeIDs, communityUse, communityVideos, arrivalTime, departureTime, paceMode, travelMode, mustSee, savesSeeded
     }
 
     init() {}
@@ -241,6 +243,7 @@ private struct TripBrief: Codable, Equatable {
         paceMode = try c.decodeIfPresent(String.self, forKey: .paceMode) ?? ""
         travelMode = try c.decodeIfPresent(String.self, forKey: .travelMode) ?? "plane"
         mustSee = try c.decodeIfPresent([ComposerPlace].self, forKey: .mustSee) ?? []
+        savesSeeded = try c.decodeIfPresent(Bool.self, forKey: .savesSeeded) ?? false
     }
 }
 
@@ -332,6 +335,7 @@ private struct PlanningLibraryNode: Identifiable {
         case "note": "Travel note"
         case "video": "Saved video"
         case "prior_trip": "Previous trip"
+        case "idea": "Saved idea"
         default: kind
         }
     }
@@ -2911,6 +2915,66 @@ private struct TripFlowView: View {
         .planningSurface(radius: 20)
     }
 
+    /// The traveller's saves for a destination, for the setup: saved and pinned places and the places in their videos,
+    /// one per place, each with everything its videos say (summary, why go, tips, what to try, good to know, price).
+    private var savesProvider: (String) -> [PickInfo] { { city in composerSaves(city) } }
+
+    private func composerSaves(_ city: String) -> [PickInfo] {
+        guard !city.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
+        let key = MapCityGrouping.key(LibraryGrouping.cityTitle(city))
+        func matches(_ c: String?) -> Bool {
+            guard let c, !c.isEmpty else { return false }
+            return MapCityGrouping.key(LibraryGrouping.cityTitle(c)) == key
+        }
+        func category(_ kind: PickKind) -> String {
+            switch kind {
+            case .sights, .other: "attraction"; case .museums: "museum"; case .nature: "nature"
+            case .food: "food"; case .bars: "bar"; case .shops: "shopping"
+            }
+        }
+        func category(_ saved: MapPlaceCategory) -> String {
+            switch saved {
+            case .sights, .metro, .other: "attraction"
+            case .restaurants, .streetFood, .burgers, .seafood, .vegan, .brunch, .groceries: "food"
+            case .coffee: "coffee"; case .bars, .clubs: "bar"; case .shopping, .touristShops: "shopping"; case .parks: "nature"
+            }
+        }
+        let videos = Dictionary(socialSources.map { ($0.id, PickInfo.Video(title: $0.displayTitle ?? "Saved video", url: $0.envelope.sourceURL.flatMap(URL.init(string:)))) },
+                                uniquingKeysWith: { a, _ in a })
+        func merge(_ m: SocialPlaceMention, into info: inout PickInfo) {
+            func add(_ lines: [String]?, to list: inout [String]) {
+                for line in lines ?? [] where !line.isEmpty && !list.contains(line) { list.append(line) }
+            }
+            if info.summary.isEmpty { info.summary = m.summary }
+            add(m.whyGo, to: &info.whyGo); add(m.proTips, to: &info.tips); add(m.mustTry, to: &info.mustTry)
+            add(m.goodToKnow, to: &info.goodToKnow); add(m.vibeTags, to: &info.vibes)
+            if info.price == nil { info.price = m.priceHint }
+            if let video = videos[m.sourceID], !info.videos.contains(video) { info.videos.append(video) }
+        }
+        let mentions = socialPlaces.filter { matches($0.city) }
+        var out: [String: PickInfo] = [:]
+        for place in savedPlaces where matches(place.city) && (place.isPinned || place.isSaved) {
+            let k = ComposerParser.fold(place.name)
+            var info = out[k] ?? PickInfo(place: ComposerPlace(name: place.name, latitude: place.latitude, longitude: place.longitude,
+                                                              address: place.address, category: category(place.category)),
+                                          source: .save, pinned: place.isPinned)
+            for m in mentions where (place.sourceIDs ?? []).contains(m.sourceID) || ComposerParser.fold(m.name) == k
+                || (m.googlePlaceID != nil && m.googlePlaceID == place.googlePlaceID) {
+                merge(m, into: &info)
+            }
+            out[k] = info
+        }
+        for m in mentions where m.latitude != nil {
+            let k = ComposerParser.fold(m.name)
+            var info = out[k] ?? PickInfo(place: ComposerPlace(name: m.name, latitude: m.latitude, longitude: m.longitude,
+                                                              address: m.address ?? "", category: category(PickKind(category: m.category ?? ""))),
+                                          source: .save)
+            merge(m, into: &info)
+            out[k] = info
+        }
+        return Array(out.values)
+    }
+
     private var planningLibraryNodes: [PlanningLibraryNode] {
         let destination = MapCityGrouping.key(LibraryGrouping.cityTitle(brief.destination))
         func matches(_ city: String?) -> Bool {
@@ -2920,10 +2984,30 @@ private struct TripFlowView: View {
         var nodes: [PlanningLibraryNode] = []
         let pins = savedPlaces.filter { matches($0.city) && ($0.isPinned || $0.isSaved) }
             + (activeTrip?.savedPins ?? []).filter { matches($0.city) }
-        for place in pins {
+        // Saves are offered in the setup (ticked by default, up to about two a day): the ones kept there arrive
+        // as must-sees below and are planned first; the rest stay ideas and are not pushed into the days.
+        // Trips set up before that keep the old behaviour.
+        let picked = Set(brief.mustSee.map { ComposerParser.fold($0.name) })
+        for place in pins where !brief.savesSeeded {
             let kind = place.isPinned ? "pin" : "save"
             nodes.append(PlanningLibraryNode(id: "\(kind):\(place.id)", kind: kind, title: place.name,
                 city: brief.destination, places: [PlanningLibraryPlace(place)]))
+        }
+        if brief.savesSeeded {
+            // Saves not picked still play a part, as ideas: they compete for open slots near the day with a small
+            // boost for what their videos say, never forced in (planner: idea_bonus, at most two sights a day).
+            // The 60 with the most written about them, so hundreds of saves don't flood a plan.
+            let ideas = PickInfo.rankSaves(composerSaves(brief.destination))
+                .filter { !picked.contains(ComposerParser.fold($0.place.name)) && $0.place.latitude != nil }
+                .prefix(60)
+            for info in ideas {
+                let notes = ([info.summary] + info.whyGo + info.tips + info.mustTry.map { "Try: \($0)" } + info.goodToKnow)
+                    .filter { !$0.isEmpty }.joined(separator: "\n")
+                // The server takes only public HTTPS links; anything else is left off rather than failing the plan.
+                let link = info.videos.compactMap(\.url).first { $0.scheme == "https" && $0.host != nil }?.absoluteString
+                nodes.append(PlanningLibraryNode(id: "idea:" + String(ComposerParser.fold(info.place.name).prefix(190)), kind: "idea", title: info.place.name,
+                    city: brief.destination, text: String(notes.prefix(2000)), url: link, places: [PlanningLibraryPlace(info.place)]))
+            }
         }
         // Must-see places from the composer are scheduled like pins.
         for place in brief.mustSee {
@@ -2940,10 +3024,12 @@ private struct TripFlowView: View {
             let mentions = socialPlaces.filter { $0.sourceID == source.id &&
                 (($0.tripID == activeTripID && activeTripID != nil) || ($0.tripID == nil && matches($0.city))) }
             guard !mentions.isEmpty || matches(source.city) || (source.envelope.destination.tripID == activeTripID && activeTripID != nil) else { continue }
+            // A video still informs the plan (its words, its tips); its places are planned only when picked.
+            let planned = brief.savesSeeded ? mentions.filter { picked.contains(ComposerParser.fold($0.name)) } : mentions
             nodes.append(PlanningLibraryNode(id: "video:\(source.id.uuidString)", kind: "video",
                 title: source.displayTitle ?? "Saved video", city: brief.destination,
                 text: String(source.evidence.map(\.text).joined(separator: "\n").prefix(8000)),
-                url: source.envelope.sourceURL, places: mentions.map { PlanningLibraryPlace($0) }))
+                url: source.envelope.sourceURL, places: planned.map { PlanningLibraryPlace($0) }))
         }
         // Reuse completed useful plans as context, preserving their source trip.
         for trip in trips where trip.id != activeTripID && matches(trip.brief.destination) {
@@ -7235,7 +7321,9 @@ private extension TripFlowView {
             TripGuideView(input: GuideInput(tripID: trip.id, title: trip.title, destination: trip.brief.destination,
                                             startDate: trip.brief.startDate, endDate: trip.brief.endDate,
                                             travelers: trip.brief.travelers, research: research, travelMode: trip.brief.travelMode,
-                                            bridgeURL: bridgeBaseURL, bridgeToken: bridgeToken),
+                                            bridgeURL: bridgeBaseURL, bridgeToken: bridgeToken,
+                                            plannedArrival: trip.brief.arrivalTime, plannedDeparture: trip.brief.departureTime,
+                                            plannedStay: ComposerSeed.stay(in: trip.brief.notes) ?? ""),
                           onClose: { guideTripID = nil },
                           onOpenDetails: { showLegacyDetails = true },
                           onEditBrief: { guideTripID = nil; Task { @MainActor in try? await Task.sleep(for: .milliseconds(450)); openComposer(for: trip) } },
@@ -7249,18 +7337,23 @@ private extension TripFlowView {
             activeTripID = trip.id; brief = trip.brief; tripNameDraft = trip.title
             seed.destination = trip.brief.destination; seed.startDate = trip.brief.startDate; seed.endDate = trip.brief.endDate
             seed.flexible = trip.brief.dateIsUnknown; seed.duration = trip.brief.duration; seed.travelers = trip.brief.travelers
-            seed.group = trip.brief.group; seed.message = trip.brief.notes; seed.budget = trip.brief.budget
-            seed.arrivalTime = trip.brief.arrivalTime; seed.departureTime = trip.brief.departureTime
+            seed.group = trip.brief.group; seed.message = ComposerSeed.ownNotes(trip.brief.notes); seed.budget = trip.brief.budget
+            // The plan screen's "Flights and stay" holds the latest values; the brief holds what the last plan used.
+            let flight = GuideEditsStore.load(trip.id, travelers: trip.brief.travelers).flight
+            seed.arrivalTime = flight.arrivalTime.nonEmpty ?? trip.brief.arrivalTime
+            seed.departureTime = flight.departureTime.nonEmpty ?? trip.brief.departureTime
+            seed.stay = flight.stayName.nonEmpty ?? ComposerSeed.stay(in: trip.brief.notes) ?? ""
             seed.name = trip.customName ?? ""
             seed.tags = trip.brief.preferenceTags; seed.interests = trip.brief.interests
             seed.budgetBasis = trip.brief.budgetBasis == "group" ? "group" : "per person"
-            seed.travelMode = trip.brief.travelMode; seed.mustSee = trip.brief.mustSee
+            seed.travelMode = trip.brief.travelMode; seed.mustSee = trip.brief.mustSee; seed.savesSeeded = trip.brief.savesSeeded
             seed.pace = trip.brief.paceMode.isEmpty ? nil : trip.brief.paceMode
             seed.look = ShelfLookStore.load()[trip.id.uuidString]
         } else {
             activeTripID = nil; brief = TripBrief(); tripNameDraft = ""; tripAppearanceDraft = nil
         }
         composerSeed = seed
+        ComposerSaves.provider = savesProvider
         showComposer = true
     }
     /// A "Where next?" pick as a new trip request, ready to adjust.
@@ -7274,6 +7367,7 @@ private extension TripFlowView {
         if let budget = query.budget { seed.budget = String(budget) }
         activeTripID = nil; brief = TripBrief(); tripNameDraft = ""; tripAppearanceDraft = nil
         composerSeed = seed
+        ComposerSaves.provider = savesProvider
         showComposer = true
     }
     /// One trip per stop, back to back, grouped as a journey. The first stop's plan starts right away;
@@ -7331,9 +7425,13 @@ private extension TripFlowView {
         next.budgetBasis = result.budgetBasis
         next.travelMode = result.travelMode
         next.mustSee = result.mustSee
+        next.savesSeeded = result.savesSeeded
         next.paceMode = result.pace == "speedrun" ? "speedrun" : ""
         if let pace = result.pace { self.pace = pace == "relaxed" ? 0.1 : pace == "balanced" ? 0.5 : 0.9 }
         brief = next
+        // A new trip needs its id now: the stay and flight times below are saved under it, and the planner's base
+        // is read from them. Without it they were silently dropped and the plan screen never showed them.
+        if activeTripID == nil { createTrip(from: next) }
         if let id = activeTripID, let index = trips.firstIndex(where: { $0.id == id }) {
             trips[index].brief = next; trips[index].research = nil; trips[index].researchJobID = nil; TripStorage.save(trips)
         }
@@ -8146,7 +8244,9 @@ private extension TripFlowView {
             TripGuideView(input: GuideInput(tripID: trip.id, title: trip.title, destination: trip.brief.destination,
                                             startDate: trip.brief.startDate, endDate: trip.brief.endDate,
                                             travelers: trip.brief.travelers, research: research, travelMode: trip.brief.travelMode,
-                                            bridgeURL: bridgeBaseURL, bridgeToken: bridgeToken),
+                                            bridgeURL: bridgeBaseURL, bridgeToken: bridgeToken,
+                                            plannedArrival: trip.brief.arrivalTime, plannedDeparture: trip.brief.departureTime,
+                                            plannedStay: ComposerSeed.stay(in: trip.brief.notes) ?? ""),
                           onClose: { showTripDetails = false },
                           onOpenDetails: { showLegacyDetails = true },
                           onEditBrief: { showTripDetails = false; openComposer(for: trip) })
@@ -12340,6 +12440,14 @@ struct PlanningLive: Equatable {
             ("Villa Borghese", "nature", "Pinciano", 41.9142, 12.4921, 4.7, 98_000), ("Borghese Gallery", "museum", "Pinciano", 41.9142, 12.4922, 4.8, 41_000),
         ].enumerated().map { PlanningFoundPlace(id: "demo-\($0.offset)", name: $0.element.0, category: $0.element.1, area: $0.element.2,
                                                  latitude: $0.element.3, longitude: $0.element.4, rating: $0.element.5, reviews: $0.element.6) }
+        // `-TrippyPlanningDemoHeavy <url>`: 40 more places, each with a large photo at <url>?n=i (memory checks).
+        if let heavy = UserDefaults.standard.string(forKey: "TrippyPlanningDemoHeavy") {
+            for i in 0..<40 {
+                let row: [String: Any] = ["id": "heavy-\(i)", "name": "Heavy place \(i)", "category": "food",
+                                          "latitude": 41.89 + Double(i) / 2000.0, "longitude": 12.47, "image_url": heavy + "?n=" + String(i)]
+                if let place = PlanningFoundPlace(row) { live.found.append(place) }
+            }
+        }
         if stage == "search" { return live }
         live.searches.append(Search(category: "coffee", count: 6))
         live.composing = true; live.guideStarted = true; live.guideListings = 99; live.guideMatched = 4; live.notesStarted = true
@@ -12850,7 +12958,12 @@ private extension TripFlowView {
                     if source.extractionStatus == nil {
                         let ready = await SocialExtractionClient.ensureSnapshot(source)
                         if let fresh = socialSources.firstIndex(where: { $0.id == source.id }) { socialSources[fresh] = ready }
-                        job = try await SocialExtractionClient.submit(ready, baseURL: base, token: token)
+                        let id = source.id
+                        let (sent, report) = try await SocialExtractionClient.submit(ready, baseURL: base, token: token) { [self] text in
+                            if let i = socialSources.firstIndex(where: { $0.id == id }) { socialSources[i].liveStep = text }
+                        }
+                        job = sent
+                        if let report, let i = socialSources.firstIndex(where: { $0.id == id }) { socialSources[i].readReport = report }
                     } else {
                         job = try await SocialExtractionClient.poll(source.id.uuidString, baseURL: base, token: token)
                     }
@@ -12858,8 +12971,28 @@ private extension TripFlowView {
                     guard let job else { socialSources[fresh].extractionStatus = nil; continue }
                     socialSources[fresh].extractionStatus = job.status
                     socialSources[fresh].extractionError = job.error ?? job.note
+                    socialSources[fresh].liveStep = nil
                     if job.status == "ready", let result = job.result {
                         socialSources[fresh].rereadRequested = nil
+                        // Handed over from an earlier read: say what that read saw, from the server's record.
+                        if job.cached == true || socialSources[fresh].readReport == nil {
+                            var report = SocialReadReport(fromIndex: job.cached == true)
+                            if let media = result.media {
+                                report.sound = media.sound?.nonEmpty
+                                switch media.kind {
+                                case "video": report.videoCopy = true
+                                case "frames": report.frames = media.count ?? 0
+                                case "images": report.slides = media.count ?? 0
+                                case "audio": report.voiceSent = true
+                                default: break
+                                }
+                            }
+                            if let post = socialSources[fresh].envelope.tiktok, !(post.transcript ?? "").isEmpty {
+                                report.captions = report.sound == "music" || report.sound == "silent" ? "skipped" : "used"
+                                report.captionLanguage = post.transcriptLanguage
+                            }
+                            socialSources[fresh].readReport = report
+                        }
                         applySocialExtraction(result, sourceIndex: fresh, fromIndex: job.cached == true)
                         // "8 stops" in the post, fewer found: say so on the video, with Read again one tap away.
                         if result.incomplete == true, let stated = result.statedCount {
@@ -13363,10 +13496,10 @@ private extension TripFlowView {
         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
     }
     private func studioTitle(_ source: ImportedSocialSource) -> String {
+        // Never the caption: captions are hashtags and emoji, and they have their own place in the detail.
         source.displayTitle?.nonEmpty
             ?? source.envelope.tiktok?.slideshowTitle?.nonEmpty
-            ?? source.envelope.tiktok?.caption.split(separator: "\n").first.map { String($0).trimmingCharacters(in: .whitespaces) }?.nonEmpty
-            ?? source.evidence.first?.text.split(separator: "\n").first.map(String.init)
+            ?? source.envelope.tiktok?.authorHandle.map { "@\($0)’s " + (source.envelope.tiktok?.isSlideshow == true ? "slideshow" : "video") }
             ?? "Saved video"
     }
     private func studioCover(_ source: ImportedSocialSource) -> URL? {
@@ -13377,11 +13510,13 @@ private extension TripFlowView {
         if source.extractionStatus == "failed" { return source.extractionError ?? "Couldn't read this one." }
         if bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Connect the bridge in Settings to read it." }
         switch source.extractionStatus {
-        case "queued": return (source.extractionError ?? "").localizedCaseInsensitiveContains("quota") ? "Waiting for free Gemini quota" : "In line for Gemini"
-        case "running": return "Gemini is reading it…"
+        case "queued": return (source.extractionError ?? "").localizedCaseInsensitiveContains("quota")
+            ? "Waiting for a free reading slot · it continues on its own" : "In line to be read"
+        case "running": return "Reading the places, tips and timeline…"
         default:
+            if let step = source.liveStep { return step }
             if let error = source.extractionError { return error }
-            return source.envelope.tiktok == nil ? "Reading the post…" : "Sending to Gemini…"
+            return source.envelope.tiktok == nil ? "Opening the post…" : "Getting it ready…"
         }
     }
     private func retryExtraction(_ id: UUID) {
@@ -13637,8 +13772,9 @@ private extension TripFlowView {
                             Text(stage == .pinned ? "Done" : source.extractionStatus == "failed" ? "Stopped" : "In the works")
                                 .font(Sketch.text(15, "Bold", relativeTo: .headline)).foregroundStyle(AppPalette.ink)
                             Spacer()
-                            if stage == .pinned, let model = source.extractionModel {
-                                Text(model).font(Sketch.text(11, "Medium", relativeTo: .caption2)).foregroundStyle(AppPalette.secondaryInk)
+                            if stage == .pinned, source.readReport?.fromIndex == true || source.fromIndex == true {
+                                Label("Read before", systemImage: "person.2.fill").font(Sketch.text(11, "SemiBold", relativeTo: .caption2))
+                                    .foregroundStyle(AppPalette.secondaryInk)
                             }
                         }
                         StudioPipeline(stage: stage, failed: source.extractionStatus == "failed")
@@ -13660,7 +13796,7 @@ private extension TripFlowView {
                                 }
                             }
                         } else if let date = source.extractedAt {
-                            Text("Read \(date.formatted(.relative(presentation: .named)))").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(AppPalette.secondaryInk)
+                            Text("Finished \(date.formatted(.relative(presentation: .named).locale(Locale(identifier: "en"))))").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(AppPalette.secondaryInk)
                         }
                     }
                     .padding(16).background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
@@ -13687,6 +13823,10 @@ private extension TripFlowView {
                             .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Sketch.card))
                             .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
                         }
+                    }
+
+                    if let caption = (post?.caption.nonEmpty ?? source.envelope.sharedText.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty) {
+                        StudioCaptionBlock(caption: caption)
                     }
 
                     if let tips = source.tips, !tips.isEmpty {
@@ -14687,7 +14827,7 @@ enum StudioDemo {
         }
         let cozy = source("TripSantorini", post("7703109951702437142", "eleni__vasileiou", "#fypgr #athensspots", slides: 7, title: "Cozy Spots - Athens"), status: "ready",
                           title: "Cozy Spots in Athens", summary: "Six cozy cafés and bars for cold days around Athens.", ago: 3600)
-        let voul = source("TripLisbon", post("7704754316732714262", "mario_sli", "Δοκιμάζουμε το Voulkanizater στο 📍Κουκάκι", stickers: ["Voulkanizater"], duration: 37), status: "ready",
+        var voul = source("TripLisbon", post("7704754316732714262", "mario_sli", "Δοκιμάζουμε το Voulkanizater στο 📍Κουκάκι", stickers: ["Voulkanizater"], duration: 37), status: "ready",
                           title: "Voulkanizater in Koukaki", summary: "A cozy first-date restaurant with creative shared plates.", ago: 7200)
         let okupa = source("TripRome", post("7683909999734689046", "thefoodyfinds", "Το 📍@okupa.athens…", slides: 10, title: "Your go-to bar in Athens🍸"), status: "ready",
                            title: "Okupa Kitchen & Listening Bar", summary: "All-day kitchen and listening bar.", ago: 86_400)
@@ -14705,6 +14845,8 @@ enum StudioDemo {
             SocialPlaceMention(id: UUID(), name: name, summary: tldr, sourceID: source.id, evidenceIDs: [], tripID: nil,
                                latitude: found ? 37.97 : nil, longitude: found ? 23.73 : nil, city: "Athens", category: category, neighborhood: hood, countryCode: "GR")
         }
+        voul.readReport = SocialReadReport(sound: "music", frames: 9, frameTextLines: 7, captions: "skipped", captionLanguage: "Greek")
+        voul.envelope.tiktok?.caption = "Δοκιμάζουμε το Voulkanizater στο 📍Κουκάκι 🍷✨ ένα από τα πιο cozy μαγαζιά για πρώτο ραντεβού #athens #athensspots #foodtok #fypgr #koukaki #datenight #greekfood #athensfood"
         var voulkanizater = place("Voulkanizater", voul, "Food", "Koukaki", "Warm, dimly lit spot for a first date.")
         voulkanizater.moments = [SocialMoment(at: "0:02", text: "Hidden spot in Koukaki, easy to walk past"),
                                  SocialMoment(at: "0:09", text: "“The burnt leek is the dish you come back for”"),
@@ -14883,11 +15025,11 @@ private struct ShareSummarySheet: View {
 }
 
 // MARK: - Video studio (Library › Videos)
-/// Where a shared post is in the share → read → Gemini → pins pipeline.
+/// Where a shared post is in the share → read → AI read → pins pipeline.
 enum StudioStage: Int, CaseIterable {
     case saved, read, thinking, pinned
     var title: String {
-        switch self { case .saved: "Saved"; case .read: "Read"; case .thinking: "Gemini"; case .pinned: "Pinned" }
+        switch self { case .saved: "Saved"; case .read: "Prepared"; case .thinking: "Reading"; case .pinned: "Pinned" }
     }
     static func of(_ source: ImportedSocialSource) -> StudioStage {
         if source.extractionStatus == "ready" { return .pinned }
@@ -14905,25 +15047,75 @@ struct StudioEvidence: Identifiable {
     static func of(_ source: ImportedSocialSource) -> [StudioEvidence] {
         var items: [StudioEvidence] = []
         let post = source.envelope.tiktok
+        let report = source.readReport
+        let isVideo = post.map { !$0.isSlideshow && ($0.durationSeconds ?? 0) > 0 } ?? false
         if let caption = post?.caption, !caption.isEmpty {
-            items.append(.init(id: "caption", symbol: "text.quote", title: "Caption", detail: "\(caption.count) characters"))
+            let tags = caption.split(separator: " ").filter { $0.hasPrefix("#") }.count
+            items.append(.init(id: "caption", symbol: "text.quote", title: "Caption", detail: tags > 0 && tags * 2 >= caption.split(separator: " ").count
+                               ? "Mostly hashtags · used for the city" : "Read for names and places"))
         } else if !source.envelope.sharedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             items.append(.init(id: "caption", symbol: "text.quote", title: "Shared text", detail: "From the share sheet"))
         }
         if let lines = post?.onScreenText, !lines.isEmpty {
-            items.append(.init(id: "stickers", symbol: "textformat", title: "On-screen text", detail: "\(lines.count) text \(lines.count == 1 ? "sticker" : "stickers")"))
+            items.append(.init(id: "stickers", symbol: "textformat", title: "Text stickers", detail: "\(lines.count) on the video"))
         }
-        let slides = source.envelope.attachments.filter { $0.kind == "image" }.count
-        if slides > 0 {
-            let ocr = source.evidence.filter { $0.origin == "slide_ocr" }.count
-            items.append(.init(id: "slides", symbol: "photo.stack", title: "Slides", detail: "\(slides) images, seen by Gemini" + (ocr > 0 ? " · \(ocr) with OCR text" : "")))
+        let slides = report?.slides ?? source.envelope.attachments.filter { $0.kind == "image" }.count
+        if post?.isSlideshow == true || (!isVideo && slides > 0) {
+            items.append(.init(id: "slides", symbol: "photo.stack", title: "Slides", detail: slides > 0 ? "\(slides) images looked at, text on them read" : "No images came through"))
         }
-        if let transcript = post?.transcript, !transcript.isEmpty {
-            items.append(.init(id: "captions", symbol: "captions.bubble", title: "TikTok captions", detail: post?.transcriptLanguage ?? "Auto-generated"))
-        } else if let post, !post.isSlideshow, (post.durationSeconds ?? 0) > 0 {
-            items.append(.init(id: "audio", symbol: "waveform", title: "Audio", detail: "\(post.durationSeconds ?? 0)s, transcribed by Gemini"))
+        if isVideo {
+            if let report, report.frames > 0 {
+                items.append(.init(id: "frames", symbol: "film.stack", title: "Frames", detail: "\(report.frames) moments with text on them" + (report.frameTextLines > 0 ? ", read on your phone first" : "")))
+            } else if report?.videoCopy == true {
+                items.append(.init(id: "frames", symbol: "film", title: "Video", detail: "No text on screen, so a small copy was watched"))
+            } else if let problem = report?.problem {
+                items.append(.init(id: "frames", symbol: "exclamationmark.triangle", title: "Video", detail: problem))
+            } else if report == nil {
+                items.append(.init(id: "frames", symbol: "film", title: "Video", detail: "Frames with text get picked out next"))
+            }
+            let sound: String
+            switch report?.sound {
+            case "speech": sound = "Someone talks · their words were used"
+            case "mixed": sound = "Talking over music · the words were used, lyrics ignored"
+            case "music": sound = "Only a song · lyrics ignored"
+            case "silent": sound = "No sound"
+            default: sound = report == nil ? "Checked next: voice or just a song" : "Not checked"
+            }
+            items.append(.init(id: "sound", symbol: report?.sound == "music" ? "music.note" : report?.sound == "silent" ? "speaker.slash" : "waveform", title: "Sound", detail: sound))
+            let captions: String
+            switch report?.captions {
+            case "used": captions = "TikTok’s captions used" + (report?.captionLanguage.map { " (\($0))" } ?? "")
+            case "skipped": captions = "TikTok’s captions skipped · they were the song’s lyrics"
+            default: captions = report?.voiceSent == true ? "No captions on TikTok · the voice was transcribed" : (post?.transcript?.isEmpty == false ? "TikTok has captions · used if someone talks" : "None")
+            }
+            items.append(.init(id: "captions", symbol: "captions.bubble", title: "Transcript", detail: captions))
         }
         return items
+    }
+}
+
+/// The post's own caption, kept out of the title: three lines, tap for the rest.
+struct StudioCaptionBlock: View {
+    let caption: String
+    @State private var open = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            StudioHeading(title: "Caption")
+            Button { withAnimation(.snappy) { open.toggle() } } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(caption).font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(AppPalette.secondaryInk)
+                        .lineLimit(open ? nil : 3).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+                    if caption.count > 140 {
+                        Text(open ? "Less" : "More").font(Sketch.text(12, "Bold", relativeTo: .caption)).foregroundStyle(AppPalette.ink)
+                    }
+                }
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Sketch.card))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(open ? "Shows less" : "Shows the whole caption")
+        }
     }
 }
 

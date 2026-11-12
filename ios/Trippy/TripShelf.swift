@@ -56,15 +56,23 @@ struct TripShelfView: View {
     @State private var deleting: ShelfTrip?
 
     private var upcoming: [ShelfTrip] { trips.filter { !$0.completed && $0.hasPlan } }
+    /// `-TrippyShelfCardsOnly YES` (debug): the rows of cards at the top, for screenshots.
+    private static var cardsOnly: Bool {
+        #if DEBUG
+        UserDefaults.standard.bool(forKey: "TrippyShelfCardsOnly")
+        #else
+        false
+        #endif
+    }
     private var ideas: [ShelfTrip] { trips.filter { !$0.completed && !$0.hasPlan } }
     private var past: [ShelfTrip] { trips.filter(\.completed) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 30) {
-            if onWhereNext != nil || onJourney != nil { starters }
+            if (onWhereNext != nil || onJourney != nil) && !Self.cardsOnly { starters }
             if trips.isEmpty { emptyShelf }
-            if !journeys.isEmpty { journeyRow }
-            if let next = upcoming.first {
+            if !journeys.isEmpty && !Self.cardsOnly { journeyRow }
+            if let next = upcoming.first, !Self.cardsOnly {
                 NextTripCard(trip: next, look: look(next)) { onOpen(next.id) }
                     .contextMenu { menu(next) }
                     .overlay(alignment: .topTrailing) { cardActions(next).padding(12) }
@@ -331,31 +339,60 @@ struct ShelfCard: View {
     }
 }
 
+/// The default trip card: a tinted panel with the trip's doodle and city code, then when, what and how long.
+/// One fixed size, so a row of them lines up; the top-right corner stays clear for the card's buttons.
 private struct Postcard: View {
     let trip: ShelfTrip, look: ShelfLook
     var body: some View {
         let color = shelfTint(trip, look)
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
         HStack(spacing: 0) {
-            ZStack {
-                color.opacity(0.14)
-                DoodleView(doodle: look.doodle ?? .balloon, tint: color).padding(20)
+            VStack(spacing: 6) {
+                DoodleView(doodle: look.doodle ?? .balloon, tint: color, lineWidth: 2.2).frame(width: 62, height: 62)
+                Text(ShelfDates.code(trip.city)).font(.system(size: 15, weight: .heavy, design: .rounded)).tracking(1)
+                    .foregroundStyle(color)
             }
-            .frame(width: 104)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(trip.emoji ?? trip.flag ?? "").font(.title3).accessibilityHidden(true)
-                Spacer(minLength: 6)
-                Text(trip.title).font(Sketch.display(.headline, weight: .bold)).multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(trip.hasPlan ? ShelfDates.range(trip) : "No plan yet").font(Sketch.text(13, relativeTo: .footnote))
-                    .foregroundStyle(trip.hasPlan ? Sketch.inkSoft : Sketch.ochre)
+            .frame(width: 96).frame(maxHeight: .infinity)
+            .background(color.opacity(0.14))
+            VStack(alignment: .leading, spacing: 6) {
+                // Clear of the delete and more buttons in the corner.
+                Group {
+                    if !trip.hasPlan { SketchTag(text: "Draft", tint: Sketch.ochre) }
+                    else if let countdown = ShelfDates.countdown(trip) { SketchTag(text: countdown, tint: color) }
+                    else { Color.clear.frame(height: 22) }
+                }
+                .padding(.trailing, 78).frame(height: 28, alignment: .leading)
+                Text(trip.title).font(Sketch.display(.headline, weight: .bold)).foregroundStyle(Sketch.ink)
+                    .lineLimit(2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                if !trip.city.isEmpty {
+                    Text([trip.flag, trip.city].compactMap { $0 }.joined(separator: " "))
+                        .font(Sketch.text(13, "SemiBold", relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
+                }
+                Spacer(minLength: 2)
+                Label(trip.hasPlan ? ShelfDates.range(trip) : "No plan yet", systemImage: "calendar")
+                    .labelStyle(CompactLabel()).font(Sketch.text(12, "SemiBold", relativeTo: .caption))
+                    .foregroundStyle(trip.hasPlan ? Sketch.ink : Sketch.ochre).lineLimit(1)
+                HStack(spacing: 12) {
+                    if trip.days > 0 { Label("\(trip.days)", systemImage: "sun.max").accessibilityLabel("\(trip.days) days") }
+                    if trip.stops > 0 { Label("\(trip.stops)", systemImage: "mappin.and.ellipse").accessibilityLabel("\(trip.stops) stops") }
+                    Label("\(trip.travelers)", systemImage: "person.2").accessibilityLabel("\(trip.travelers) travelers")
+                }
+                .labelStyle(CompactLabel())
+                .font(Sketch.text(12, "SemiBold", relativeTo: .caption)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
             }
-            .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(width: 280).frame(minHeight: 150)
+        .frame(width: 300, height: 176)
         .background(shape.fill(Sketch.card))
         .clipShape(shape)
         .overlay(shape.strokeBorder(Sketch.ink.opacity(0.08), lineWidth: 1))
+    }
+}
+
+/// An icon and its value close together: "📅 5 – 9 Dec  ☀ 5  📍 20".
+private struct CompactLabel: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) { configuration.icon.font(.system(size: 11, weight: .semibold)); configuration.title }
     }
 }
 

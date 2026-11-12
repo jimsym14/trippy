@@ -132,12 +132,14 @@ actor FamousPlaces {
         let key = String(format: "%.2f,%.2f", center.latitude, center.longitude)
         if let hit = memory[key] { return hit }
         let q = """
-        SELECT ?item ?itemLabel ?loc ?links (GROUP_CONCAT(DISTINCT ?t) AS ?types) (SAMPLE(?img) AS ?image) (COUNT(?built) AS ?builtSignals) WHERE {
+        SELECT ?item ?itemLabel ?loc ?links (GROUP_CONCAT(DISTINCT ?t) AS ?types) (SAMPLE(?img) AS ?image) (COUNT(?built) AS ?builtSignals) (SAMPLE(?d) AS ?desc) (SAMPLE(?a) AS ?article) WHERE {
           SERVICE wikibase:around { ?item wdt:P625 ?loc . bd:serviceParam wikibase:center "Point(\(center.longitude) \(center.latitude))"^^geo:wktLiteral . bd:serviceParam wikibase:radius "9" . }
           ?item wikibase:sitelinks ?links . FILTER(?links > 15)
           OPTIONAL { ?item wdt:P31 ?t }
           OPTIONAL { ?item wdt:P18 ?img }
           OPTIONAL { ?item wdt:P1435|wdt:P84|wdt:P149 ?built }
+          OPTIONAL { ?item schema:description ?d FILTER(LANG(?d) = "en") }
+          OPTIONAL { ?a schema:about ?item; schema:isPartOf <https://en.wikipedia.org/> }
           SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
         } GROUP BY ?item ?itemLabel ?loc ?links ORDER BY DESC(?links) LIMIT 90
         """
@@ -170,7 +172,11 @@ actor FamousPlaces {
             guard nums.count == 2 else { continue }
             // Commons serves a resized copy of the item's main image.
             let image = value(row, "image").map { $0.replacingOccurrences(of: "http://", with: "https://") + "?width=480" }
-            out.append(ComposerPlace(name: name, latitude: nums[1], longitude: nums[0], category: Self.category(types), imageURL: image))
+            // The English article's title, for the detail sheet's Wikipedia summary (fetched only when opened).
+            let article = value(row, "article").flatMap { URL(string: $0)?.lastPathComponent.removingPercentEncoding }
+            let description = value(row, "desc").map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            out.append(ComposerPlace(name: name, latitude: nums[1], longitude: nums[0], category: Self.category(types), imageURL: image,
+                                     summary: description, fame: Int(value(row, "links") ?? ""), wikiTitle: article))
             if out.count == 30 { break }
         }
         memory[key] = out

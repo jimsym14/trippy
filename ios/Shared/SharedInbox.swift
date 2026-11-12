@@ -67,7 +67,32 @@ struct ImportedSocialSource: Codable, Identifiable, Equatable {
     var fromIndex: Bool? = nil
     /// "Read again" was asked for: the next upload is read even if the post was indexed before.
     var rereadRequested: Bool? = nil
+    /// What the read actually used (frames, sound, captions), shown in "How we read it".
+    var readReport: SocialReadReport? = nil
+    /// The step the phone is on right now ("Finding frames with text…"); cleared once the server has it.
+    var liveStep: String? = nil
     var isTips: Bool { postKind == "tips" }
+}
+/// What one read of a post used. Filled on the phone when it prepares the upload, or from the server's own
+/// record when the post was already read for someone else.
+struct SocialReadReport: Codable, Equatable {
+    /// "speech", "mixed", "music", "silent", or nil when the sound wasn't checked.
+    var sound: String? = nil
+    /// Frames sent because text appears on them, and how many lines of it the phone read.
+    var frames: Int = 0
+    var frameTextLines: Int = 0
+    var slides: Int = 0
+    /// A small copy of the video went instead of frames (no text drawn on it).
+    var videoCopy = false
+    /// The speaker's voice went to be transcribed (someone talks, TikTok had no captions).
+    var voiceSent = false
+    /// TikTok's own captions: "used", "skipped" (they were song lyrics) or nil when the post had none.
+    var captions: String? = nil
+    var captionLanguage: String? = nil
+    /// The phone couldn't get the video ("page not readable", "download failed", "too long").
+    var problem: String? = nil
+    /// Read earlier for someone else and handed over as is.
+    var fromIndex = false
 }
 /// One beat of a post's timeline: when ("0:12", "slide 3", "caption") and what was said or shown.
 struct SocialMoment: Codable, Equatable, Hashable { var at: String; var text: String }
@@ -122,8 +147,11 @@ struct SocialExtractionJob: Decodable {
         /// How many places the post says it has ("8 stops"), and whether fewer were found.
         var statedCount: Int? = nil
         var incomplete: Bool? = nil
+        /// What the stored read saw (server side): kind video/frames/images/audio/none, count, sound.
+        struct Media: Decodable { let kind: String?; let count: Int?; let note: String?; let sound: String? }
+        var media: Media? = nil
         enum CodingKeys: String, CodingKey {
-            case city, country, places, model, tips, incomplete
+            case city, country, places, model, tips, incomplete, media
             case postTitle = "post_title", postSummary = "post_summary", countryCode = "country_code", postKind = "post_kind"
             case statedCount = "stated_count"
         }

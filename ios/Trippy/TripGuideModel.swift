@@ -146,6 +146,37 @@ struct GuideScene: Hashable {
     var isEmpty: Bool { eat == nil && drink == nil }
 }
 
+/// A tip from a community video that matches this plan: its city, a picked interest or a scheduled stop.
+/// The server matches it (no model call); the app only shows it next to the stops it names.
+struct GuideCommunityTip: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let detail: String
+    let at: String
+    let warning: Bool
+    let topics: [String]
+    /// Where it applies: "Barcelona", "Barceloneta, Barcelona", "Spain".
+    let scope: String
+    let scopeLevel: String
+    /// When it applies ("Christmas", "Summer", "Sundays"); empty when it holds all year.
+    let when: String
+    /// The trip's dates fall in that window.
+    let inSeason: Bool
+    /// Why it is in this plan: "Day 2 has Platja de la Barceloneta", "You picked beaches".
+    let why: String
+    let placeIDs: [String]
+    let author: String?
+    let videoTitle: String
+    let platform: String
+    let link: URL?
+
+    var isTripWide: Bool { placeIDs.isEmpty }
+    var sourceLine: String {
+        let who = author.map { $0.hasPrefix("@") || platform == "youtube" ? $0 : "@" + $0 } ?? videoTitle
+        return at.isEmpty ? who : "\(who) · \(at)"
+    }
+}
+
 struct GuideInfoRow: Identifiable, Hashable {
     let id: String
     let title: String
@@ -167,6 +198,14 @@ struct GuideModel {
     var areas: [GuideArea] = []
     var base: GuideBase?
     var scene = GuideScene()
+    var communityTips: [GuideCommunityTip] = []
+    /// What the videos behind a stop say about it, by plan place id (from the plan's place graph; no calls).
+    var videoNotes: [String: [GuideVideoNote]] = [:]
+    /// Saved places the traveller picked that found no room, each with the day that suits it best.
+    var unscheduledSaved: [(placeID: String, date: String)] = []
+
+    func communityTips(for placeID: String) -> [GuideCommunityTip] { communityTips.filter { $0.placeIDs.contains(placeID) } }
+    var tripWideTips: [GuideCommunityTip] { communityTips.filter(\.isTripWide) }
 
     var orderedPlaces: [GuidePlace] { places.values.sorted { ($0.fame, $0.name) > ($1.fame, $1.name) } }
 
@@ -261,6 +300,78 @@ struct GuideModel {
                          detail: str(t["details"]) ?? str(t["notes"]) ?? "", date: str(t["date"]), url: url(t["url"]), price: nil)
         }
         gaps = ((root["quality_report"] as? [String: Any])?["gaps"] as? [String]) ?? []
+        let tipList = (root["community_tips"] as? [String: Any])?["tips"] as? [[String: Any]] ?? []
+        communityTips = tipList.compactMap { t in
+            guard let id = str(t["id"]), let title = str(t["title"]) else { return nil }
+            let scope = t["scope"] as? [String: Any]
+            let source = t["source"] as? [String: Any]
+            return GuideCommunityTip(id: id, title: title, detail: str(t["detail"]) ?? "", at: str(t["at"]) ?? "",
+                                     warning: str(t["stance"]) == "warning", topics: t["topic_titles"] as? [String] ?? [],
+                                     scope: str(scope?["label"]) ?? str(scope?["name"]) ?? "", scopeLevel: str(scope?["level"]) ?? "city",
+                                     when: str(t["when_label"]) ?? "", inSeason: t["in_season"] as? Bool ?? false,
+                                     why: str(t["why"]) ?? "", placeIDs: (t["place_ids"] as? [String] ?? []).filter { places[$0] != nil },
+                                     author: str(source?["author"]), videoTitle: str(source?["title"]) ?? "Video",
+                                     platform: str(source?["platform"]) ?? "tiktok", link: url(source?["link"]) ?? url(source?["url"]))
+        }
+        videoNotes = GuideVideoNote.parse(root["place_graph"] as? [String: Any], places: places)
+        unscheduledSaved = (root["unscheduled_saved"] as? [[String: Any]] ?? []).compactMap { row in
+            guard let id = str(row["place_id"]), places[id] != nil, let date = str(row["suggested_date"]) else { return nil }
+            return (id, date)
+        }
+    }
+}
+
+/// One video's line about one stop: "The creator calls it an excellent spot and recommends eating inside."
+struct GuideVideoNote: Identifiable, Hashable {
+    var id: String { nodeID + "|" + note }
+    let nodeID: String
+    /// The video's title, its first line in the plan.
+    let title: String
+    let note: String
+    let url: URL?
+    let platform: String
+    let personal: Bool
+
+    var platformName: String { ["youtube": "YouTube", "tiktok": "TikTok", "instagram": "Instagram"][platform] ?? "Video" }
+
+    static func fold(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// Community and personal video nodes carry "Place: what was said" lines; each link says which plan place a node fed.
+    static func parse(_ graph: [String: Any]?, places: [String: GuidePlace]) -> [String: [GuideVideoNote]] {
+        guard let graph else { return [:] }
+        let nodes = (graph["nodes"] as? [[String: Any]] ?? []).reduce(into: [String: [String: Any]]()) { out, n in
+            if let id = n["id"] as? String { out[id] = n }
+        }
+        var out: [String: [GuideVideoNote]] = [:]
+        for link in graph["links"] as? [[String: Any]] ?? [] {
+            guard let nodeID = link["node_id"] as? String, let placeID = link["place_id"] as? String, let place = places[placeID],
+                  let node = nodes[nodeID], ["community", "video"].contains(node["kind"] as? String ?? "") else { continue }
+            let lines = (node["text"] as? String ?? "").split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
+            guard let title = lines.first, !title.isEmpty else { continue }
+            // The node's own name for the place: the same name folded, one inside the other, or the only one it has.
+            let names = Array(Set((node["places"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }))
+            let target = fold(place.name)
+            let name = names.first { fold($0) == target }
+                ?? names.first { let f = fold($0); return !f.isEmpty && (f.contains(target) || target.contains(f)) }
+                ?? (names.count == 1 ? names[0] : nil)
+            guard let name else { continue }
+            var said: [String] = []
+            for line in lines.dropFirst() where line.hasPrefix(name + ": ") {
+                let note = String(line.dropFirst(name.count + 2))
+                if !note.isEmpty, !said.contains(note) { said.append(note) }
+            }
+            let url = (node["url"] as? String).flatMap(URL.init(string:))
+            let host = url?.host ?? ""
+            let platform = host.contains("tiktok") ? "tiktok" : host.contains("youtu") ? "youtube" : host.contains("instagram") ? "instagram"
+                : nodeID.hasPrefix("community:") ? String(nodeID.split(separator: ":")[1]) : ""
+            for note in said.prefix(2) {
+                let item = GuideVideoNote(nodeID: nodeID, title: title, note: note, url: url, platform: platform, personal: node["kind"] as? String == "video")
+                if !(out[placeID] ?? []).contains(item) { out[placeID, default: []].append(item) }
+            }
+        }
+        return out
     }
 }
 
@@ -326,6 +437,8 @@ struct GuideEdits: Codable, Equatable {
     var notes: [String: String] = [:]            // "date|placeID" → note
     var dayTitles: [String: String] = [:]
     var booked: Set<String> = []
+    /// Stop keys ("date|itemID") whose time the traveller typed: the day flows around them.
+    var fixedTimes: Set<String> = []
     var prices: [String: [String: Double]] = [:] // placeID → fareID.uuidString → €
     var transportLines: [GuideCostLine] = [GuideCostLine(label: "From the airport"), GuideCostLine(label: "To the airport"),
                                            GuideCostLine(label: "Metro and bus cards")]
@@ -362,6 +475,7 @@ struct GuideEdits: Codable, Equatable {
         notes = (try? c.decode([String: String].self, forKey: .notes)) ?? [:]
         dayTitles = (try? c.decode([String: String].self, forKey: .dayTitles)) ?? [:]
         booked = (try? c.decode(Set<String>.self, forKey: .booked)) ?? []
+        fixedTimes = (try? c.decode(Set<String>.self, forKey: .fixedTimes)) ?? []
         prices = (try? c.decode([String: [String: Double]].self, forKey: .prices)) ?? [:]
         transportLines = (try? c.decode([GuideCostLine].self, forKey: .transportLines)) ?? base.transportLines
         stayTotal = try? c.decode(Double.self, forKey: .stayTotal)
@@ -375,7 +489,7 @@ struct GuideEdits: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case sections, hidden, pigment, flight, fares, order, times, notes, dayTitles, booked, prices, transportLines
-        case stayTotal, foodPerPersonDay, extras, checklistDone, customChecklist, slotPicks, extraPlaces
+        case stayTotal, foodPerPersonDay, extras, checklistDone, customChecklist, slotPicks, extraPlaces, fixedTimes
     }
 
     func encode(to encoder: Encoder) throws {
@@ -389,6 +503,7 @@ struct GuideEdits: Codable, Equatable {
         try c.encode(foodPerPersonDay, forKey: .foodPerPersonDay); try c.encodeIfPresent(extras, forKey: .extras)
         try c.encode(checklistDone, forKey: .checklistDone); try c.encode(customChecklist, forKey: .customChecklist)
         try c.encode(slotPicks, forKey: .slotPicks); try c.encode(extraPlaces, forKey: .extraPlaces)
+        try c.encode(fixedTimes, forKey: .fixedTimes)
     }
 }
 

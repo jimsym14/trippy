@@ -95,13 +95,17 @@ def query_wikidata(latitude, longitude):
     return items
 
 
-def famous_items(root, destination, latitude, longitude, *, fetch=query_wikidata, log=lambda *a: None):
+def famous_items(root, destination, latitude, longitude, *, fetch=query_wikidata, log=lambda *a: None, cached_only=False):
+    """The city's famous items, from the month-old cache or Wikidata. ``cached_only`` never goes to the network
+    (any age of cache will do): the catalog path uses it to give saved pins their fame."""
     cache = Path(root) / '.local/famous' / f'{city_slug(destination)}-v3.json'
     try:
-        if cache.is_file() and time.time() - cache.stat().st_mtime < CACHE_DAYS * 86400:
+        if cache.is_file() and (cached_only or time.time() - cache.stat().st_mtime < CACHE_DAYS * 86400):
             return json.loads(cache.read_text())
     except (OSError, ValueError):
         pass
+    if cached_only:
+        return []
     try:
         items = fetch(latitude, longitude)
     except Exception as error:  # noqa: BLE001 - optional enrichment

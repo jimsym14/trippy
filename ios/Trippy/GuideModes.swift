@@ -30,16 +30,23 @@ struct GuideModePicker: View {
                     HStack(spacing: 5) {
                         Image(systemName: item.symbol).font(.system(size: 12, weight: .bold)).symbolEffect(.bounce, value: on)
                         Text(item.title).font(Sketch.text(14, "Bold", relativeTo: .subheadline)).lineLimit(1).fixedSize()
-                        if item == .mustSee && mustSeeLeft > 0 {
-                            Text("\(mustSeeLeft)").font(Sketch.text(10, "ExtraBold", relativeTo: .caption2)).monospacedDigit()
-                                .foregroundStyle(on ? tint : Sketch.paper).padding(.horizontal, 5).frame(minHeight: 16).fixedSize()
-                                .background(Capsule().fill(on ? Sketch.paper : tint)).contentTransition(.numericText())
-                        }
                     }
                     .foregroundStyle(on ? Sketch.paper : Sketch.inkSoft)
                     .frame(maxWidth: .infinity, minHeight: 44)
                     .background { if on { Capsule().fill(Sketch.ink).matchedGeometryEffect(id: "mode", in: space) } }
                     .contentShape(Capsule())
+                    // A notification badge on the segment's top corner, like an app icon's: the label stays centred.
+                    .overlay(alignment: .topTrailing) {
+                        if item == .mustSee && mustSeeLeft > 0 {
+                            Text(mustSeeLeft > 99 ? "99+" : "\(mustSeeLeft)").font(Sketch.text(11, "ExtraBold", relativeTo: .caption2)).monospacedDigit()
+                                .foregroundStyle(.white).padding(.horizontal, 5).frame(minWidth: 20, minHeight: 20).fixedSize()
+                                .background(Capsule().fill(Sketch.coral))
+                                .overlay(Capsule().strokeBorder(Sketch.card, lineWidth: 2))
+                                .contentTransition(.numericText())
+                                .offset(x: 4, y: -8)
+                                .accessibilityLabel("\(mustSeeLeft) not seen yet")
+                        }
+                    }
                 }
                 .buttonStyle(SketchPressStyle())
                 .accessibilityAddTraits(on ? .isSelected : [])

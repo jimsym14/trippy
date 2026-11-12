@@ -35,6 +35,9 @@ struct TransitAnswer: Decodable {
     let attribution: String
     let tickets: Tickets?
     let advice: Advice?
+    /// "unavailable" when the line source was busy or down: try again, the city isn't without a metro.
+    let status: String?
+    var unavailable: Bool { status == "unavailable" }
 }
 
 struct TransitRequest: Identifiable {
@@ -95,6 +98,8 @@ struct TransitSheet: View {
     @State private var focus: String?
     @State private var camera = MapCameraPosition.automatic
     @State private var drawn = false
+    /// The city's centre, as soon as it's known: the map goes there before the lines arrive.
+    @State private var centre: CLLocationCoordinate2D?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -113,8 +118,14 @@ struct TransitSheet: View {
                         .buttonStyle(SketchPressStyle()).accessibilityLabel("Close")
                 }
                 map
+                appleMapsLink
                 if let answer {
-                    if answer.lines.isEmpty { note("No metro or tram lines found here. Buses and walking do the work in this city.") } else { lineKey(answer.lines) }
+                    if answer.unavailable {
+                        note("Couldn't draw the lines right now: the map service is busy. The stations on the map are Apple's; the lines usually come back in a minute.")
+                        Button("Try again") { Task { await load() } }.font(Sketch.text(15, "Bold", relativeTo: .body)).frame(minHeight: 44)
+                    } else if answer.lines.isEmpty {
+                        note("No metro or tram lines here. Buses and walking do the work in this city; their stops are on the map.")
+                    } else { lineKey(answer.lines) }
                     if let tickets = answer.tickets, let advice = answer.advice { ticketAdvice(tickets, advice) }
                     else { note("We haven't checked ticket prices for this city yet, so none are shown rather than guessed.") }
                     if !answer.attribution.isEmpty {
@@ -159,11 +170,22 @@ struct TransitSheet: View {
                 }
             }
         }
-        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll))
-        .frame(height: 300).clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        // Apple's own metro, train, tram and bus stations under our lines (MapKit gives stations, not the lines).
+        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .including([.publicTransport])))
+        .frame(height: 320).clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
         .opacity(drawn || reduceMotion ? 1 : 0.4).animation(.easeOut(duration: 0.6), value: drawn)
         .accessibilityLabel("Map of \(shown.count) transit lines")
+    }
+
+    /// Apple Maps' own transit map (every line, live times), for the same spot.
+    @ViewBuilder private var appleMapsLink: some View {
+        if let centre, let url = URL(string: String(format: "https://maps.apple.com/?ll=%.5f,%.5f&z=13&t=r", centre.latitude, centre.longitude)) {
+            Link(destination: url) {
+                Label("Open the transit map in Apple Maps", systemImage: "tram.fill.tunnel")
+                    .font(Sketch.text(14, "SemiBold", relativeTo: .subheadline)).frame(minHeight: 44)
+            }
+        }
     }
 
     // MARK: Lines
@@ -282,14 +304,20 @@ struct TransitSheet: View {
     }
 
     private func load(quiet: Bool = false) async {
-        if let preview { answer = preview; loading = false; drawn = true; return }
         if !quiet { failed = false; loading = true }
         var coordinate = request.coordinate
         if coordinate == nil { coordinate = try? await CLGeocoder().geocodeAddressString(request.city).first?.location?.coordinate }
         guard let coordinate else { failed = answer == nil; loading = false; return }
+        if centre == nil {
+            centre = coordinate
+            // The city first, then the lines: never a map of somewhere else while they load.
+            if answer == nil { camera = .region(MKCoordinateRegion(center: coordinate, latitudinalMeters: 14000, longitudinalMeters: 14000)) }
+        }
+        // Screenshots: a saved reply instead of the server, after the same city lookup a real load does.
+        if let preview { answer = preview; loading = false; drawn = true; if !preview.lines.isEmpty { camera = .automatic }; return }
         do {
             let fresh = try await TransitClient.load(request, coordinate: coordinate, rides: rides, airport: airport, reduced: reduced, baseURL: baseURL, token: token)
-            withAnimation(reduceMotion ? nil : .snappy) { answer = fresh }
+            withAnimation(reduceMotion ? nil : .snappy) { answer = fresh; if !fresh.lines.isEmpty && focus == nil { camera = .automatic } }
             drawn = true
         } catch {
             notReady = (error as? URLError)?.code == .resourceUnavailable
