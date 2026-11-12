@@ -457,3 +457,60 @@ extension View {
     func raisedCapsule() -> some View { modifier(RaisedSurface(shape: Capsule())) }
     func raisedRounded(_ radius: CGFloat = 16) -> some View { modifier(RaisedSurface(shape: RoundedRectangle(cornerRadius: radius, style: .continuous))) }
 }
+
+// MARK: - Hide the keyboard
+
+/// A small round button at the right edge, just above the keyboard, that puts the keyboard away. It replaces the
+/// keyboard toolbar's "Done", which iOS draws as a capsule in the middle of the screen.
+private struct KeyboardDismissButton: ViewModifier {
+    @State private var visible = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .bottomTrailing) {
+                if visible {
+                    Button {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                            .font(.system(size: 17, weight: .semibold)).foregroundStyle(Sketch.ink)
+                            .frame(width: 52, height: 44)
+                            .background(Capsule().fill(Sketch.card))
+                            .overlay(Capsule().strokeBorder(Sketch.rule.opacity(0.9), lineWidth: 0.7))
+                            .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
+                    }
+                    .buttonStyle(SketchPressStyle())
+                    .padding(.trailing, 16).padding(.bottom, 10)
+                    .accessibilityLabel("Hide keyboard")
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.8, anchor: .bottomTrailing).combined(with: .opacity))
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                withAnimation(.snappy) { visible = true }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                withAnimation(.snappy) { visible = false }
+            }
+    }
+}
+
+extension View {
+    /// Shows a "hide keyboard" button above the keyboard while it is up.
+    func keyboardDismissButton() -> some View { modifier(KeyboardDismissButton()) }
+}
+
+// MARK: - Pages scroll up and down only
+
+/// A vertical scroll view whose content is exactly as wide as the screen. A child that is a little too wide
+/// (a long word, a fixed-size row) can otherwise widen the page and let it drift sideways while scrolling,
+/// which makes the whole screen feel loose. Use it for every page that scrolls.
+struct VerticalPage<Content: View>: View {
+    var showsIndicators = true
+    @ViewBuilder var content: Content
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: showsIndicators) {
+            content.containerRelativeFrame(.horizontal)
+        }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+    }
+}

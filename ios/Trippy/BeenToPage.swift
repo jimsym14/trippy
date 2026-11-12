@@ -296,7 +296,7 @@ struct WorldGlobeView: View {
 
             if passportOpen {
                 Rectangle().fill(BeenPalette.ink(scheme).opacity(0.08)).frame(height: 0.7).padding(.horizontal, 14)
-                ScrollView {
+                VerticalPage {
                     cardSection("Your passport") {
                         BeenInsights(snapshot: snapshot, continent: continent, unavailable: !unavailable.isEmpty,
                                      onCollection: { collection = $0 }, onCountry: { focus(on: $0); countryDetail = $0 },
@@ -434,7 +434,7 @@ struct WorldGlobeView: View {
             .accessibilityAction(named: detent == .peek ? "Open passport" : "Close passport") { setDetent(detent == .peek ? .half : .peek) }
 
             if detent != .peek {
-                ScrollView {
+                VerticalPage {
                     BeenInsights(snapshot: snapshot, continent: continent, unavailable: !unavailable.isEmpty,
                                  onCollection: { collection = $0 }, onCountry: { focus(on: $0); countryDetail = $0 },
                                  onYear: { toggleYear($0) }, selectedYears: years, onAdd: { showAdd = true })

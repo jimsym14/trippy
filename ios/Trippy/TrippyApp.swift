@@ -727,7 +727,7 @@ private struct TripCalendarSheet: View {
     }
 
     private var calendarContent: some View {
-        ScrollView {
+        VerticalPage {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Trip dates")
@@ -2497,7 +2497,7 @@ private struct TripFlowView: View {
                     Button("Planning connection", systemImage: "network") { showBridgeSettings = true }
                 } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.padding(.trailing, 16)
             }
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(briefStep == 0 ? "Let's plan the trip" : briefStepTitles[briefStep])
@@ -3177,7 +3177,7 @@ private struct TripFlowView: View {
 
     private var promptSheet: some View {
         NavigationStack {
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 18) {
                     Text("Ready to plan")
                         .font(.custom("PlusJakartaSans-ExtraBold", size: 25))
@@ -3311,7 +3311,7 @@ private struct TripFlowView: View {
                     } else if tab == "Map" {
                         fullScreenMap
                     } else {
-                        ScrollView { workspacePage(tab) }
+                        VerticalPage { workspacePage(tab) }
                     }
                 }.background(AppPalette.canvas)
                 .tag(tab)
@@ -3337,7 +3337,7 @@ private struct TripFlowView: View {
     }
 
     private var scheduleList: some View {
-        ScrollView {
+        VerticalPage {
             VStack(alignment: .leading, spacing: 24) {
                 if !showTripDetails { scheduleDayPicker }
                 if let index = selectedScheduleDayIndex, dayRecords.indices.contains(index) {
@@ -6902,7 +6902,8 @@ private extension TripFlowView {
                 guard let index = trips.firstIndex(where: { $0.id == tripID }) else { return }
                 var pins = trips[index].savedPins ?? []; if let pinIndex = pins.firstIndex(where: { $0.id == place.id }) { pins[pinIndex] = place } else { pins.append(place) }
                 trips[index].savedPins = pins; trips[index].updatedAt = .now; TripStorage.save(trips)
-            }
+            },
+            onTransit: { city, center in transitRequest = TransitRequest(city: city, coordinate: center, days: 3, travelers: 1) }
         ) {
             EmptyView()
         }
@@ -7031,7 +7032,7 @@ private extension TripFlowView {
                 if librarySection == "World" {
                     TrippyScreen { WorldGlobeView(addRequestID: worldAddRequest) }
                 } else {
-                ScrollView {
+                VerticalPage {
                     LazyVStack(alignment: .leading, spacing: 18) {
                         libraryFilterChip
                         HStack(spacing: 12) {
@@ -8196,7 +8197,7 @@ private extension TripFlowView {
             if workspaceTab == "Plan" {
                 scheduleDayPicker.padding(.horizontal, 20).padding(.vertical, 12)
                 scheduleList
-            } else { ScrollView { tripPanelContent } }
+            } else { VerticalPage { tripPanelContent } }
         }
         .foregroundStyle(AppPalette.ink).background(AppPalette.canvas)
         .environment(\.layoutDirection, .leftToRight)
@@ -9272,7 +9273,10 @@ private struct TrippyMapCanvas<Header: View>: View {
     var selectionKey: String = ""
     var schedulablePlaceIDs: Set<String> = []
     var planDayTitle: String = "Day 1"
+    /// Home map: opens a city's metro, tram and rail lines (and tickets) once the map is zoomed into a city.
+    var onTransit: ((String, CLLocationCoordinate2D) -> Void)? = nil
     @ViewBuilder let header: () -> Header
+    @State private var transitCity: String?
     @AppStorage("trippy.native.mapTheme") private var theme = "Explore"
     @AppStorage("trippy.native.darkMode") private var darkMode = false
     @Environment(\.colorScheme) private var colorScheme
@@ -9770,6 +9774,7 @@ private struct TrippyMapCanvas<Header: View>: View {
             await loadVisitedBoundaries()
         }
         .task(id: visitedCityTaskKey) { await loadVisitedCityBoundaries() }
+        .task(id: transitTaskKey) { await nameTransitCity() }
         .sheet(item: $selectedNeighborhood) { place in TrippyScreen { NeighborhoodDetailView(place: place) } }
         .onChange(of: markerAppearance) { _, appearance in
             if appearance != .smallDot { expandedMapSummaries = [] }
@@ -10023,6 +10028,42 @@ private struct TrippyMapCanvas<Header: View>: View {
     /// two-row carousel. Inside a trip it also switches suggestions and your saves/pins.
     /// City zoom: shops, cafés and sights are what's on screen, so filtering them makes sense.
     private var homeFiltersVisible: Bool { (visibleRegion?.span.latitudeDelta ?? 1) < 0.3 }
+    /// Which city the home map is looking at, named once the camera settles (for the transit pill).
+    private var transitTaskKey: String {
+        guard onTransit != nil, destination.isEmpty, homeFiltersVisible, let center = visibleRegion?.center else { return "transit:off" }
+        return "transit:\(Int(center.latitude * 20)):\(Int(center.longitude * 20))"
+    }
+    private func nameTransitCity() async {
+        guard transitTaskKey != "transit:off", let center = visibleRegion?.center else { return }
+        try? await Task.sleep(for: .milliseconds(500))
+        guard !Task.isCancelled else { return }
+        let mark = try? await CLGeocoder().reverseGeocodeLocation(CLLocation(latitude: center.latitude, longitude: center.longitude)).first
+        guard !Task.isCancelled else { return }
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { transitCity = mark?.locality ?? mark?.subAdministrativeArea }
+    }
+    /// "Lines in Paris": the city's metro and tram map, offered once you're zoomed into a city.
+    private var transitPill: some View {
+        Button {
+            guard let center = visibleRegion?.center else { return }
+            TrippyHaptics.light()
+            onTransit?(transitCity ?? "", center)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "tram.fill").font(.system(size: 12, weight: .bold))
+                Text(transitCity.map { "Lines in \($0)" } ?? "Transit").font(.custom("PlusJakartaSans-Bold", size: 14, relativeTo: .subheadline))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14).frame(minHeight: 40)
+            .background(Sketch.sky, in: Capsule())
+            .shadow(color: .black.opacity(0.10), radius: 6, y: 2)
+            .frame(minHeight: 44).contentShape(Capsule())
+        }
+        .buttonStyle(QuietPressStyle())
+        .disabled(transitCity == nil)
+        .opacity(transitCity == nil ? 0.6 : 1)
+        .accessibilityLabel(transitCity.map { "Metro and tram lines in \($0)" } ?? "Transit lines")
+    }
     /// Open now, as its own pill beside Filters on the home map.
     private var openNowPill: some View {
         Button { withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { openNowOnly.toggle() } } label: {
@@ -10071,6 +10112,7 @@ private struct TrippyMapCanvas<Header: View>: View {
                 .accessibilityValue(activeFilterCount > 0 ? "\(activeFilterCount) on" : "None on")
                 .accessibilityHint(filtersOpen ? "Hides the filters" : "Shows the filters")
                 if opensUp { openNowPill }
+                if opensUp, onTransit != nil, !filtersOpen { transitPill }
                 // While folded, what's on stays visible as a short summary.
                 if !opensUp && !filtersOpen && activeFilterCount > 0 {
                     Text(activeFilterSummary).font(.custom("PlusJakartaSans-SemiBold", size: 12, relativeTo: .caption))
@@ -10177,7 +10219,7 @@ private struct TrippyMapCanvas<Header: View>: View {
                     .padding(.horizontal, 14).padding(.vertical, 12)
                     .background(.white.opacity(darkMode ? 0.04 : 0.25), in: RoundedRectangle(cornerRadius: 18))
             }
-            ScrollView {
+            VerticalPage {
                 if panel == "trips" {
                     VStack(spacing: 8) {
                         if tripChoices.isEmpty { Text("Your trips will appear here.").font(.subheadline) }
@@ -10999,7 +11041,7 @@ private struct TrippyMapCanvas<Header: View>: View {
                 }.scrollIndicators(.hidden).frame(height: 46)
             }
             if hasResults {
-                ScrollView {
+                VerticalPage {
                     LazyVStack(alignment: .leading, spacing: 4) {
                         if !local.isEmpty { searchSection("Yours", local) }
                         if !areas.isEmpty { searchSection("Cities and areas", areas) }
@@ -11334,7 +11376,7 @@ private struct TrippyMapCanvas<Header: View>: View {
         let title = details?.name.nonEmpty ?? pin.name
         let summary = details?.summary.nonEmpty ?? mentions.lazy.compactMap { $0.summary.nonEmpty }.first
         let collapsed: PresentationDetent = .height(isArea ? MapPanelFraming.areaHeight : MapPanelFraming.placeHeight)
-        return ScrollViewReader { reader in ScrollView {
+        return ScrollViewReader { reader in VerticalPage {
             VStack(alignment: .leading, spacing: 18) {
                 placePanelHeader(pin, title: title, category: category, tint: tint, details: details, photo: photos.first)
 
@@ -12462,7 +12504,7 @@ private struct ResearchProgressScreen: View {
         }
     }
     var body: some View {
-        ScrollView {
+        VerticalPage {
             VStack(alignment: .leading, spacing: 20) {
                 topBar
                 ticket
@@ -12493,29 +12535,19 @@ private struct ResearchProgressScreen: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: saved)
     }
 
-    /// The brand banner: logo and wordmark, with the full journey animation
-    /// playing while the plan is made.
+    /// The brand row: the animated journey logo, small, beside the wordmark.
     private var topBar: some View {
-        ZStack(alignment: .top) {
-            RoundedRectangle(cornerRadius: 28, style: .continuous).fill(Sketch.paperDeep)
+        HStack(spacing: 8) {
             TrippyJourneyAnimation(animate: running && error == nil && !saved)
-                .frame(height: typeSize.isAccessibilitySize ? 110 : 150)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 26)
-            HStack(spacing: 8) {
-                TrippyLogo(size: 28, idle: running && error == nil)
-                TrippyWordmarkText(size: 20)
-                Spacer()
-                Button(action: onClose) {
-                    Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Sketch.ink)
-                        .frame(width: 44, height: 44).raisedCircle()
-                }
-                .buttonStyle(QuietPressStyle()).accessibilityLabel("Close")
+                .frame(width: 46, height: 44)
+            TrippyWordmarkText(size: 21)
+            Spacer()
+            Button(action: onClose) {
+                Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Sketch.ink)
+                    .frame(width: 44, height: 44).raisedCircle()
             }
-            .padding(.horizontal, 12).padding(.top, 10)
+            .buttonStyle(QuietPressStyle()).accessibilityLabel("Close")
         }
-        .frame(height: typeSize.isAccessibilitySize ? 150 : 190)
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
     }
 
     // MARK: ticket — the live card
@@ -13589,7 +13621,7 @@ private extension TripFlowView {
         let evidence = StudioEvidence.of(source)
         return NavigationStack {
             ScrollViewReader { reader in
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 22) {
                     HStack(alignment: .top, spacing: 16) {
                         StudioCover(url: studioCover(source)).frame(width: 104, height: 160)
@@ -13820,7 +13852,7 @@ private extension TripFlowView {
     func travelNoteDetail(_ id: UUID) -> some View {
         let note = travelNotes.first { $0.id == id }
         return NavigationStack {
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 24) {
                     TextField("Title", text: Binding(get: { travelNotes.first { $0.id == id }?.title ?? "" }, set: { title in
                         if let index = travelNotes.firstIndex(where: { $0.id == id }) { travelNotes[index].title = title; travelNotes[index].updatedAt = .now }
@@ -15576,7 +15608,7 @@ private struct PlanLocationPicker: View {
     @State private var error: String?
     var body: some View {
         NavigationStack {
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Choose the exact place and check the address.").font(PlanType.body)
                     TextField("Name and area", text: $query).textFieldStyle(.roundedBorder).font(PlanType.body)
@@ -15807,7 +15839,7 @@ private struct MarkIdentityEditor: View {
     }
     var body: some View {
         NavigationStack {
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 24) {
                     HStack(spacing: 18) {
                         MarkIconWell(appearance: appearance, fallback: defaultSymbol, tone: tone, size: 80)

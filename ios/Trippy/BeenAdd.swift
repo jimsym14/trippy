@@ -199,7 +199,7 @@ struct VisitedPlacePicker: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 18) {
                     Text(picked.map { p in (saved.contains { $0.id == p.id } ? "Edit " : "Add ") + p.name } ?? "Add a place")
                         .font(.custom("PlusJakartaSans-Bold", size: 30, relativeTo: .title)).tracking(-1).fixedSize(horizontal: false, vertical: true)

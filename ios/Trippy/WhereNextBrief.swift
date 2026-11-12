@@ -179,7 +179,7 @@ struct WhereNextBrief: Codable, Equatable {
 
 // MARK: - The questions
 
-private enum BriefStep: Int, CaseIterable {
+enum BriefStep: Int, CaseIterable {
     case who, when, length, weather, ski, setting, mood, region, novelty, extras
     var title: String {
         switch self {
@@ -207,13 +207,18 @@ private enum BriefStep: Int, CaseIterable {
 struct WhereNextBriefView: View {
     @Binding var brief: WhereNextBrief
     var onDone: () -> Void
-    @State private var step: BriefStep = {
+    @State private var step: BriefStep
+
+    /// `start` opens one question directly (tapping an answer on the Where next page).
+    init(brief: Binding<WhereNextBrief>, start: BriefStep? = nil, onDone: @escaping () -> Void) {
+        _brief = brief; self.onDone = onDone
+        var first = start ?? .who
         #if DEBUG
         // Screenshot checks: `-TrippyWhereNextBriefStep 3` opens that question.
-        if let saved = BriefStep(rawValue: UserDefaults.standard.integer(forKey: "TrippyWhereNextBriefStep")) { return saved }
+        if start == nil, let saved = BriefStep(rawValue: UserDefaults.standard.integer(forKey: "TrippyWhereNextBriefStep")) { first = saved }
         #endif
-        return .who
-    }()
+        _step = State(initialValue: first)
+    }
     @State private var forward = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -231,39 +236,49 @@ struct WhereNextBriefView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                Text("\(position + 1) of \(steps.count)").font(Sketch.text(13, "Bold", relativeTo: .footnote)).monospacedDigit()
+                    .foregroundStyle(Sketch.inkSoft).contentTransition(.numericText())
+                Spacer(minLength: 8)
+                Button(brief.finished ? "Done" : "Skip") { finish() }
+                    .font(Sketch.text(15, "SemiBold", relativeTo: .body)).foregroundStyle(brief.finished ? Sketch.clay : Sketch.inkSoft)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityHint(brief.finished ? "Keeps your answers and shows the places" : "Skips the questions and shows places")
+            }
+            .padding(.horizontal, 22).padding(.top, 12)
             HStack(spacing: 5) {
                 ForEach(steps, id: \.self) { item in
                     Capsule().fill(item.rawValue <= step.rawValue ? Sketch.clay : Sketch.rule).frame(height: 4)
                 }
             }
-            .animation(.snappy, value: step).padding(.horizontal, 22).padding(.top, 18)
+            .animation(.snappy, value: step).padding(.horizontal, 22).padding(.top, 4)
             .accessibilityElement().accessibilityLabel("Question \(position + 1) of \(steps.count)")
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 6) {
+            VerticalPage {
+                VStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text(step.title).font(Sketch.display(.largeTitle, weight: .bold)).fixedSize(horizontal: false, vertical: true)
                         Text(step.hint).font(Sketch.text(15, relativeTo: .subheadline)).foregroundStyle(Sketch.inkSoft).fixedSize(horizontal: false, vertical: true)
                     }
-                    question
+                    VStack(alignment: .leading, spacing: 10) { question }
                 }
-                .padding(.horizontal, 22).padding(.top, 26).padding(.bottom, 20)
+                .padding(.horizontal, 22).padding(.top, 24).padding(.bottom, 20)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .id(step)
-                .transition(reduceMotion ? .opacity : .asymmetric(insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
-                                                                  removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)))
+                .transition(reduceMotion ? .opacity : .asymmetric(insertion: .offset(x: forward ? 28 : -28).combined(with: .opacity),
+                                                                  removal: .offset(x: forward ? -28 : 28).combined(with: .opacity)))
             }
-            HStack(spacing: 10) {
+            .scrollBounceBehavior(.basedOnSize)
+            HStack(spacing: 12) {
                 if position > 0 {
                     Button { go(-1) } label: {
-                        Image(systemName: "chevron.left").font(.system(size: 15, weight: .bold)).frame(width: 52, height: 52).raisedCircle()
+                        Image(systemName: "chevron.left").font(.system(size: 16, weight: .bold)).frame(width: 54, height: 54).raisedCircle()
                     }.buttonStyle(SketchPressStyle()).accessibilityLabel("Back")
                 }
-                SketchPrimaryButton(title: position == steps.count - 1 ? "Show me places" : "Next", symbol: position == steps.count - 1 ? "sparkles" : nil) { go(1) }
+                SketchPrimaryButton(title: position == steps.count - 1 ? "Show me places" : "Next",
+                                    symbol: position == steps.count - 1 ? "sparkles" : nil, enabled: answered) { go(1) }
+                    .animation(.snappy, value: answered)
             }
-            .padding(.horizontal, 22).padding(.bottom, 14)
-            Button("Skip the questions") { finish() }
-                .font(Sketch.text(14, "SemiBold", relativeTo: .subheadline)).foregroundStyle(Sketch.inkSoft)
-                .frame(maxWidth: .infinity, minHeight: 44).padding(.bottom, 6)
+            .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 16)
         }
         .background(PaperBackground()).foregroundStyle(Sketch.ink).tint(Sketch.clay)
         .sensoryFeedback(.selection, trigger: step)
@@ -277,10 +292,18 @@ struct WhereNextBriefView: View {
     }
     private func finish() { brief.finished = true; brief.save(); onDone() }
 
-    /// A single choice moves on by itself; nobody should have to press Next after tapping the answer.
+    /// Tapping an answer only selects it; Next moves on, so a wrong tap is easy to fix.
     private func choose(_ change: () -> Void) {
-        change()
-        Task { @MainActor in try? await Task.sleep(for: .milliseconds(260)); go(1) }
+        withAnimation(.snappy) { change() }
+    }
+    /// Questions without a sensible default wait for an answer before Next works.
+    private var answered: Bool {
+        switch step {
+        case .who: brief.who != nil
+        case .novelty: brief.somethingNew != nil
+        case .when: brief.when != .months || !brief.months.isEmpty
+        default: true
+        }
     }
 
     @ViewBuilder private var question: some View {
@@ -372,17 +395,22 @@ struct WhereNextBriefView: View {
             row("Yes, somewhere I haven't been", symbol: "sparkles", on: brief.somethingNew == true) { choose { brief.somethingNew = true } }
             row("I don't mind", symbol: "circle.dashed", on: brief.somethingNew == false) { choose { brief.somethingNew = false } }
         case .extras:
-            Text("BUDGET PER PERSON, PER DAY").font(Sketch.eyebrow).tracking(0.9).foregroundStyle(Sketch.inkFaint)
-            BubbleFlow(spacing: 8) {
-                ForEach([Int?.none, 60, 100, 150, 220], id: \.self) { budget in
-                    pill(budget.map { "≤ €\($0)" } ?? "Any", on: brief.budget == budget) { brief.budget = budget }
+            VStack(alignment: .leading, spacing: 10) {
+                Text("BUDGET PER PERSON, PER DAY").font(Sketch.eyebrow).tracking(0.9).foregroundStyle(Sketch.inkFaint)
+                BubbleFlow(spacing: 8) {
+                    ForEach([Int?.none, 60, 100, 150, 220], id: \.self) { budget in
+                        pill(budget.map { "≤ €\($0)" } ?? "Any", on: brief.budget == budget) { brief.budget = budget }
+                    }
                 }
             }
-            Text("GETTING THERE").font(Sketch.eyebrow).tracking(0.9).foregroundStyle(Sketch.inkFaint).padding(.top, 6)
-            BubbleFlow(spacing: 8) {
-                pill("Any way", on: brief.mode == nil) { brief.mode = nil }
-                ForEach(JourneyMode.allCases) { mode in pill(mode.title, on: brief.mode == mode) { brief.mode = mode } }
+            VStack(alignment: .leading, spacing: 10) {
+                Text("GETTING THERE").font(Sketch.eyebrow).tracking(0.9).foregroundStyle(Sketch.inkFaint)
+                BubbleFlow(spacing: 8) {
+                    pill("Any way", on: brief.mode == nil) { brief.mode = nil }
+                    ForEach(JourneyMode.allCases) { mode in pill(mode.title, on: brief.mode == mode) { brief.mode = mode } }
+                }
             }
+            .padding(.top, 8)
             note("Once you pick a place you can turn it into a rail or road journey with stops.")
         }
     }
@@ -394,14 +422,14 @@ struct WhereNextBriefView: View {
                     .frame(width: 40, height: 40).background(Circle().fill(on ? Sketch.paper.opacity(0.16) : Sketch.clay.opacity(0.12)))
                     .symbolEffect(.bounce, value: on)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(Sketch.text(16, "Bold", relativeTo: .body))
-                    if let detail { Text(detail).font(Sketch.text(13, relativeTo: .footnote)).opacity(0.75) }
+                    Text(title).font(Sketch.text(16, "Bold", relativeTo: .body)).lineLimit(2).multilineTextAlignment(.leading)
+                    if let detail { Text(detail).font(Sketch.text(13, relativeTo: .footnote)).opacity(0.75).multilineTextAlignment(.leading) }
                 }
                 Spacer(minLength: 4)
                 if on { Image(systemName: "checkmark").font(.system(size: 14, weight: .bold)).transition(.scale.combined(with: .opacity)) }
             }
             .foregroundStyle(on ? Sketch.paper : Sketch.ink)
-            .padding(.horizontal, 14).frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+            .padding(.horizontal, 14).padding(.vertical, 10).frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(on ? Sketch.ink : Sketch.card))
             .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Sketch.rule.opacity(on ? 0 : 0.8), lineWidth: 0.7))
         }
@@ -409,7 +437,7 @@ struct WhereNextBriefView: View {
     }
     private func pill(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
         Button { withAnimation(.snappy) { action() } } label: {
-            Text(title).font(Sketch.text(14, "SemiBold", relativeTo: .subheadline)).padding(.horizontal, 16).frame(minHeight: 46)
+            Text(title).font(Sketch.text(14, "SemiBold", relativeTo: .subheadline)).lineLimit(1).fixedSize().padding(.horizontal, 16).frame(minHeight: 46)
                 .foregroundStyle(on ? Sketch.paper : Sketch.ink).background(Capsule().fill(on ? Sketch.ink : Sketch.paperDeep))
         }.buttonStyle(SketchPressStyle()).accessibilityAddTraits(on ? .isSelected : [])
     }

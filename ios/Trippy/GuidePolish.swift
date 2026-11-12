@@ -136,7 +136,7 @@ struct TravelLegSheet: View {
     }
 
     var body: some View {
-        ScrollView {
+        VerticalPage {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("GETTING THERE").font(Sketch.eyebrow).tracking(0.9).foregroundStyle(Sketch.inkFaint)

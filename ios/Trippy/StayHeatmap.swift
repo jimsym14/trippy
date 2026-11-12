@@ -226,7 +226,7 @@ struct StayHeatmapView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Where to stay").font(Sketch.display(.title, weight: .bold))

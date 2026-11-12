@@ -26,6 +26,7 @@ struct WhereNextView: View {
     @State private var surprise = 0
     @State private var brief = WhereNextBrief.load()
     @State private var showBrief = false
+    @State private var briefStart: BriefStep?
 
     private static let originKey = "trippy.wherenext.origin.v1"
     private static let months = TripMonth.short
@@ -34,7 +35,7 @@ struct WhereNextView: View {
     private var accent: UIColor { UIColor(sketchHex: (GlobeAccent.all.first { $0.id == accentID } ?? GlobeAccent.all[0]).hex) }
 
     var body: some View {
-        ScrollView {
+        VerticalPage {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 globe
@@ -67,7 +68,7 @@ struct WhereNextView: View {
                 .presentationDetents([.large]).presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showBrief, onDismiss: { brief.save(); brief.apply(to: &query); Task { await paintGlobe() } }) {
-            WhereNextBriefView(brief: $brief) { showBrief = false }
+            WhereNextBriefView(brief: $brief, start: briefStart) { showBrief = false }
                 .presentationDetents([.large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
         }
         .task { await start() }
@@ -123,48 +124,73 @@ struct WhereNextView: View {
             .accessibilityLabel(selected.map { "Globe showing \($0.destination.name), \($0.destination.country)" } ?? "Globe")
     }
 
-    // MARK: Filters
+    // MARK: Your trip
 
-    /// Where you leave from, then your answers. Tapping an answer reopens the questions.
+    private func openBrief(_ step: BriefStep? = nil) { briefStart = step; showBrief = true }
+
+    /// The answers are what the picks are built from, so they sit in the middle of the page as one card:
+    /// where you leave from, each answer as a tile that opens its own question, and one clear way to change them.
     private var filters: some View {
-        let answers: [(String, String)] = [
-            brief.who.map { ($0.symbol, $0.title) }, ("calendar", brief.whenText), ("clock", query.days == 3 ? "Weekend" : "\(query.days) days"),
-            brief.climate.map { ($0.symbol, query.ski ? "Skiing" : $0.title) }, brief.setting.map { ($0.symbol, $0.title) },
-            brief.region == .anywhere ? nil : (brief.region.symbol, brief.region.title),
-            brief.somethingNew == true ? ("sparkles", "Somewhere new") : nil,
-            query.budget.map { ("eurosign", "≤ €\($0) a day") }, query.mode.map { ($0.symbol, $0.title) },
-        ].compactMap { $0 }
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Button { showOrigin = true } label: {
-                    chip(symbol: "house.fill", text: query.origin.map { "From \($0.name)" } ?? "Leaving from…", active: query.origin != nil, attention: query.origin == nil)
+        let moods = query.wants.sorted { $0.rawValue < $1.rawValue }.map(\.title)
+        var tiles: [(BriefStep, String, String, String)] = [
+            (.who, brief.who?.symbol ?? "person.2", "Who", brief.who?.title ?? "Anyone"),
+            (.when, "calendar", "When", brief.whenText),
+            (.length, "clock", "How long", query.days == 3 ? "A weekend" : "\(query.days) days"),
+            (.setting, brief.setting?.symbol ?? "square.grid.2x2", "Kind of place", brief.setting?.title ?? "A mix"),
+        ]
+        if let climate = brief.climate { tiles.insert((.weather, climate.symbol, "Weather", query.ski ? "Skiing" : climate.title), at: 3) }
+        tiles.append((.mood, "heart.text.square", "About", moods.isEmpty ? "Anything" : moods.prefix(2).joined(separator: ", ") + (moods.count > 2 ? " +\(moods.count - 2)" : "")))
+        tiles.append((.region, brief.region.symbol, "How far", brief.region.title))
+        if query.budget != nil || query.mode != nil {
+            tiles.append((.extras, query.mode?.symbol ?? "eurosign", "Extras", [query.budget.map { "≤ €\($0)/day" }, query.mode?.title].compactMap { $0 }.joined(separator: " · ")))
+        }
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("YOUR TRIP").font(Sketch.eyebrow).tracking(0.9).foregroundStyle(Sketch.inkFaint)
+                Spacer(minLength: 8)
+                if brief.finished { Text("Tap any answer to change it").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkFaint).lineLimit(1) }
+            }
+            Button { showOrigin = true } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "house.fill").font(.system(size: 15, weight: .semibold)).foregroundStyle(query.origin == nil ? Sketch.paper : Sketch.clay)
+                        .frame(width: 38, height: 38).background(Circle().fill(query.origin == nil ? Sketch.clay : Sketch.clay.opacity(0.14)))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Leaving from").font(Sketch.text(12, relativeTo: .caption)).foregroundStyle(Sketch.inkSoft)
+                        Text(query.origin?.name ?? "Choose a city").font(Sketch.text(16, "Bold", relativeTo: .body)).lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right").font(.system(size: 13, weight: .bold)).foregroundStyle(Sketch.inkFaint)
                 }
-                .buttonStyle(SketchPressStyle())
-                Button { showBrief = true } label: { chip(symbol: "slider.horizontal.3", text: brief.finished ? "Change answers" : "Answer a few questions", active: false, attention: !brief.finished && query.origin != nil) }
-                    .buttonStyle(SketchPressStyle())
-                ForEach(answers, id: \.1) { symbol, text in
-                    Button { showBrief = true } label: { chip(symbol: symbol, text: text, active: true) }
-                        .buttonStyle(SketchPressStyle()).accessibilityHint("Opens the questions")
-                }
-                ForEach(query.wants.sorted { $0.rawValue < $1.rawValue }) { trait in
-                    Button { showBrief = true } label: { chip(symbol: trait.symbol, text: trait.title, active: true) }.buttonStyle(SketchPressStyle())
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading).contentShape(Rectangle())
+            }
+            .buttonStyle(SketchPressStyle())
+            if brief.finished {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                    ForEach(tiles, id: \.0) { step, symbol, label, value in
+                        Button { openBrief(step) } label: {
+                            HStack(alignment: .center, spacing: 10) {
+                                Image(systemName: symbol).font(.system(size: 14, weight: .semibold)).foregroundStyle(Sketch.clay).frame(width: 22)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(label).font(Sketch.text(11, relativeTo: .caption2)).foregroundStyle(Sketch.inkSoft).lineLimit(1)
+                                    Text(value).font(Sketch.text(14, "Bold", relativeTo: .subheadline)).lineLimit(1).minimumScaleFactor(0.85)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Sketch.paperDeep))
+                            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                        .buttonStyle(SketchPressStyle()).accessibilityLabel("\(label): \(value)").accessibilityHint("Change this answer")
+                    }
                 }
             }
-            .padding(.horizontal, 20)
+            SketchPrimaryButton(title: brief.finished ? "Change answers" : "Answer a few questions",
+                                symbol: brief.finished ? "slider.horizontal.3" : "questionmark.bubble") { openBrief(brief.finished ? nil : .who) }
         }
-        .scrollClipDisabled()
-    }
-
-    private func chip(symbol: String, text: String, active: Bool, attention: Bool = false) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: symbol).font(.system(size: 12, weight: .semibold))
-            Text(text).lineLimit(1)
-        }
-        .font(Sketch.text(13, "SemiBold", relativeTo: .footnote))
-        .foregroundStyle(attention ? Sketch.paper : Sketch.ink)
-        .padding(.horizontal, 13).frame(minHeight: 44)
-        .background(Capsule().fill(attention ? Sketch.clay : active ? Sketch.clay.opacity(0.16) : Sketch.paperDeep))
-        .contentShape(Capsule())
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Sketch.card))
+        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(Sketch.rule.opacity(0.8), lineWidth: 0.7))
+        .padding(.horizontal, 20)
     }
 
     // MARK: Picks
@@ -211,7 +237,7 @@ struct WhereNextView: View {
             Text("Nothing fits all of that").font(Sketch.display(.title3))
             Text("Try a wider window of dates, a longer trip, or a looser region.")
                 .font(Sketch.text(15, relativeTo: .body)).foregroundStyle(Sketch.inkSoft).multilineTextAlignment(.center)
-            Button("Change my answers") { showBrief = true }
+            Button("Change my answers") { openBrief() }
             .font(Sketch.text(15, "Bold", relativeTo: .body)).frame(minHeight: 44)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 24).padding(.horizontal, 20)

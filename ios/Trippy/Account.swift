@@ -310,7 +310,7 @@ struct AccountHub: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
+            VerticalPage {
                 VStack(spacing: 22) {
                     header
                     planCard
@@ -515,7 +515,7 @@ struct PlanPage: View {
     @State private var showSignIn = false
 
     var body: some View {
-        ScrollView {
+        VerticalPage {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(account.isSignedIn ? (account.credits?.plan.capitalized ?? "Free") : "On this phone")

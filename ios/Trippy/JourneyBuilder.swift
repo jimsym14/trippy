@@ -154,7 +154,7 @@ struct JourneyBuilderView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Journey").font(Sketch.display(.largeTitle, weight: .bold))

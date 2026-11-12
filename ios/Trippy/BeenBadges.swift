@@ -351,7 +351,7 @@ private struct BadgeDetail: View {
     @State private var tilt = CGSize.zero
 
     var body: some View {
-        ScrollView {
+        VerticalPage {
             VStack(spacing: 18) {
                 // Drag the patch to turn it in the light.
                 BadgeDrawing(badge: badge, size: 200)

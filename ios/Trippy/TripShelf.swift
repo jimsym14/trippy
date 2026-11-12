@@ -439,7 +439,7 @@ private struct ShelfStyleSheet: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 24) {
                     ShelfCard(trip: trip, look: look).frame(maxWidth: .infinity).padding(.vertical, 8)
                     Picker("Style", selection: $look.style) {

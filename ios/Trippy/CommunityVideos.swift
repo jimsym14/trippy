@@ -597,7 +597,7 @@ struct CommunityVideoDetailView: View {
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        ScrollView {
+        VerticalPage {
             if let video {
                 VStack(alignment: .leading, spacing: 16) {
                     header(video)

@@ -89,6 +89,7 @@ struct TripGuideView: View {
             .scrollDismissesKeyboard(.interactively)
             .animation(reduceMotion ? nil : .snappy, value: mode)
             .overlay(alignment: .bottom) { undoBar }
+            .keyboardDismissButton()
             .animation(reduceMotion ? nil : .snappy, value: undo != nil)
             .background(PaperBackground())
             .toolbar { toolbar }
@@ -956,10 +957,33 @@ private struct TicketsSection: View {
 private struct TransportSection: View {
     let ctx: GuideContext
     @Binding var edits: GuideEdits
+    @State private var showTransit = false
+    private var city: String { ctx.input.destination.split(separator: ",").first.map(String.init) ?? ctx.input.destination }
     var body: some View {
         let legs = ctx.days.flatMap(\.stops).compactMap(\.travelMinutes)
         let longLegs = legs.filter { $0 >= 30 }.count
         VStack(alignment: .leading, spacing: 12) {
+            // The city's metro, tram and rail lines on a map, and the ticket worth buying for these days.
+            Button { TrippyHaptics.light(); showTransit = true } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: "tram.fill").font(.system(size: 20, weight: .semibold)).foregroundStyle(Sketch.paper)
+                        .frame(width: 52, height: 52)
+                        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Sketch.sky))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Metro & tram map").font(Sketch.text(17, "Bold", relativeTo: .headline))
+                        Text("Lines in \(city) and the ticket to buy for \(ctx.days.count) \(ctx.days.count == 1 ? "day" : "days")")
+                            .font(Sketch.text(13, relativeTo: .footnote)).foregroundStyle(Sketch.inkSoft)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right").font(.system(size: 13, weight: .bold)).foregroundStyle(Sketch.inkFaint)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(SketchPressStyle())
+            .sketchCard(padding: 14)
+            .accessibilityHint("Opens the transit map")
             if !legs.isEmpty {
                 HStack(spacing: 14) {
                     stat("\(legs.reduce(0, +))", "min walking")
@@ -989,6 +1013,13 @@ private struct TransportSection: View {
             }
             .sketchCard(padding: 14)
             Text("Walking times are estimated from distance.").font(Sketch.hand(.footnote)).foregroundStyle(Sketch.inkFaint)
+        }
+        .sheet(isPresented: $showTransit) {
+            TransitSheet(request: TransitRequest(city: ctx.input.destination,
+                                                 coordinate: ctx.base.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) },
+                                                 days: max(1, ctx.days.count), travelers: max(1, ctx.people)),
+                         baseURL: ctx.input.bridgeURL, token: ctx.input.bridgeToken, preview: TransitDemo.answer)
+                .presentationDetents([.large]).presentationDragIndicator(.visible)
         }
     }
     private func stat(_ value: String, _ label: String) -> some View {

@@ -75,7 +75,7 @@ struct TripComposerView: View {
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 16) {
                     header
                     if showLook {
@@ -116,9 +116,7 @@ struct TripComposerView: View {
             .scrollDismissesKeyboard(.interactively)
             .background(PaperBackground())
             .safeAreaInset(edge: .bottom) { if focus == nil { bottomBar } }
-            .toolbar {
-                ToolbarItem(placement: .keyboard) { HStack { Spacer(); Button("Done") { focus = nil } } }
-            }
+            .keyboardDismissButton()
             .toolbar(.hidden, for: .navigationBar)
         }
         .tint(Sketch.clay)

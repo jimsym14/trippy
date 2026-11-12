@@ -232,11 +232,16 @@ struct TrippyJourneyAnimation: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        JourneySVGView(animate: animate && !reduceMotion && scenePhase != .background) { loaded = true }
-            .aspectRatio(1278.0 / 1230.0, contentMode: .fit)
-            .opacity(loaded ? 1 : 0)
-            .animation(.easeOut(duration: 0.4), value: loaded)
-            .accessibilityHidden(true)
+        ZStack {
+            // The still mark holds the spot until WebKit has painted the first frame.
+            Image("SplashMark").resizable().scaledToFit().padding(.horizontal, 6)
+                .opacity(loaded ? 0 : 1)
+            JourneySVGView(animate: animate && !reduceMotion && scenePhase != .background) { loaded = true }
+                .opacity(loaded ? 1 : 0)
+        }
+        .aspectRatio(1278.0 / 1230.0, contentMode: .fit)
+        .animation(.easeOut(duration: 0.4), value: loaded)
+        .accessibilityHidden(true)
     }
 }
 

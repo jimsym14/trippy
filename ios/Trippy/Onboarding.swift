@@ -296,7 +296,7 @@ private struct WelcomeStep: View {
     private var globe: CGFloat { typeSize.isAccessibilitySize ? 170 : 280 }
 
     var body: some View {
-        ScrollView {
+        VerticalPage {
         VStack(spacing: 0) {
             Spacer(minLength: 8)
             ZStack {
@@ -475,7 +475,7 @@ struct HomeStep: View {
     private var level: Level { home.countryCode == nil ? .country : home.city == nil ? .city : .area }
 
     var body: some View {
-        ScrollView {
+        VerticalPage {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Where’s home?").font(Sketch.display(.largeTitle, weight: .bold)).foregroundStyle(Sketch.ink)
@@ -706,7 +706,7 @@ struct BeenStep: View {
     /// The flag whose visit date is being picked on the wheels.
     @State private var whenCode: String?
     var body: some View {
-        ScrollView {
+        VerticalPage {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Where have you been?").font(Sketch.display(.largeTitle, weight: .bold)).foregroundStyle(Sketch.ink)
@@ -1056,7 +1056,7 @@ struct AccessStep: View {
     private enum Field { case email, code }
 
     var body: some View {
-        ScrollView {
+        VerticalPage {
             VStack(alignment: .leading, spacing: 22) {
                 if account.isSignedIn { signedIn } else { choose }
                 if let error {

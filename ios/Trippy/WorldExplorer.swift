@@ -228,7 +228,7 @@ struct NeighborhoodDetailView: View {
     @State private var saved = false
     var body: some View {
         NavigationStack {
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 20) {
                     NeighborhoodHeading(place: place)
                     StatlasCityCard(city: place.city.isEmpty ? place.name : place.city, countryCode: place.countryCode, latitude: place.latitude, longitude: place.longitude)

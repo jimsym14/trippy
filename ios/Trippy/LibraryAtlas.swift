@@ -767,7 +767,7 @@ struct AtlasPlaceSheet: View {
     @State private var beat = 0
 
     var body: some View {
-        ScrollView {
+        VerticalPage {
             VStack(alignment: .leading, spacing: 22) {
                 HStack(alignment: .top, spacing: 14) {
                     AtlasWell(symbol: place.symbol, tint: place.tint, glyph: place.glyph, size: 56, mustDo: place.mustDo)

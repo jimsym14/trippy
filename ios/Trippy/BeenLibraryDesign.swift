@@ -240,7 +240,7 @@ struct BeenSheetFrame<Content: View>: View {
     @Environment(\.colorScheme) private var scheme
     var body: some View {
         NavigationStack {
-            ScrollView {
+            VerticalPage {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(title).font(.custom("PlusJakartaSans-Bold", size: 30, relativeTo: .title)).tracking(-1).fixedSize(horizontal: false, vertical: true)

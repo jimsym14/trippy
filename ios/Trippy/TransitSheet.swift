@@ -51,14 +51,17 @@ enum TransitClient {
         components?.queryItems = [("city", request.city), ("lat", String(format: "%.4f", coordinate.latitude)), ("lng", String(format: "%.4f", coordinate.longitude)),
                                   ("days", "\(request.days)"), ("rides", "\(rides)"), ("travelers", "\(request.travelers)"), ("airport", airport ? "1" : "0"), ("fare", reduced ? "reduced" : "full")]
             .map { URLQueryItem(name: $0.0, value: $0.1) }
-        guard let url = components?.url, !token.isEmpty else { throw URLError(.userAuthenticationRequired) }
+        // The app's shared token or a signed-in account both work.
+        guard let url = components?.url, !token.isEmpty || AccountSession.header != nil else { throw URLError(.userAuthenticationRequired) }
         // The first look at a city draws its lines from OpenStreetMap, which can take a minute; later looks are instant.
         var call = URLRequest(url: url, timeoutInterval: 120)
         call.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         call.setValue(TrippyInstall.id, forHTTPHeaderField: "X-Trippy-Client")
         if let session = AccountSession.header { call.setValue(session, forHTTPHeaderField: "X-Trippy-Session") }
         let (data, response) = try await URLSession.shared.data(for: call)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 404 { throw URLError(.resourceUnavailable) }
+        guard status == 200 else { throw URLError(.badServerResponse) }
         return try JSONDecoder().decode(TransitAnswer.self, from: data)
     }
 }
@@ -83,6 +86,8 @@ struct TransitSheet: View {
 
     @State private var answer: TransitAnswer?
     @State private var failed = false
+    /// The server answered but doesn't know /api/transit yet (an older build is running).
+    @State private var notReady = false
     @State private var loading = true
     @State private var rides = 4
     @State private var airport = false
@@ -96,7 +101,7 @@ struct TransitSheet: View {
     private var shown: [TransitAnswer.Line] { (answer?.lines ?? []).filter { focus == nil || $0.id == focus } }
 
     var body: some View {
-        ScrollView {
+        VerticalPage {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -116,7 +121,8 @@ struct TransitSheet: View {
                         Text("Lines \(answer.attribution)").font(Sketch.text(11, relativeTo: .caption2)).foregroundStyle(Sketch.inkFaint)
                     }
                 } else if failed {
-                    note("Couldn't load this city's transport. Check the connection and try again.")
+                    note(notReady ? "Transit maps aren't switched on for our server yet. They'll appear here as soon as it's updated."
+                                  : "Couldn't load this city's transport. Check the connection and try again.")
                     Button("Try again") { Task { await load() } }.font(Sketch.text(15, "Bold", relativeTo: .body)).frame(minHeight: 44)
                 } else {
                     HStack(spacing: 10) { ProgressView(); Text("Drawing the lines… the first look at a city can take a minute.") }
@@ -285,7 +291,10 @@ struct TransitSheet: View {
             let fresh = try await TransitClient.load(request, coordinate: coordinate, rides: rides, airport: airport, reduced: reduced, baseURL: baseURL, token: token)
             withAnimation(reduceMotion ? nil : .snappy) { answer = fresh }
             drawn = true
-        } catch { failed = answer == nil }
+        } catch {
+            notReady = (error as? URLError)?.code == .resourceUnavailable
+            failed = answer == nil
+        }
         loading = false
     }
 }
